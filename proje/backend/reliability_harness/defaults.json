@@ -1,0 +1,20 @@
+{
+  "thresholds": {
+    "duration_seconds": {"warn": 180, "fail": 600},
+    "total_model_calls": {"warn": 18, "fail": 32},
+    "input_tokens": {"warn": 120000, "fail": 250000},
+    "total_tokens": {"warn": 140000, "fail": 300000},
+    "recovery_count_per_task": {"warn": 0.5, "fail": 1.01},
+    "tool_call_count": {"warn": 16, "fail": 28},
+    "duplicate_tool_calls_memoized": {"warn": 1},
+    "duplicate_tool_calls_unmemoized": {"warn": 1, "fail": 3},
+    "file_rows": {"warn": 800, "fail": 1000},
+    "file_characters": {"warn": 80000, "fail": 100000},
+    "context_growth_ratio": {"warn": 2.5, "fail": 4.0}
+  },
+  "terminal_statuses": ["done", "partial", "failed", "error", "cancelled", "interrupted"],
+  "max_tool_arg_chars": 1000,
+  "max_failure_reason_chars": 4000,
+  "poll_interval_seconds": 1.0,
+  "job_timeout_seconds": 900
+}

@@ -1,0 +1,11 @@
+-- The user's explicit deep-research opt-in, persisted with the run.
+--
+-- It was already on the in-memory job (main.RunPipelineRequest.deep_research)
+-- and drives real behaviour -- 30 searches and 12 angles instead of 3 and 4 --
+-- but lived only as long as the backend process. After a restart, jobs
+-- rehydrated from this table read back as ordinary runs, so a finished
+-- thirteen-minute wide search looked identical to a one-minute lookup.
+--
+-- Defaults to 0 so every pre-existing job reads back as "not deep", which is
+-- what the roster showed for them anyway.
+ALTER TABLE jobs ADD COLUMN deep_research INTEGER NOT NULL DEFAULT 0;

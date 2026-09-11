@@ -1,0 +1,533 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens.
+ *
+ * Dark is the product's default (main.jsx puts `dark` on <html>), so the
+ * dark set is the one to read first; `:root` carries the light set so the
+ * two are a pure token swap and no component ever names a raw colour.
+ *
+ * Values are bare HSL triples, not hsl() strings, because tailwind.config
+ * wraps them as `hsl(var(--x) / <alpha-value>)` -- that is what keeps
+ * opacity modifiers (bg-panel/60) working.
+ *
+ * SURFACES form one deliberate elevation ladder, and every surface in the
+ * app must sit on a rung of it rather than inventing a tint:
+ *
+ *   background  the canvas the app floats on (chat ground, page ground)
+ *   panel       the rails docked to that canvas (sidebar, execution panel)
+ *   card        anything raised off a rail or the canvas (rows, composer)
+ *   popover     transient layers above everything (menus, dialogs, tips)
+ *
+ * SIGNAL colours are reserved: primary for the active/live state, success
+ * for finished work, destructive for failure, warning for degraded runs.
+ * Nothing decorative may use them -- that is what keeps a blue dot meaning
+ * "this is running" everywhere in the product.
+ */
+
+@layer base {
+  :root {
+    /* --- light (secondary) -------------------------------------------- */
+    --background: 220 20% 97%;
+    --foreground: 222 24% 12%;
+
+    --panel: 220 24% 99%;
+    --panel-foreground: 222 24% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 24% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 24% 12%;
+
+    --primary: 221 83% 51%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Accent text on a light ground -- see the dark block for why this is
+       a separate token from --primary. */
+    --link: 221 83% 45%;
+
+    --secondary: 220 16% 93%;
+    --secondary-foreground: 222 24% 12%;
+
+    --muted: 220 16% 94%;
+    --muted-foreground: 220 9% 44%;
+
+    --accent: 220 16% 91%;
+    --accent-foreground: 222 24% 12%;
+
+    --destructive: 4 66% 48%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 156 68% 32%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 30 88% 42%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 220 16% 88%;
+    --input: 220 16% 88%;
+    --ring: 221 83% 51%;
+
+    --radius: 10px;
+
+    /* Second brand hue, alongside --primary blue -- used only for the
+       brand mark and the ambient glow (never as a new semantic status
+       color; --success/--warning/--destructive/--link keep their
+       reserved meanings untouched). Violet-on-blue is what gives the
+       product an "AI" identity beyond a generic corporate blue, kept to
+       exactly these two accent spots so it reads as considered rather
+       than decorative. */
+    --accent-secondary: 271 76% 53%;
+
+    /* Ambient page texture, as tokens so the glow and the grid can differ
+       per theme without any component knowing about it. */
+    --grid-dot: 222 24% 12% / 0.055;
+    --glow: 221 83% 51% / 0.07;
+    --glow-2: 271 76% 53% / 0.06;
+    --glow-3: 271 76% 53% / 0.035;
+  }
+
+  .dark {
+    /* --- dark (default) ------------------------------------------------
+       One ladder, evenly spaced in lightness (6 -> 9 -> 12 -> 14) so a
+       raised surface is legible against its parent without needing a
+       border to prove it exists. */
+    --background: 224 14% 6%;
+    --foreground: 213 14% 94%;
+
+    --panel: 224 13% 9%;
+    --panel-foreground: 213 14% 94%;
+
+    --card: 223 12% 12%;
+    --card-foreground: 213 14% 94%;
+
+    --popover: 223 12% 14%;
+    --popover-foreground: 213 14% 94%;
+
+    /* Button/surface blue: dark enough that --primary-foreground (white)
+       clears 4.5:1 on top of it. */
+    --primary: 221 83% 52%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Accent *text* blue. The button blue is too dark to read as body copy
+       on a near-black ground, so links, live labels and running badges use
+       this lighter one instead of reusing --primary and failing contrast.
+       Splitting the two is what lets both stay accessible. */
+    --link: 214 96% 72%;
+
+    --secondary: 223 11% 16%;
+    --secondary-foreground: 213 14% 94%;
+
+    --muted: 223 11% 15%;
+    --muted-foreground: 219 10% 62%;
+
+    --accent: 223 11% 19%;
+    --accent-foreground: 213 14% 94%;
+
+    --destructive: 4 78% 66%;
+    --destructive-foreground: 224 14% 6%;
+
+    --success: 156 58% 52%;
+    --success-foreground: 224 14% 6%;
+
+    --warning: 34 92% 62%;
+    --warning-foreground: 224 14% 6%;
+
+    --border: 222 11% 18%;
+    --input: 222 11% 18%;
+    --ring: 214 90% 60%;
+
+    /* See the light theme's --accent-secondary comment -- same two spots
+       only (brand mark + ambient glow), lifted a little brighter here
+       since it sits on a near-black ground instead of near-white. */
+    --accent-secondary: 271 78% 66%;
+
+    --grid-dot: 213 14% 94% / 0.04;
+    /* Roughly doubled from 0.08/0.07, which read as flat black on a real
+       screen -- the light source was there in the markup and invisible in
+       the room. Still an order of magnitude below the saturated violet
+       washes this kind of UI usually reaches for: the corners should feel
+       lit, and no one should be able to name the colour. */
+    --glow: 221 90% 60% / 0.22;
+    --glow-2: 271 78% 66% / 0.20;
+    --glow-3: 271 78% 66% / 0.10;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 14px;
+    margin: 0;
+    /* Proportional figures read better in prose, but every number the app
+       shows in a column (tokens, durations, percentages) is explicitly
+       tabular-nums at the callsite. */
+    font-feature-settings: 'cv05' 1, 'ss01' 1;
+  }
+
+  /* One focus treatment for the whole app. Radix primitives and native
+     controls both route through :focus-visible, so this is the only place
+     focus is styled -- components never redefine it. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring/60 ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer components {
+  /*
+   * Page ground. A single soft light source at the top of the working
+   * surface, so the canvas has a direction instead of being flat black.
+   * Deliberately weak: it should register as depth, never as a gradient.
+   */
+  .app-ground {
+    background-color: hsl(var(--background));
+    /* Three sources, not two, and none of them clipped to the top edge.
+       The previous pair sat at 50% -8rem and 100% 0%, so the light lived
+       in the first few hundred pixels and everything below the composer
+       was flat black -- the effect was real and, on a tall screen, in the
+       wrong place. These reach down the canvas instead: cool from the top
+       centre, the second hue from the upper right, and a low, very faint
+       lift from the bottom left so the page has a floor as well as a sky. */
+    background-image: radial-gradient(
+        90rem 46rem at 50% -6rem,
+        hsl(var(--glow)),
+        transparent 70%
+      ),
+      radial-gradient(
+        70rem 44rem at 108% 6%,
+        hsl(var(--glow-2)),
+        transparent 68%
+      ),
+      radial-gradient(
+        64rem 40rem at -8% 104%,
+        hsl(var(--glow-3)),
+        transparent 70%
+      );
+    background-attachment: fixed;
+  }
+
+  /*
+   * Ambient texture for the two screens that are mostly empty ground --
+   * the workspace index and an empty conversation. Per the project's
+   * design bar, a large empty surface needs *something* deliberate behind
+   * it; working screens (a full chat log) do not, and get the plain
+   * ground above so the texture never competes with content.
+   */
+  .surface-grid {
+    position: relative;
+  }
+  /* The texture is a pseudo-element, not a background on the element
+     itself, because the fade has to be a mask -- and a mask on the element
+     would fade its children too, washing out the very content the texture
+     is meant to sit behind. Content nodes are marked `relative` so they
+     paint above this layer. */
+  .surface-grid::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(
+      circle,
+      hsl(var(--grid-dot)) 1px,
+      transparent 1px
+    );
+    background-size: 26px 26px;
+    /* Fades out well before the bottom of the surface, so the texture
+       reads as ambient depth rather than as tiling edge to edge. */
+    mask-image: linear-gradient(to bottom, black, transparent 60%);
+    -webkit-mask-image: linear-gradient(to bottom, black, transparent 60%);
+  }
+
+  /* Markdown answer body. react-markdown emits plain tags, so this is the
+     one place where element selectors are the right tool -- the
+     alternative is passing a className to every node type.
+
+     Hierarchy is carried by size + weight + the space above a heading,
+     not by rules or tinted bars: an h2 is separated from the paragraph
+     before it by space, and from the paragraph after it by weight. */
+  .prose-answer {
+    @apply text-[15px] leading-[1.7] text-foreground/95;
+  }
+  .prose-answer > * + * {
+    @apply mt-4;
+  }
+  .prose-answer > :first-child {
+    @apply mt-0;
+  }
+  .prose-answer h1 {
+    @apply mt-8 text-[19px] font-semibold leading-snug tracking-[-0.011em] text-foreground;
+  }
+  .prose-answer h2 {
+    @apply mt-8 text-[17px] font-semibold leading-snug tracking-[-0.011em] text-foreground;
+  }
+  .prose-answer h3 {
+    @apply mt-6 text-[15px] font-semibold leading-snug text-foreground;
+  }
+  .prose-answer h4 {
+    @apply mt-5 text-[13px] font-semibold uppercase tracking-wide text-muted-foreground;
+  }
+  .prose-answer p {
+    @apply leading-[1.7];
+  }
+  .prose-answer ul {
+    @apply list-disc space-y-2 pl-5;
+  }
+  .prose-answer ol {
+    @apply list-decimal space-y-2 pl-5;
+  }
+  .prose-answer li::marker {
+    @apply text-muted-foreground;
+  }
+  .prose-answer li > ul,
+  .prose-answer li > ol {
+    @apply mt-2;
+  }
+  .prose-answer a {
+    @apply font-medium text-link underline decoration-link/35 underline-offset-[3px] transition-colors duration-150 hover:decoration-link;
+  }
+  .prose-answer strong {
+    @apply font-semibold text-foreground;
+  }
+  .prose-answer blockquote {
+    @apply border-l-2 border-border pl-4 text-muted-foreground;
+  }
+  .prose-answer code {
+    @apply rounded border border-border/70 bg-muted px-1.5 py-0.5 font-mono text-[0.84em] text-foreground/90;
+  }
+  .prose-answer pre code {
+    @apply border-0 bg-transparent p-0 text-[12.5px] leading-relaxed;
+  }
+  /* Wide tables scroll inside their own box rather than widening the
+     column and pushing the whole answer sideways. Toolbar mirrors the
+     research-chat pattern (copy / download / expand) using our tokens. */
+  .prose-answer .md-table {
+    @apply relative overflow-hidden rounded-lg border border-border bg-card;
+  }
+  .prose-answer .md-table-toolbar {
+    @apply absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-md
+           border border-border/80 bg-card/95 p-0.5 shadow-sm
+           opacity-100 sm:opacity-0 sm:transition-opacity sm:duration-150
+           sm:group-hover/table:opacity-100 sm:focus-within:opacity-100;
+  }
+  .prose-answer .md-table-action {
+    @apply inline-flex h-7 w-7 items-center justify-center rounded-md
+           text-muted-foreground transition-colors duration-150
+           hover:bg-accent hover:text-foreground;
+  }
+  .prose-answer .table-scroll {
+    @apply scrollbar-slim overflow-x-auto;
+  }
+  .prose-answer .md-table > .table-scroll {
+    @apply pt-1;
+  }
+  .prose-answer table {
+    @apply w-full border-collapse text-[13px];
+  }
+  .prose-answer th,
+  .prose-answer td {
+    @apply border-b border-border px-3 py-2.5 text-left align-middle;
+  }
+  .prose-answer tbody tr:nth-child(even) td {
+    @apply bg-muted/25;
+  }
+  .prose-answer tr:last-child td {
+    @apply border-b-0;
+  }
+  .prose-answer th {
+    @apply bg-muted/50 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground;
+  }
+  .prose-answer .prose-sources-heading {
+    @apply mt-7 mb-0 text-[13px] font-medium tracking-tight text-muted-foreground;
+  }
+  .prose-answer .prose-sources-heading + ul {
+    @apply mt-2;
+  }
+  .prose-answer hr {
+    @apply my-6 border-border;
+  }
+
+  /* ── Code block container ─────────────────────────────────────────── */
+  .code-block-container {
+    @apply overflow-hidden rounded-lg border border-border/80 bg-[#0d1117];
+  }
+  .code-block-header {
+    @apply flex items-center justify-between px-3 py-1.5
+           bg-[#161b22] border-b border-white/[0.06];
+  }
+  .code-block-lang {
+    @apply font-mono text-[11px] uppercase tracking-wide text-white/40;
+  }
+  .code-block-action {
+    @apply inline-flex items-center gap-1.5 rounded px-2 py-0.5
+           text-[11px] text-white/50 transition-[opacity,color,background-color]
+           duration-150 hover:bg-white/[0.08] hover:text-white/80
+           focus-visible:opacity-100;
+  }
+  .code-block-body {
+    @apply overflow-x-auto;
+  }
+  .code-block-pre {
+    @apply m-0 py-3 pr-4 pl-0 text-[13px] leading-[1.65] min-w-fit;
+  }
+  .code-block-pre code {
+    @apply font-mono text-[13px] leading-[1.65] !border-0 !bg-transparent !p-0;
+    display: block;
+  }
+  .code-line {
+    @apply flex;
+    min-height: 1.65em;
+  }
+  .code-line-number {
+    @apply inline-block shrink-0 select-none text-right pr-4 pl-4
+           text-[#484f58] text-[12px] leading-[1.65em];
+    font-variant-numeric: tabular-nums;
+  }
+  .code-line-content {
+    @apply flex-1 whitespace-pre;
+    color: #e6edf3;
+  }
+  .code-line-error {
+    @apply bg-red-500/10;
+  }
+  .code-line-error .code-line-number {
+    @apply text-red-400/70;
+  }
+
+  /* ── Execution output area ────────────────────────────────────────── */
+  .code-block-output {
+    @apply border-t border-white/[0.06] px-3 py-2.5 bg-[#0d1117]/80;
+  }
+  .code-block-output-header {
+    @apply flex items-center justify-between text-[11px] font-medium mb-1.5;
+  }
+  .code-block-output-body {
+    @apply m-0 overflow-x-auto whitespace-pre-wrap break-words
+           font-mono text-[12.5px] leading-[1.6] text-[#c9d1d9]
+           max-h-[320px] overflow-y-auto scrollbar-slim;
+  }
+  .code-block-stderr {
+    @apply text-red-400/90 mt-1;
+  }
+
+}
+
+/* ── highlight.js token colors (GitHub-Dark inspired) ───────────────
+   Outside @layer so Tailwind's purge/tree-shaking cannot drop them;
+   these classes are injected at runtime by highlight.js via
+   dangerouslySetInnerHTML and are invisible to the static scan.
+   ─────────────────────────────────────────────────────────────────── */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-type { color: #ff7b72; }
+.hljs-string,
+.hljs-addition { color: #a5d6ff; }
+.hljs-number,
+.hljs-literal { color: #79c0ff; }
+.hljs-comment,
+.hljs-deletion { color: #8b949e; font-style: italic; }
+.hljs-title,
+.hljs-title.function_,
+.hljs-section { color: #d2a8ff; }
+.hljs-variable,
+.hljs-template-variable { color: #ffa657; }
+.hljs-attr,
+.hljs-attribute { color: #79c0ff; }
+.hljs-params { color: #e6edf3; }
+.hljs-meta { color: #8b949e; }
+.hljs-regexp { color: #7ee787; }
+.hljs-symbol,
+.hljs-bullet { color: #ffa657; }
+.hljs-name,
+.hljs-tag { color: #7ee787; }
+.hljs-selector-class,
+.hljs-selector-id { color: #d2a8ff; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+
+/* ── Workspace picker animated background ─────────────────────────── */
+.workspace-bg-glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.12;
+  will-change: transform;
+}
+.workspace-bg-glow-1 {
+  width: 600px;
+  height: 400px;
+  top: -80px;
+  left: -100px;
+  background: hsl(var(--primary));
+  animation: workspace-drift-1 12s ease-in-out infinite;
+}
+.workspace-bg-glow-2 {
+  width: 500px;
+  height: 350px;
+  top: 100px;
+  right: -120px;
+  background: hsl(var(--accent-secondary));
+  animation: workspace-drift-2 14s ease-in-out infinite;
+}
+@keyframes workspace-drift-1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(40px, 30px) scale(1.05); }
+}
+@keyframes workspace-drift-2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-30px, -20px) scale(1.08); }
+}
+
+/* ── View fade-in animation ────────────────────────────────────────── */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out both;
+}
+
+@layer utilities {
+  /* Thin, theme-aware scrollbar. ScrollArea covers most surfaces, but
+     natively-scrolling regions (the composer textarea) still need it. */
+  .scrollbar-slim {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  .scrollbar-slim::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-slim::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-slim::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+  }
+
+  /* Section eyebrow. Used verbatim in the sidebar, the execution panel and
+     the workspace index, so the three read as the same system. */
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground;
+  }
+}

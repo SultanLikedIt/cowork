@@ -1,0 +1,12 @@
+Project Status Report
+
+REST APIs are a widely used architectural style for building web services.
+They rely on standard HTTP methods such as GET, POST, PUT, and DELETE to
+operate on resources identified by URLs.
+
+Key benefits include statelessness, cacheability, and a uniform interface,
+which together make RESTful services easier to scale and integrate with a
+wide variety of clients.
+
+This document is a small plain-text sample used to verify that the /upload
+endpoint correctly reads and returns .txt file contents.

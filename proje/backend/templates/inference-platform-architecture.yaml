@@ -1,0 +1,151 @@
+# Canonical ArchitectureBlueprint for enterprise AI chatbot inference platforms.
+# Inference Platform Agent uses this structure when designing K8s + vLLM stacks.
+version: v1
+kind: ArchitectureBlueprint
+metadata:
+  name: kurumsal-ai-chatbot-platform
+  date: "2026-08-19"
+  labels:
+    domain: enterprise-ai-chatbot
+    tier: production
+spec:
+  components:
+    - name: nvidia-gpu-operator
+      type: cluster-addon
+      version: v24.9.0
+      description: GPU node discovery, driver management, MIG and time-slicing
+      configuration:
+        mig:
+          enabled: true
+          profile: all-1g.10gb
+        timeSlicing:
+          enabled: true
+          replicas: 2
+        devicePlugin:
+          resources:
+            - nvidia.com/gpu
+            - nvidia.com/mig-1g.10gb
+
+    - name: vllm-serving
+      type: inference-workload
+      deployment:
+        backend: vllm
+        model: llama-3-70b-instruct
+        replicas: 2
+        resources:
+          requests:
+            nvidia.com/gpu: 2
+          limits:
+            nvidia.com/gpu: 2
+        env:
+          - name: VLLM_GPU_MEMORY_UTILIZATION
+            value: "0.90"
+          - name: VLLM_MAX_MODEL_LEN
+            value: "4096"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 3
+      autoscaling:
+        hpa:
+          enabled: true
+          minReplicas: 2
+          maxReplicas: 10
+          metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                targetAverageUtilization: 70
+            - type: PodMetric
+              metric:
+                name: vllm:requests_per_second
+                targetAverageValue: 50
+        vpa:
+          enabled: true
+          updateMode: Auto
+          controlledResources:
+            - cpu
+            - memory
+
+    - name: canary-deployment
+      type: rollout-strategy
+      tool: Argo Rollouts
+      strategy:
+        canary:
+          steps:
+            - setWeight: 10
+            - pause:
+                duration: 5m
+            - setWeight: 30
+            - pause:
+                duration: 5m
+            - setWeight: 60
+            - pause:
+                duration: 5m
+            - setWeight: 100
+          analysis:
+            metrics:
+              - name: p95-latency
+                successCondition: result < 2000
+                failureCondition: result >= 5000
+              - name: error-rate
+                successCondition: result < 0.01
+                failureCondition: result >= 0.05
+            templates:
+              - name: latency-check
+                provider:
+                  prometheus:
+                    query: >-
+                      histogram_quantile(0.95,
+                      sum(rate(vllm_request_duration_seconds_bucket[5m])) by (le))
+              - name: error-rate-check
+                provider:
+                  prometheus:
+                    query: >-
+                      sum(rate(vllm_request_errors_total[5m]))
+                      / sum(rate(vllm_requests_total[5m]))
+
+    - name: ci-cd-pipeline
+      type: automation
+      tool: GitLab CI + Argo Events
+      stages:
+        - lint-and-test
+        - build-and-scan
+        - validate-gpu-scheduling
+        - deploy-canary
+        - promote-stable
+        - observability-verify
+      rollback:
+        automatic: true
+        triggerOnFailure: true
+
+    - name: observability-stack
+      type: monitoring
+      components:
+        - Prometheus
+        - Grafana
+        - Loki
+        - Tempo
+      dashboards:
+        - vLLM performance
+        - GPU utilization
+        - model metrics
+        - canary analysis
+
+    - name: secret-management
+      type: security
+      tool: External Secrets Operator + AWS Secrets Manager
+      syncPolicy:
+        refreshInterval: 1h
+
+  network:
+    ingress:
+      class: nginx
+      annotations:
+        nginx.ingress.kubernetes.io/limit-rps: "100"
+    service:
+      type: ClusterIP
+      port: 8000

@@ -1,0 +1,12 @@
+-- Selected Skills, persisted with the run.
+--
+-- Stored as the resolved id list (JSON array) rather than the rendered
+-- guidance text: the catalog is product-owned and read-only, so the ids are
+-- the stable record of what the user chose, and re-resolving them through
+-- skills.resolve_skills reproduces the exact same prompt block. Storing the
+-- rendered text instead would freeze old wording into history and grow the
+-- row for no benefit.
+--
+-- Defaults to an empty array so every pre-existing job reads back as "no
+-- skills", which is exactly what it was.
+ALTER TABLE jobs ADD COLUMN skills_json TEXT NOT NULL DEFAULT '[]';

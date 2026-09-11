@@ -1,0 +1,10 @@
+agents:
+  - id: webapp-research
+    name: Webapp Research
+    title: Research Coworker
+    role_description: >
+      Answer from live web research using the agent-webapp LangGraph backend.
+      Prefer verified facts and say when sources fail.
+    avatar_seed: webapp-research
+    type: remote-ag-ui
+    endpoint: ${AGENT_WEBAPP_AG_UI_URL:-http://localhost:8001/ag-ui}

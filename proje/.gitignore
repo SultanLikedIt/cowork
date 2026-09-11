@@ -1,0 +1,87 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual environments ---
+venv/
+.venv/
+env/
+ENV/
+backend/.venv/
+backend/venv/
+
+# --- Environment variables / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Node.js / frontend ---
+node_modules/
+dist/
+build/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Runtime data ---
+backend/uploads/
+backend/workspaces/
+backend/context_files/
+backend/logs/
+backend/*.db
+backend/*.db-wal
+backend/*.db-shm
+
+# --- Benchmark artifacts ---
+# The harness itself (backend/bench_workforce.py) is tracked on purpose --
+# it is how the before/after numbers in the efficiency work are reproduced.
+# What it *emits* is per-run scratch tied to one machine and one model, so
+# it must never land in a commit.
+backend/bench_*.log
+backend/bench_result_*.json
+backend/reliability-results/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# NOTE: backend/vendor/ (camel-offline-bundle, camel-source) is
+# intentionally tracked in this repo for air-gapped deployment and
+# security review purposes. Do NOT add it here.
+
+# camel-offline-bundle-linux is a rebuildable manylinux wheel cache (see
+# backend/Dockerfile), not reviewed source -- narrow exception to the note
+# above. docling-models is a downloadable Docling model-weights cache (see
+# docs/document-ingestion.md for the deterministic setup step); both are
+# too large and too easy to regenerate to commit.
+backend/vendor/camel-offline-bundle-linux/
+backend/vendor/docling-models/
+
+# --- Carbone DOCX/PPTX renderer (backend/carbone/) ---
+# node_modules is installed via `npm install --omit=dev` (see
+# backend/Dockerfile and docs/carbone-docx-pptx.md) -- package.json/
+# package-lock.json are tracked, the resolved packages are not.
+backend/carbone/node_modules/
+
+# --- Claude Code local state (worktrees, local settings) ---
+# Narrow on purpose: .claude/skills/ should stay trackable so project
+# skills (e.g. design-quality bar) are shared via git, not just local.
+.claude/worktrees/
+.claude/settings.local.json
+
+# --- OpenBot upstream clone (optional local sidecar; not product source) ---
+openbot-upstream/

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.brcrusoe72/agent-search",
+  "title": "AgentSearch",
+  "description": "Self-hosted SearXNG-backed search MCP. Web/news/jobs search, content extraction, no third-party search API keys.",
+  "repository": {
+    "url": "https://github.com/brcrusoe72/agent-search",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/brcrusoe72/agent-search-mcp:1.0.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

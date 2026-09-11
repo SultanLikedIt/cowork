@@ -1,0 +1,193 @@
+# agent-webapp — Teslim paketi
+
+Bu klasör `agent-webapp` projesinin **tam ve çalışır** kopyasıdır. Projeyi hiç
+bilmiyor olabilirsin; bu dosyayı yukarıdan aşağı takip edersen sistem ayağa
+kalkar. GitHub'a, hesaba veya özel bir erişime **ihtiyacın yok**.
+
+---
+
+## Klasörde ne var
+
+| Klasör / dosya | Ne |
+| --- | --- |
+| `proje/` | Projenin tamamı — kod, belgeler, Docker ayarları |
+| `proje/HANDOVER.md` | **Asıl rehber.** 13 bölüm; mimari, kullanım, test, bilinen açıklar |
+| `proje/README.md` | Kısa tanıtım |
+| `proje/.env.example` | Ayar şablonu — bundan kendi `.env` dosyanı yapacaksın |
+| `eigent-karsilastirma/` | Eigent "Cowork" ürünüyle yapılmış karşılaştırma notları. Projenin parçası değil, referans |
+
+---
+
+## Proje ne yapıyor
+
+Tarayıcıdan konuştuğun bir ajan uygulaması. Soru sorarsın; sistem ya sohbet
+eder, ya web'den araştırır, ya yüklediğin belgeyi okur, ya da Word / PDF /
+PowerPoint / Excel / HTML dosyası üretir.
+
+İki parça: **React arayüz** ve **FastAPI sunucu**. Yanlarında iki yardımcı
+servis çalışır (SearXNG arama motoru, AgentSearch). Dördü de Docker'da.
+
+---
+
+## Kurulum
+
+### Adım 0 — Bilgisayarda ne olmalı
+
+| Gereken | Not |
+| --- | --- |
+| **Docker Desktop** | Windows'ta WSL2 açık olmalı. https://docker.com |
+| **İnternet** | Build sırasında paketler inecek (aşağıda açıklandı) |
+| **Model erişimi** | OpenAI uyumlu bir endpoint: adres + model adı + API anahtarı |
+| Disk | ~8 GB boş yer |
+| RAM | 8 GB altı zorlanır |
+
+**Git'e ihtiyacın yok.** Dosyalar zaten elinde.
+
+> **İnternet neden gerekli?** Kod burada, ama Docker build sırasında Python
+> paketleri (PyPI), npm paketleri, Playwright Chromium ve PyTorch iniyor.
+> Yani "GitHub'a erişimim yok" sorun değil; "hiç internetim yok" sorun.
+
+### Adım 1 — Klasöre gir
+
+PowerShell aç ve bu klasörün içindeki `proje` dizinine geç:
+
+```powershell
+cd <bu-klasorun-yolu>\proje
+dir
+```
+
+`backend`, `frontend`, `docker-compose.yml`, `HANDOVER.md` görmelisin.
+
+Bir de şunu kontrol et — boş olmamalı:
+
+```powershell
+dir vendor\agent-search
+```
+
+`app`, `adapters`, `Dockerfile` görünüyorsa her şey yerinde.
+
+### Adım 2 — Ayar dosyasını oluştur
+
+```powershell
+copy .env.example .env
+notepad .env
+```
+
+Açılan dosyada **üç satırı** kendi bilgilerinle doldur:
+
+```env
+MODEL_BASE_URL=https://senin-endpointin/v1
+MODEL_NAME=kullandigin-model-adi
+MODEL_API_KEY=anahtarin
+```
+
+Örnek (OpenRouter kullanıyorsan):
+
+```env
+MODEL_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=deepseek/deepseek-v4-flash
+MODEL_API_KEY=sk-or-...
+```
+
+Dosyada bir de şu satır var, **olduğu gibi bırak**:
+
+```env
+AGENT_EXECUTOR=langgraph
+```
+
+Bunu silersen sistem eski CAMEL yoluna düşer ve bazı özellikler sessizce
+çalışmaz. (Nedeni: `HANDOVER.md` § 1)
+
+Kaydet, kapat.
+
+### Adım 3 — Başlat
+
+```powershell
+docker compose up --build
+```
+
+**İlk çalıştırma 15–30 dakika sürer.** Donmuş değil — PyTorch, Chromium ve
+Docling iniyor. Ekranda akan satırlar normaldir.
+
+Sonraki başlatmalarda saniyeler sürer:
+
+```powershell
+docker compose up -d
+```
+
+### Adım 4 — Çalıştığını doğrula
+
+Tarayıcıda aç:
+
+| Adres | Ne görmelisin |
+| --- | --- |
+| http://127.0.0.1:8081 | Uygulamanın arayüzü, workspace kartları |
+| http://127.0.0.1:8001/docs | API dokümantasyonu (Swagger) |
+| http://127.0.0.1:3939/health | `{"status":"healthy"...}` |
+
+Sonra arayüzde:
+
+1. Bir workspace oluştur
+2. Alttaki kutuya **Single** modunda `2+2 kaç` yaz, gönder
+3. Cevap geldiyse model bağlantın çalışıyor
+4. **Workforce** moduna geç ve `İstanbul hakkında kısa bir PDF hazırla` dene
+5. İndirilebilir bir PDF çıkıyorsa sistem tam çalışıyor
+
+### Adım 5 — Durdurmak
+
+```powershell
+docker compose down
+```
+
+Verilerin (sohbetler, ürettiğin dosyalar) durur.
+
+> ⚠️ `docker compose down -v` yazma. Sondaki `-v` bütün sohbet geçmişini ve
+> üretilmiş dosyaları **kalıcı olarak siler**.
+
+---
+
+## Sonra ne okumalı
+
+`proje/HANDOVER.md` — asıl rehber. Sırasıyla:
+
+| Bölüm | Ne anlatır |
+| --- | --- |
+| § 1 | Proje nedir, iki executor (CAMEL / LangGraph), reponun geçmişi |
+| § 2–3 | Kurulum ve ayarların tamamı |
+| § 4 | Arayüzün nasıl kullanılacağı, hangi modda ne yapılır |
+| § 5 | Mimari — bir istek uçtan uca nasıl işleniyor |
+| § 6 | Kod haritası — hangi dosya ne işe yarar |
+| § 10 | Testler nasıl koşulur |
+| § 11 | **Bilinen açıklar** — neyin bitmediği, dürüstçe |
+| § 12 | Sorun giderme |
+
+---
+
+## Bu klasörde bilerek olmayan iki şey
+
+1. **`.env` yok.** İçinde API anahtarı olduğu için hiçbir kopyaya konmaz.
+   Adım 2'de kendin oluşturuyorsun.
+2. **`.git` geçmişi yok.** 316 MB tutuyor ve kurulum için gerekmiyor. Kod
+   eksiksiz çalışır, ama `git log` ile "bu satır neden böyle" diye
+   bakamazsın. Geliştirmeye devam edeceksen projeyi teslim eden kişiden
+   GitHub erişimi iste:
+
+   ```
+   https://github.com/omeryavuzarslan/agent-webapp-langgraph
+   ```
+
+   Varsayılan dal `main`, güncel olan odur.
+
+---
+
+## Bu paket test edildi
+
+Yukarıdaki adımlar bu klasörün üzerinde gerçekten çalıştırıldı:
+
+- `docker compose build` — üç image de hatasız derlendi
+- `docker compose up -d` — dört servis de ayağa kalktı
+- `:8001/docs` ve `:8081` → HTTP 200
+- `:3939/health` → `healthy`, arama bağlantısı dahil
+- Gerçek bir iş (`POST /run-pipeline`) → 3.2 saniyede cevap döndü
+
+Git hiç kullanılmadı. Yani bu klasör kendi başına yeterli.

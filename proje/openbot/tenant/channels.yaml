@@ -1,0 +1,6 @@
+channels:
+  - id: webapp-research
+    name: Webapp Research
+    description: Research with SearXNG + web fetch via the agent-webapp backend.
+    permitted_agents: [webapp-research]
+    allowed_groups: [all]

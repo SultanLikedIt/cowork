@@ -1,0 +1,101 @@
+# Minimal SearXNG config for this app's internal use only -- the container
+# is never port-published to the host (see docker-compose.yml: `expose`,
+# not `ports`), so it's reachable exclusively from other containers on the
+# Compose network, never from the public internet. `use_default_settings`
+# pulls in the image's full default engine list; only the keys below are
+# overridden.
+use_default_settings:
+  engines:
+    # `disabled: true` prevents searches but SearXNG still initializes an
+    # engine. Wikidata's initialization is blocked with HTTP 403 from this
+    # deployment, so remove it from the inherited engine registry entirely.
+    remove:
+      - wikidata
+
+general:
+  instance_name: "agent-webapp self-hosted search"
+
+server:
+  # Not a secret in the usual sense (SearXNG uses it to sign session data);
+  # fine to commit since this instance is never exposed outside the Docker
+  # network. Generated with `python3 -c "import secrets; print(secrets.token_hex(32))"`.
+  secret_key: "c6914b9cb9f73d330045ba814f205e1a76d783dec22f5d3f8dd335bd0dec4dde"
+  # Only our backend container calls this, over the internal network -- no
+  # browser traffic to rate-limit or bot-filter.
+  limiter: false
+
+search:
+  # json is off by default (SearXNG's public-instance abuse guard); this
+  # instance is internal-only, and backend/web_search.py needs the JSON API.
+  formats:
+    - html
+    - json
+
+engines:
+  # Re-verified live against this deployment (2026-08-29). Per-engine,
+  # single-shot checks (?engines=<name>) against both generic and
+  # specific/compound Turkish queries (prayer times, a club's named
+  # match, a country's named market -- exactly the "entity name +
+  # specific detail" shape real user asks take):
+  #   duckduckgo web -> the fix. SearXNG registers DuckDuckGo's HTML/lite
+  #                    scrape path as a SEPARATE engine from plain
+  #                    "duckduckgo" (the JS-heavy main-site scrape, which
+  #                    IS CAPTCHA-blocked below). This one hit the exact
+  #                    right page on every compound query tried:
+  #                    namazvakitleri.diyanet.gov.tr for "Ankara namaz
+  #                    vakitleri", real Fenerbahçe-Konyaspor lineup
+  #                    articles for "Fenerbahce Konyaspor ilk 11", real
+  #                    2025/2026 sales-figure articles for "Turkiye
+  #                    elektrikli arac pazari", TCMB/doviz.com for a rate
+  #                    query. Not CAPTCHA-blocked. Primary engine now.
+  #   bing         -> the opposite failure mode: whenever the query names
+  #                    a well-known entity (a football club, a country, a
+  #                    city), Bing's own results page shows an "about this
+  #                    entity" panel (official site/Wikipedia/social) and
+  #                    SearXNG's scraper grabs THAT instead of organic
+  #                    results -- confirmed by "Fenerbahce", "Fenerbahce
+  #                    Lyon 24 Agustos", and "Fenerbahce Konyaspor 22
+  #                    Agustos 4-2" returning the byte-for-byte IDENTICAL
+  #                    8 links regardless of the actual specific ask. Also
+  #                    degrades under repeated automated querying (German
+  #                    eBay forum / Chinese GPU-driver forum pages
+  #                    returned for unrelated Turkish queries) -- a soft
+  #                    anti-bot measure, not a hard block. Kept enabled
+  #                    only as a redundant signal, never trust it alone,
+  #                    and expect it to misfire on exactly the
+  #                    entity-name-plus-detail queries this app asks most.
+  #   resulthunter -> 0 results on every query tried (English generic terms
+  #                    "wikipedia", "coffee" included) -- not "thin", dead.
+  #                    Disabled.
+  #   mwmbl        -> strong, correctly-ranked English results (150 hits,
+  #                    right top pick) but 0 results for Turkish queries --
+  #                    no Turkish index. Kept enabled: real value for
+  #                    English/international asks, harmless no-op otherwise.
+  #   duckduckgo   -> CAPTCHA-blocked from this egress IP (this flips
+  #                    periodically -- re-verify before trusting either
+  #                    state; "duckduckgo web" above is unaffected by this
+  #                    block since it's a different scrape path). Disabled.
+  #   brave        -> previously marked blocked (2026-08-17: "too many
+  #                    requests"); re-verified now and it works (20 clean,
+  #                    correctly-ranked English results). No Turkish
+  #                    coverage though (0 results), same profile as mwmbl.
+  #                    Re-enabled for the English-query redundancy.
+  #   startpage    -> CAPTCHA-blocked. Disabled.
+  #   google cse   -> requires an API key/CX we don't have configured.
+  #                    Disabled.
+  - name: duckduckgo web
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: resulthunter
+    disabled: true
+  - name: mwmbl
+    disabled: false
+  - name: duckduckgo
+    disabled: true
+  - name: google cse
+    disabled: true
+  - name: brave
+    disabled: false
+  - name: startpage
+    disabled: true

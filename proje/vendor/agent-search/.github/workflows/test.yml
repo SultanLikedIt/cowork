@@ -1,0 +1,72 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest requests build wheel "setuptools>=68"
+          pip install -e sdk
+
+      - name: Prepare local SearXNG config
+        run: ./scripts/prepare-searxng.sh
+
+      - name: Run self-contained tests
+        run: pytest tests -q
+
+      - name: Compile Python modules
+        run: python -m compileall app adapters mcp-server/agent_search_mcp scripts sdk -q
+
+      - name: Check API CLI and SDK imports
+        run: |
+          python -m app.cli --help
+          python scripts/check_evolver.py --help
+          python - <<'PY'
+          from agentsearch import AgentSearch
+
+          assert AgentSearch is not None
+          print("imports ok")
+          PY
+
+      - name: Check MCP package in isolated env
+        run: |
+          python -m venv /tmp/agentsearch-mcp-venv
+          /tmp/agentsearch-mcp-venv/bin/python -m pip install --upgrade pip
+          /tmp/agentsearch-mcp-venv/bin/python -m pip install -e mcp-server
+          /tmp/agentsearch-mcp-venv/bin/python -m agent_search_mcp --help
+          /tmp/agentsearch-mcp-venv/bin/python - <<'PY'
+          from agent_search_mcp.server import make_server
+
+          assert make_server("http://localhost:3939") is not None
+          print("mcp imports ok")
+          PY
+
+      - name: Build Python packages
+        run: |
+          python -m build --no-isolation --sdist --wheel --outdir /tmp/agentsearch-api-dist .
+          python -m build --no-isolation --sdist --wheel --outdir /tmp/agentsearch-sdk-dist sdk
+          python -m build --no-isolation --sdist --wheel --outdir /tmp/agentsearch-mcp-dist mcp-server
+
+      - name: Validate Compose configs
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml -f examples/compose.private.yml config --quiet
+
+      - name: Build Docker images
+        run: |
+          docker build -t agent-search-api:test .
+          docker build -t agent-search-mcp:test mcp-server
+          docker build -t agent-search-tor:test examples/torproxy

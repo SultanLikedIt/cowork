@@ -1,0 +1,4 @@
+endpoint,method,description
+/upload,POST,Upload a document and extract its text content
+/run-pipeline,POST,Run the fixed research-report-review-outline pipeline
+/health,GET,Basic health check endpoint

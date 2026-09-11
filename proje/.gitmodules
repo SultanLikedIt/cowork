@@ -1,0 +1,3 @@
+[submodule "vendor/agent-search"]
+	path = vendor/agent-search
+	url = https://github.com/brcrusoe72/agent-search.git

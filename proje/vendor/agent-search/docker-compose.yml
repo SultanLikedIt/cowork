@@ -1,0 +1,41 @@
+services:
+  searxng:
+    image: ${SEARXNG_IMAGE:-searxng/searxng@sha256:4d7ed8b7035ecf827bd901ba6d32f5c32d8119bc09bb3cdafeb0ce58f1b951c1}
+    container_name: agent-search-searxng
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    networks:
+      - agent-search
+    restart: unless-stopped
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+
+  api:
+    build:
+      context: .
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab}
+    container_name: agent-search-api
+    ports:
+      - "127.0.0.1:3939:3939"
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+      - CACHE_TTL=3600
+      - RATE_LIMIT=60
+      - ADAPTERS_DIR=/app/adapters
+      - AGENT_SEARCH_TOKEN=${AGENT_SEARCH_TOKEN:-}
+    depends_on:
+      - searxng
+    volumes:
+      - agent-search-data:/app/data
+      - ./adapters:/app/adapters:ro
+    networks:
+      - agent-search
+    restart: unless-stopped
+
+networks:
+  agent-search:
+    driver: bridge
+
+volumes:
+  agent-search-data:

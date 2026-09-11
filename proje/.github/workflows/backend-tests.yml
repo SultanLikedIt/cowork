@@ -1,0 +1,53 @@
+name: backend-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-tests.yml"
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          # crawl4ai/playwright are deliberately excluded from requirements.txt
+          # (see the comment above their versions there): crawl4ai needs
+          # psutil>=6.1.1, camel-ai pins psutil<6, and pip's single-pass
+          # resolver rejects both lines together even though each installs
+          # fine on its own. Same two-step install the Dockerfile and local
+          # dev setup use.
+          pip install crawl4ai==0.9.2 playwright==1.62.0
+          # LangGraph is the executor the app actually ships with
+          # (AGENT_EXECUTOR=langgraph) but it is not in requirements.txt --
+          # same separate step the Dockerfile uses. Without it four test
+          # modules fail at collection with ModuleNotFoundError and pytest
+          # aborts before running anything.
+          pip install "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
+          pip install --no-deps "psutil>=6.1.1"
+          pip install pytest pytest-asyncio
+
+      # Chromium is NOT installed here: no test launches a real browser.
+      # All web_tools/crawl4ai tests mock get_crawl4ai_engine with a fake
+      # engine. The crawl4ai and playwright *packages* are still installed
+      # above so the import chain (web_tools -> crawl4ai_engine -> crawl4ai)
+      # succeeds at collection time.
+
+      - name: Run backend test suite
+        working-directory: backend
+        # Script-style suites with their own drivers are kept under tests/;
+        # collection is scoped by pytest.ini (testpaths=tests, ignore vendor).
+        run: python -m pytest -q

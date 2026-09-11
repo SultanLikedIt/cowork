@@ -1,0 +1,116 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    platform: linux/amd64  # matches the manylinux/x86_64 offline wheel bundle
+    # Crawl4AI runs a real headless Chromium; Docker's default 64MB /dev/shm
+    # is a known cause of Chromium crashing under memory pressure. Also
+    # passing --disable-dev-shm-usage to the browser itself (crawl4ai_engine.py)
+    # as a second layer of the same fix.
+    shm_size: 1gb
+    environment:
+      # Model backend config -- see backend/model_config.py. No defaults are
+      # hardcoded here on purpose; set these in a .env file next to this
+      # compose file (or in the shell environment) before `docker compose up`.
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_NAME: ${MODEL_NAME:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      # camel (default) | langgraph — see docs/langgraph-migration.md
+      AGENT_EXECUTOR: ${AGENT_EXECUTOR:-camel}
+      # backend/web_search.py calls this over the Docker network -- the
+      # "searxng" hostname resolves via Compose's default network, no port
+      # publishing needed. See searxng/settings.yml for the JSON API config.
+      SEARXNG_BASE_URL: http://searxng:8080
+      # Optional AgentSearch sidecar (brcrusoe72/agent-search). When enabled,
+      # web_search prefers this API and falls back to SearXNG on failure.
+      AGENT_SEARCH_ENABLED: ${AGENT_SEARCH_ENABLED:-true}
+      AGENT_SEARCH_BASE_URL: ${AGENT_SEARCH_BASE_URL:-http://agent-search:3939}
+      AGENT_SEARCH_TOKEN: ${AGENT_SEARCH_TOKEN:-}
+      AGENT_SEARCH_TIMEOUT_SECONDS: ${AGENT_SEARCH_TIMEOUT_SECONDS:-20}
+      # Crawl4AI (self-hosted Playwright/Chromium) is the only active web
+      # engine. SearXNG / AgentSearch remain discovery-only; page open is
+      # still web_read → Crawl4AI.
+      WEB_REQUEST_TIMEOUT_SECONDS: ${WEB_REQUEST_TIMEOUT_SECONDS:-15}
+      WEB_ACQUIRE_TIMEOUT_SECONDS: ${WEB_ACQUIRE_TIMEOUT_SECONDS:-15}
+      WEB_MAX_RESPONSE_BYTES: ${WEB_MAX_RESPONSE_BYTES:-5242880}
+      WEB_MAX_REDIRECTS: ${WEB_MAX_REDIRECTS:-5}
+      WEB_MAX_CRAWL_DEPTH: ${WEB_MAX_CRAWL_DEPTH:-1}
+      WEB_MAX_CRAWL_PAGES: ${WEB_MAX_CRAWL_PAGES:-3}
+      WEB_MAX_CONCURRENT_REQUESTS: ${WEB_MAX_CONCURRENT_REQUESTS:-8}
+      WEB_MAX_CONCURRENT_ACQUISITIONS: ${WEB_MAX_CONCURRENT_ACQUISITIONS:-4}
+      WEB_MAX_RETRIES: ${WEB_MAX_RETRIES:-1}
+      # Uploaded documents are parsed internally by Docling. OCR is opt-in to
+      # avoid implicit runtime model downloads for ordinary text PDFs.
+      DOCLING_PARSE_TIMEOUT_SECONDS: ${DOCLING_PARSE_TIMEOUT_SECONDS:-60}
+      DOCLING_MAX_FILE_BYTES: ${DOCLING_MAX_FILE_BYTES:-20971520}
+      DOCLING_MAX_PAGES: ${DOCLING_MAX_PAGES:-500}
+      DOCLING_MAX_TABLES: ${DOCLING_MAX_TABLES:-100}
+      DOCLING_MAX_CHUNKS: ${DOCLING_MAX_CHUNKS:-10000}
+      DOCLING_ENABLE_OCR: ${DOCLING_ENABLE_OCR:-false}
+      DOCLING_ARTIFACTS_PATH: /app/vendor/docling-models
+      # DOCX/PPTX artifacts render through a bounded Node/Carbone subprocess
+      # (backend/carbone_render.py) -- see docs/carbone-docx-pptx.md.
+      CARBONE_TIMEOUT_SECONDS: ${CARBONE_TIMEOUT_SECONDS:-20}
+      # OpenBot remote-ag-ui bridge (POST /ag-ui, GET /health on the backend port).
+      OPENBOT_AGUI_ENABLED: ${OPENBOT_AGUI_ENABLED:-false}
+      OPENBOT_AGUI_TOKEN: ${OPENBOT_AGUI_TOKEN:-}
+      # Lets the agent open a just-created file in its default app on the
+      # user's OWN computer (not this container) -- requires
+      # scripts/local_computer_bridge.py running natively on that same
+      # machine. Same-machine only: host.docker.internal always resolves to
+      # whichever machine runs these containers, never a different browser
+      # client. See backend/local_computer.py and docs/local-computer.md.
+      LOCAL_COMPUTER_ENABLED: ${LOCAL_COMPUTER_ENABLED:-false}
+      LOCAL_COMPUTER_URL: ${LOCAL_COMPUTER_URL:-http://host.docker.internal:8765}
+    volumes:
+      - backend-data:/data
+    # Host ports differ from the Camel stack (8000/8080) so both can run
+    # side-by-side without colliding. In-container ports stay the same.
+    ports:
+    - "8001:8000"
+    depends_on:
+      - searxng
+      - agent-search
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  # brcrusoe72/agent-search — scored multi-engine search API over our SearXNG.
+  # Submodule: vendor/agent-search (git submodule update --init).
+  agent-search:
+    build:
+      context: ./vendor/agent-search
+      dockerfile: Dockerfile
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      CACHE_TTL: ${AGENT_SEARCH_CACHE_TTL:-3600}
+      RATE_LIMIT: ${AGENT_SEARCH_RATE_LIMIT:-60}
+      AGENT_SEARCH_TOKEN: ${AGENT_SEARCH_TOKEN:-}
+    ports:
+      - "3939:3939"
+    depends_on:
+      - searxng
+    volumes:
+      - agent-search-data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "8081:80"
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  agent-search-data:

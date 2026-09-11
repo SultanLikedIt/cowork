@@ -1,0 +1,126 @@
+# Private stack overlay — Tor-anonymized search on port 3940.
+#
+# Adds:
+#   1. Encrypted DNS (CoreDNS → Cloudflare DoT)
+#   2. Tor proxy with Snowflake + obfs4 obfuscation
+#   3. Isolated SearXNG instance routed exclusively through Tor
+#   4. Network-level egress firewall (tor-internal has no internet route)
+#
+# Usage:
+#   ./scripts/prepare-searxng.sh
+#   docker compose -f docker-compose.yml -f examples/compose.private.yml up -d --build
+#
+# Result:
+#   :3939 = direct (fast)
+#   :3940 = anonymized via Tor (slower, private)
+
+services:
+  # === Encrypted DNS — CoreDNS forwarding to Cloudflare over DoT ===
+  dns:
+    image: ${COREDNS_IMAGE:-coredns/coredns@sha256:b21d26b915e10acb5bc78715c1e8b6047ab2675389b2bcc18b3a6499d90e74c0}
+    container_name: agent-search-dns
+    command: ["-conf", "/etc/coredns/Corefile"]
+    volumes:
+      - ./examples/Corefile:/etc/coredns/Corefile:ro
+    networks:
+      agent-search:
+        ipv4_address: 172.30.0.10
+    restart: unless-stopped
+
+  # Augment existing services with encrypted DNS
+  searxng:
+    dns:
+      - 172.30.0.10
+    depends_on:
+      - dns
+
+  api:
+    dns:
+      - 172.30.0.10
+    depends_on:
+      - searxng
+      - dns
+
+  # === Tor with Snowflake obfuscation ===
+  tor:
+    build:
+      context: ./examples/torproxy
+      args:
+        TOR_BASE_IMAGE: ${TOR_BASE_IMAGE:-debian@sha256:f9c6a2fd2ddbc23e336b6257a5245e31f996953ef06cd13a59fa0a1df2d5c252}
+    container_name: agent-search-tor
+    networks:
+      agent-search:
+        ipv4_address: 172.30.0.20
+      tor-internal:
+    dns:
+      - 172.30.0.10
+    restart: unless-stopped
+
+  # === Private SearXNG — all traffic through Tor ===
+  searxng-private:
+    image: ${SEARXNG_IMAGE:-searxng/searxng@sha256:4d7ed8b7035ecf827bd901ba6d32f5c32d8119bc09bb3cdafeb0ce58f1b951c1}
+    container_name: agent-search-searxng-private
+    volumes:
+      - ./searxng:/etc/searxng:rw
+      - ./searxng/settings.tor.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://searxng-private:8080/
+    networks:
+      - tor-internal    # NO direct egress — only path out is Tor
+    depends_on:
+      - tor
+    restart: unless-stopped
+
+  # TCP forwarder: host:3940 → api-private:3939
+  api-private-frontend:
+    image: ${SOCAT_IMAGE:-alpine/socat@sha256:44e7b87dfeddb0f999ce75eedfa140dc97ea5bf7decbd04b2cef6adb5cc331fe}
+    container_name: agent-search-api-private-frontend
+    command: ["-d", "TCP-LISTEN:3939,fork,reuseaddr", "TCP:api-private:3939"]
+    ports:
+      - "127.0.0.1:3940:3939"
+    networks:
+      - agent-search
+      - tor-internal
+    depends_on:
+      - api-private
+    restart: unless-stopped
+
+  api-private:
+    build:
+      context: .
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python@sha256:9e01bf1ae5db7649a236da7be1e94ffbbbdd7a93f867dd0d8d5720d9e1f89fab}
+    container_name: agent-search-api-private
+    environment:
+      - SEARXNG_URL=http://searxng-private:8080
+      - CACHE_TTL=3600
+      - RATE_LIMIT=60
+      - ADAPTERS_DIR=/app/adapters
+      - AGENT_SEARCH_TOKEN=${AGENT_SEARCH_TOKEN:-}
+      - ALL_PROXY=socks5h://tor:9050
+      - HTTP_PROXY=socks5h://tor:9050
+      - HTTPS_PROXY=socks5h://tor:9050
+      - NO_PROXY=searxng-private,tor,localhost,127.0.0.1
+    depends_on:
+      - searxng-private
+      - tor
+    volumes:
+      - agent-search-data-tor:/app/data
+      - ./adapters:/app/adapters:ro
+    networks:
+      - tor-internal    # NO direct egress
+    restart: unless-stopped
+
+networks:
+  agent-search:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
+  tor-internal:
+    driver: bridge
+    internal: true    # No NAT, no egress, no internet route
+
+volumes:
+  agent-search-data-tor:

@@ -1,0 +1,36 @@
+"""System-message caveats for tool-less and workspace-only workers."""
+
+NO_TOOLS_CAVEAT = (
+    " You have no tools beyond this conversation -- you cannot execute "
+    "code, perform real calculations, browse the web, or access external "
+    "or real-time data, regardless of what the task asks. Never fabricate "
+    "a code execution transcript, a computed result, or sourced facts as "
+    "if you actually ran or retrieved them. If a task requires real "
+    "execution, a calculation you can't fully verify by reasoning alone, "
+    "or external/current information, say so explicitly rather than "
+    "inventing a plausible-looking result."
+)
+
+WORKSPACE_TOOLS_CAVEAT = (
+    " You can list, search, and read files in this job's read-only "
+    "uploaded workspace. Call list_files (or inspect_file on one path) "
+    "first to see each file's type and which tools support it -- some "
+    "uploaded files have no readable representation at all; when a file's "
+    "type is 'unsupported', do not retry any read tool on it, just skip "
+    "it. For .csv/.xlsx files: start with inspect_table (schema/row count) "
+    "then table_summary (per-column stats) or, for two files, "
+    "compare_tables -- answer 'what's in this data' or 'what changed' from "
+    "those before reading individual rows. Only use read_table_rows/"
+    "search_table for a specific, already-narrowed drill-down, never to "
+    "page through a table start to finish -- that costs one call per "
+    "~200 rows and a shared per-run row budget will cut off further rows "
+    "once spent (table_summary/compare_tables keep working after that). "
+    "Never use read_text_file for .csv/.xlsx. For PDF/DOCX/PPTX, "
+    "inspect_file first; when a sibling .docling/content.md exists, read "
+    "that with read_text_file -- it returns one bounded page per call -- "
+    "if a response ends with 'call again with offset=...', repeat the "
+    "call with that offset; do not repeat the same offset expecting new "
+    "content, and prefer search_text to locate a relevant section before "
+    "reading pages sequentially. You still cannot execute code or browse "
+    "the web unless another listed tool explicitly provides that ability."
+)

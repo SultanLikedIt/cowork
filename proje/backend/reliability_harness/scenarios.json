@@ -1,0 +1,140 @@
+{
+  "groups": [
+    {
+      "category": "routing", "kind": "command", "tags": ["deterministic"],
+      "cases": [
+        {"id": "reg.routing", "name": "Routing matrix and variance guards", "tags": ["quick"], "command": ["{python}", "backend/test_capability_routing.py"]},
+        {"id": "reg.single-routing", "name": "Single mode bypasses router", "tags": ["quick"], "command": ["{python}", "backend/test_single_mode_routing.py"]},
+        {"id": "reg.decomposition", "name": "Decomposition policy", "command": ["{python}", "backend/test_decomposition_policy.py"]}
+      ]
+    },
+    {
+      "category": "assignment", "kind": "command", "tags": ["deterministic"],
+      "cases": [
+        {"id": "reg.assignment-capability", "name": "Fixed-worker capability boundaries", "command": ["{python}", "backend/test_assignment_capability.py"]},
+        {"id": "reg.assignment-domain", "name": "Technical domain assignment guard", "tags": ["quick"], "command": ["{python}", "backend/test_assignment_domain_guard.py"]},
+        {"id": "reg.dynamic-workers", "name": "Dynamic worker tool binding", "command": ["{python}", "backend/test_dynamic_worker_tools.py"]}
+      ]
+    },
+    {
+      "category": "recovery", "kind": "command", "tags": ["deterministic"],
+      "cases": [
+        {"id": "reg.recovery", "name": "Bounded retry/replan recovery", "tags": ["quick"], "command": ["{python}", "backend/test_recovery_policy.py"]},
+        {"id": "reg.runtime-policy", "name": "Worker runtime and resource ceilings", "command": ["{python}", "backend/test_worker_runtime_policy.py"]},
+        {"id": "reg.model-timeout", "name": "Model call timeout", "command": ["{python}", "backend/test_model_call_timeout.py"]}
+      ]
+    },
+    {
+      "category": "direct-specialist", "kind": "command", "tags": ["deterministic"],
+      "cases": [
+        {"id": "reg.direct", "name": "Direct execution", "command": ["{python}", "backend/test_direct_execution.py"]},
+        {"id": "reg.direct-tools", "name": "Direct tool execution", "tags": ["quick"], "command": ["{python}", "backend/test_direct_tool_execution.py"]},
+        {"id": "reg.specialist", "name": "Specialist fast path", "command": ["{python}", "backend/test_specialist_fast_path.py"]}
+      ]
+    },
+    {
+      "category": "files", "kind": "command", "tags": ["deterministic"],
+      "cases": [
+        {"id": "reg.files-capability", "name": "File capability layer", "command": ["{python}", "backend/test_file_capability_layer.py"]},
+        {"id": "reg.files-hardening", "name": "File budgets and isolation", "tags": ["quick"], "command": ["{python}", "backend/test_file_subsystem_hardening.py"]},
+        {"id": "reg.files-pagination", "name": "Text pagination and repeated reads", "command": ["{python}", "backend/test_read_text_file_pagination.py"]},
+        {"id": "reg.upload-extensions", "name": "Upload allowlist matches workspace-readable extensions", "tags": ["quick"], "command": ["{python}", "backend/test_upload_extension_allowlist.py"]},
+        {"id": "reg.upload-api", "name": "Upload API smoke", "command": ["{python}", "backend/test_upload.py"]}
+      ]
+    },
+    {
+      "category": "skills", "kind": "command", "tags": ["deterministic"],
+      "cases": [{"id": "reg.skills", "name": "Skills isolation and propagation", "tags": ["quick"], "command": ["{python}", "backend/test_skills.py"]}]
+    },
+    {
+      "category": "lifecycle", "kind": "command", "tags": ["deterministic"],
+      "cases": [
+        {"id": "reg.lifecycle", "name": "Terminal task reconciliation", "command": ["{python}", "backend/test_task_state_finalization.py"]},
+        {"id": "reg.result-duration", "name": "Final result and duration", "command": ["{python}", "backend/test_final_result_and_duration.py"]},
+        {"id": "reg.harness", "name": "Harness schema, evaluation, and reporting", "command": ["{python}", "backend/test_reliability_harness.py"]},
+        {"id": "reg.job-concurrency", "name": "Concurrent Direct and Workforce job lifecycle", "command": ["{python}", "backend/test_job_concurrency.py"]},
+        {"id": "reg.stress-probes", "name": "Deterministic isolation and concurrency stress probes", "tags": ["quick"], "command": ["{python}", "backend/test_reliability_stress.py"]}
+      ]
+    },
+    {
+      "category": "routing", "kind": "live", "tags": ["live"], "expected": {"estimated_model_calls": 5, "status": ["done", "partial"]},
+      "cases": [
+        {"id": "live.direct.en", "name": "English simple Direct", "tags": ["critical"], "mode": "single", "prompt": "Explain why the sky appears blue in three concise sentences.", "expected": {"strategy": ["direct"], "status": ["done"]}},
+        {"id": "live.direct.tr", "name": "Turkish simple Direct", "mode": "single", "prompt": "Fotosentezin nasıl çalıştığını üç kısa cümleyle açıkla.", "expected": {"strategy": ["direct"], "status": ["done"]}},
+        {"id": "live.specialist.research", "name": "Fixed research specialist", "mode": "multi", "prompt": "Research the latest stable Python release and summarize notable changes.", "expected": {"strategy": ["specialist"]}},
+        {"id": "live.workforce.explicit", "name": "Explicit independent workforce", "tags": ["critical"], "mode": "multi", "prompt": "Use a workforce with three independent teams: research current API reliability practices, draft a concise runbook, and independently review the result.", "expected": {"strategy": ["workforce"], "status": ["done", "partial"]}},
+        {"id": "live.workforce.natural", "name": "Natural-language workforce", "mode": "multi", "prompt": "In parallel, investigate observability patterns, design a deployment checklist, and audit common security risks, then combine the findings."},
+        {"id": "live.routing.headings", "name": "Multiple headings one deliverable", "mode": "multi", "prompt": "Write one coherent guide with headings: Background, Approach, Risks, and Conclusion."},
+        {"id": "live.routing.sequential", "name": "Sequential dependent request", "mode": "multi", "prompt": "Find the current Python version, then use that exact result to write a compatibility note."},
+        {"id": "live.routing.ambiguous", "name": "Ambiguous request", "mode": "multi", "prompt": "Look into the platform situation and give me something useful."},
+        {"id": "live.routing.5k", "name": "Approximately 5k-character prompt", "mode": "multi", "prompt": "Analyze this bounded reliability context and return one concise risk summary. ", "prompt_repeat": 5000},
+        {"id": "live.routing.10k", "name": "Approximately 10k-character prompt", "mode": "multi", "prompt": "Analyze this bounded reliability context and return one concise risk summary. ", "prompt_repeat": 10000},
+        {"id": "live.routing.large", "name": "Larger accepted input", "mode": "multi", "prompt": "Analyze this bounded reliability context and return one concise risk summary. ", "prompt_repeat": 30000, "destructive": true}
+      ]
+    },
+    {
+      "category": "workforce", "kind": "live", "tags": ["live"], "mode": "multi", "expected": {"strategy": ["workforce"], "status": ["done", "partial"], "estimated_model_calls": 18},
+      "cases": [
+        {"id": "live.workforce.2-independent", "name": "Two independent tasks", "prompt": "Run two independent workstreams in parallel: assess API timeout risks and assess database persistence risks; synthesize."},
+        {"id": "live.workforce.3-independent", "name": "Three independent tasks", "tags": ["critical"], "prompt": "Run three independent workstreams: reliability research, implementation runbook writing, and adversarial review; synthesize."},
+        {"id": "live.workforce.4-independent", "name": "Four independent tasks", "prompt": "Run four independent workstreams: research, document, outline, and review a release-readiness brief; synthesize."},
+        {"id": "live.workforce.dynamic", "name": "Dynamic technical worker", "prompt": "In parallel, design a PostgreSQL schema, create a Kubernetes deployment plan, and perform a security threat model; synthesize."},
+        {"id": "live.workforce.mixed", "name": "Mixed fixed and dynamic workers", "prompt": "In parallel, research current guidance, draft documentation, and design a database migration with rollback; synthesize."},
+        {"id": "live.workforce.capability-boundary", "name": "Capability-boundary assignment", "prompt": "In parallel, research market facts and design production Kubernetes infrastructure. Keep specialist responsibilities separate."},
+        {"id": "live.workforce.skills", "name": "Workforce synthesis-only Skills", "prompt": "Run three independent analyses -- latency, correctness, and isolation -- of the following checkout service, then synthesize. Service description: a FastAPI endpoint accepts a checkout request, calls a third-party payment gateway over HTTPS synchronously with a 5-second timeout and no retries, then writes the resulting transaction to a single shared PostgreSQL connection pool (pool size 10) in the same request before returning a confirmation to the caller. There is no message queue, no idempotency key on the payment call, and no per-tenant isolation of the connection pool.", "skills": ["root_cause", "verification", "prioritization"]},
+        {"id": "live.workforce.output-cap", "name": "Synthesis near output cap", "prompt": "Run four independent analyses and synthesize an extremely comprehensive long report with evidence, risks, mitigations, and appendices.", "destructive": true, "thresholds": {"duration_seconds": {"warn": 360, "fail": 900}, "total_model_calls": {"warn": 28, "fail": 40}}}
+      ]
+    },
+    {
+      "category": "files", "kind": "live", "tags": ["live"], "mode": "single", "expected": {"strategy": ["direct"], "status": ["done", "partial"], "estimated_model_calls": 5},
+      "cases": [
+        {"id": "live.file.txt", "name": "TXT analysis", "tags": ["critical"], "prompt": "Read the attached file and report its first key fact.", "attachments": [{"type": "txt", "name": "notes.txt"}]},
+        {"id": "live.file.md-json-yaml", "name": "Mixed text formats", "prompt": "Inspect all attached files and summarize their formats and contents.", "attachments": [{"type": "md", "name": "readme.md"}, {"type": "json", "name": "data.json"}, {"type": "yaml", "name": "config.yaml"}]},
+        {"id": "live.file.logs-code", "name": "Logs and code", "prompt": "Inspect the log and code and identify the relationship.", "attachments": [{"type": "log", "name": "app.log"}, {"type": "py", "name": "probe.py"}]},
+        {"id": "live.file.pdf-docx", "name": "PDF and DOCX", "prompt": "Summarize both documents separately.", "attachments": [{"type": "pdf", "name": "brief.pdf"}, {"type": "docx", "name": "brief.docx"}]},
+        {"id": "live.file.csv", "name": "CSV table tools", "tags": ["critical"], "prompt": "Inspect the table, read a bounded row window, and summarize group totals.", "attachments": [{"type": "csv", "name": "data.csv", "rows": 250}]},
+        {"id": "live.file.xlsx-single", "name": "Single-sheet XLSX", "prompt": "Inspect and summarize the workbook.", "attachments": [{"type": "xlsx", "name": "data.xlsx", "rows": 250}]},
+        {"id": "live.file.xlsx-multi", "name": "Multi-sheet XLSX", "prompt": "Inspect every sheet and compare them.", "attachments": [{"type": "xlsx", "name": "multi.xlsx", "rows": 200, "sheets": 2}]},
+        {"id": "live.file.two-large-csv", "name": "Two large CSV comparison", "prompt": "Compare these two tables using bounded table tools.", "attachments": [{"type": "csv", "name": "a.csv", "rows": 3000}, {"type": "csv", "name": "b.csv", "rows": 3000}]},
+        {"id": "live.file.large-xlsx", "name": "Large XLSX budget", "prompt": "Summarize this workbook without exhausting raw-row budgets.", "attachments": [{"type": "xlsx", "name": "large.xlsx", "rows": 5000}], "destructive": true, "thresholds": {"duration_seconds": {"warn": 240, "fail": 720}, "tool_call_count": {"warn": 20, "fail": 30}}},
+        {"id": "live.file.mixed-six", "name": "Six mixed supported files", "prompt": "Classify and summarize all sources without confusing them.", "attachments": [{"type": "txt", "name": "a.txt"}, {"type": "md", "name": "b.md"}, {"type": "json", "name": "c.json"}, {"type": "csv", "name": "d.csv"}, {"type": "pdf", "name": "e.pdf"}, {"type": "docx", "name": "f.docx"}]},
+        {"id": "live.file.duplicate-names", "name": "Duplicate filenames", "prompt": "Distinguish and summarize both attached files.", "attachments": [{"type": "txt", "name": "same.txt"}, {"type": "txt", "name": "same.txt", "characters": 2000}]},
+        {"id": "live.file.zero", "name": "Zero-byte file", "prompt": "Inspect the attachment and explain its state.", "attachments": [{"type": "zero", "name": "empty.txt"}]},
+        {"id": "live.file.malformed-csv", "name": "Malformed supported CSV", "prompt": "Inspect this table and surface parse failure clearly.", "attachments": [{"type": "malformed_csv", "name": "broken.csv"}], "expected": {"status": ["done", "partial", "error"]}},
+        {"id": "live.file.malformed-xlsx", "name": "Malformed supported XLSX", "prompt": "Inspect this workbook and surface parse failure clearly.", "attachments": [{"type": "malformed_xlsx", "name": "broken.xlsx"}], "expected": {"status": ["done", "partial", "error"]}},
+        {"id": "live.file.zip", "name": "Supported ZIP inspection and isolation", "prompt": "Inspect and summarize the archive.", "attachments": [{"type": "zip", "name": "archive.zip"}]},
+        {"id": "live.file.unsupported-rar", "name": "Unsupported RAR rejection", "prompt": "Inspect attachment.", "attachments": [{"type": "binary", "name": "archive.rar"}], "expected": {"status": ["error"]}},
+        {"id": "live.file.unsupported-7z", "name": "Unsupported 7z rejection", "prompt": "Inspect attachment.", "attachments": [{"type": "binary", "name": "archive.7z"}], "expected": {"status": ["error"]}},
+        {"id": "live.file.unsupported-exe", "name": "Unsupported executable rejection", "prompt": "Inspect attachment.", "attachments": [{"type": "binary", "name": "sample.exe"}], "expected": {"status": ["error"]}},
+        {"id": "live.file.unknown-binary", "name": "Unknown binary rejection", "prompt": "Inspect attachment.", "attachments": [{"type": "binary", "name": "sample.bin"}], "expected": {"status": ["error"]}}
+      ]
+    },
+    {
+      "category": "tools", "kind": "live", "tags": ["live"], "mode": "single", "expected": {"strategy": ["direct"], "status": ["done", "partial"], "estimated_model_calls": 6},
+      "cases": [
+        {"id": "live.tool.search", "name": "Search only", "prompt": "Search for the current Python release and cite the result."},
+        {"id": "live.tool.execution", "name": "Execution-required task", "prompt": "Use an execution tool to calculate the SHA-256 of the exact string reliability-demo."},
+        {"id": "live.tool.nonexecution", "name": "No execution binding", "prompt": "Rewrite this sentence more clearly: Reliability matters."},
+        {"id": "live.tool.mixed", "name": "Mixed tools", "prompt": "Read the CSV, calculate its exact numeric total, and explain the result.", "attachments": [{"type": "csv", "name": "values.csv", "rows": 100}]},
+        {"id": "live.tool.search-unavailable", "name": "Unavailable SearXNG", "prompt": "Search the web for today's reliability news; if search is unavailable, report the failure explicitly."},
+        {"id": "live.tool.runaway", "name": "Forward-progressing traversal budget", "prompt": "Read every row one page at a time and never stop until complete.", "attachments": [{"type": "csv", "name": "many.csv", "rows": 5000}], "destructive": true}
+      ]
+    },
+    {
+      "category": "context", "kind": "live", "tags": ["live"], "mode": "single", "expected": {"strategy": ["direct"], "status": ["done"], "estimated_model_calls": 5},
+      "cases": [
+        {"id": "live.context.fresh", "name": "Fresh thread", "prompt": "Remember the marker ALPHA-731 and return it exactly."},
+        {"id": "live.context.multiturn", "name": "Multi-turn memory", "prompt": "Remember the marker BRAVO-842. Reply only acknowledged.", "turns": ["What exact marker did I ask you to remember?"]},
+        {"id": "live.context.long-history", "name": "Bounded long conversation history", "prompt": "Remember the marker CHARLIE-953 and briefly acknowledge it.", "turns": ["Add a short reliability observation.", "Add a second short observation.", "Now return the original marker exactly."], "destructive": true},
+        {"id": "live.context.files-skills", "name": "Files plus Skills", "prompt": "Analyze the attached evidence with explicit verification.", "skills": ["verification", "root_cause"], "attachments": [{"type": "txt", "name": "evidence.txt", "characters": 5000}, {"type": "csv", "name": "evidence.csv", "rows": 200}]}
+      ]
+    },
+    {
+      "category": "lifecycle", "kind": "live", "tags": ["live"], "mode": "multi", "expected": {"estimated_model_calls": 2},
+      "cases": [
+        {"id": "live.lifecycle.cancel", "name": "Cooperative cancellation", "prompt": "Run three independent long analyses of reliability, security, and persistence.", "operation": "cancel", "expected": {"status": ["cancelled"]}},
+        {"id": "live.lifecycle.poll-reconnect", "name": "Polling disconnect/reconnect simulation", "prompt": "Produce a concise reliability checklist.", "expected": {"status": ["done", "partial"]}}
+      ]
+    }
+  ]
+}
