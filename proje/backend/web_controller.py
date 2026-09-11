@@ -2181,9 +2181,24 @@ async def acquire_web_evidence(
             retry=True,
             max_fetches=fetch_cap,
         )
-    # Refine: chat asks may need hub→detail. Artifact jobs get one refine
-    # when opened pages are off-topic / lack the asked substance — any domain,
-    # within the shared search/fetch budget (keeps PDF jobs from wandering).
+    # Refine: one extra SEARCH→SELECT→FETCH when the opened pages are hubs,
+    # off-topic, or lack the asked substance — any domain, within the shared
+    # search/fetch budget (keeps PDF jobs from wandering).
+    #
+    # The gate used to be `not wants_artifact or needs_topic_refine`, which
+    # for a chat ask (wants_artifact False) is True before the detector is
+    # ever consulted -- so EVERY chat research paid a second round even when
+    # the first one already held the answer. Measured on a live "gold price
+    # in Turkey" run: 60.4s total, of which the unconditional refine round
+    # (SEARCH + SELECT + FETCH) was ~23s, and evidence_needs_refine returns
+    # False for that same evidence -- i.e. the round was pure latency.
+    #
+    # evidence_needs_refine is exactly the hub→detail detector the chat path
+    # wanted (it already rejects hub-only, off-topic, intent-mismatched and
+    # stale-window evidence), so binding both paths to it keeps the
+    # hub→detail behavior the chat branch existed for and drops only the
+    # rounds that had nothing to find. See
+    # test_successful_fetch_allows_one_refine_search for that contract.
     needs_topic_refine = opened_ok and evidence_needs_refine(
         result.evidence, request_text, current_date=current_date
     )
@@ -2193,7 +2208,7 @@ async def acquire_web_evidence(
         and opened_ok
         and result.search_count < search_cap
         and result.fetch_count < fetch_cap
-        and (not wants_artifact or needs_topic_refine)
+        and needs_topic_refine
     ):
         _emit(progress, "searching", "refine with learned specifics")
         await _search_select_fetch(
