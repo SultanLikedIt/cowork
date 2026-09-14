@@ -70,7 +70,12 @@ export default function SkillPicker({
         </DropdownMenuTrigger>
       </SimpleTooltip>
 
-      <DropdownMenuContent align="start" className="w-[19rem] p-1.5">
+      {/* 13 two-line rows outgrow a laptop viewport; cap the height to the
+          space Radix reports and let the list scroll instead of clipping. */}
+      <DropdownMenuContent
+        align="start"
+        className="w-[19rem] p-1.5 max-h-[min(34rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto"
+      >
         <div className="flex items-baseline justify-between gap-2 px-2 pb-1.5 pt-1">
           <span className="eyebrow">Skills</span>
           <span className="text-[11px] tabular-nums text-muted-foreground/70">

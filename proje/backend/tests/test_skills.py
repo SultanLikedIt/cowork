@@ -140,7 +140,7 @@ def main() -> None:
             failures.append(name)
 
     # --- Catalog integrity ---------------------------------------------
-    check("catalog has 6-7 skills", 6 <= len(BUILT_IN_SKILLS) <= 7, str(len(BUILT_IN_SKILLS)))
+    check("catalog has 13 skills", len(BUILT_IN_SKILLS) == 13, str(len(BUILT_IN_SKILLS)))
     check("skill ids are unique", len(set(ALL_IDS)) == len(ALL_IDS))
     check(
         "skill names are unique",

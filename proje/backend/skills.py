@@ -13,9 +13,11 @@ second, parallel set of agents:
     Agent, a dynamic worker, AND a single direct agent. If guidance only
     reads sensibly for one of them, it is describing a role, not a skill.
 
-The seven below are deliberately one per *phase of engineering thought* --
-diagnose, defend, contextualise, decide, verify, plan, communicate -- which
-is what keeps them non-overlapping. They are product-owned and read-only in
+The first seven below are deliberately one per *phase of engineering
+thought* -- diagnose, defend, contextualise, decide, verify, plan,
+communicate -- which is what keeps them non-overlapping. The next six are
+delivery skills for non-engineering staff (register, sourcing, readability,
+next steps, comparison layout, regulatory flags). They are product-owned and read-only in
 v1: users select from this list, they cannot author instructions, so no
 user-supplied text ever reaches a system prompt through this path.
 
@@ -137,6 +139,96 @@ BUILT_IN_SKILLS: tuple[Skill, ...] = (
             "plain language, without internal jargon. Supporting detail, "
             "caveats and workings come afterwards, so a reader who stops "
             "early still has the part that matters."
+        ),
+    ),
+    # --- Delivery skills for non-engineering staff -------------------------
+    # The seven above are phases of engineering thought. These six are for
+    # the white-collar users this deployment serves, and lean on what sets
+    # this app apart from the company's existing chatbots: web research,
+    # generated files, and uploaded documents. Same rules apply -- each is a
+    # method or delivery style, valid for any executing agent, and written
+    # to compose with every other entry.
+    Skill(
+        skill_id="formal_turkish",
+        name="Kurumsal Türkçe Üslup",
+        description="Resmi yazışma dili: 'siz' hitabı, argo ve gereksiz İngilizce terim yok.",
+        guidance=(
+            "When the response is in Turkish, write in formal corporate "
+            "Turkish: address the reader as 'siz', use complete sentences, "
+            "and avoid slang, emoji and exclamation marks. Prefer the "
+            "established Turkish term over an English loanword when one is in "
+            "common business use, keeping an English term only when it is "
+            "the recognised name of a product, standard or role. Keep the "
+            "tone courteous and neutral, never promotional."
+        ),
+    ),
+    Skill(
+        skill_id="source_dating",
+        name="Kaynak ve Tarih Disiplini",
+        description="Her rakam ve iddianın yanında kaynağı ve tarihi; eski veri işaretlenir.",
+        guidance=(
+            "Every figure, statistic, price or factual claim a reader could "
+            "act on carries its source and the date that data refers to, "
+            "next to the claim rather than only in a list at the end. If a "
+            "figure is more than twelve months older than the current date, "
+            "say so where it appears. If two sources disagree, show both "
+            "values with their sources instead of silently picking one. "
+            "Never state a number whose origin you cannot name."
+        ),
+    ),
+    Skill(
+        skill_id="plain_language",
+        name="Sade Dil",
+        description="Teknik olmayan okuyucu için yazar; terimleri ilk geçtiği yerde açıklar.",
+        guidance=(
+            "Write for a reader outside the subject's specialty. Use short "
+            "sentences and everyday words. Explain each technical term, "
+            "abbreviation or acronym in a few words the first time it "
+            "appears, and drop jargon that does not need to be there. Prefer "
+            "a concrete example over an abstract definition. Simplify the "
+            "wording, never the facts: do not omit a number, condition or "
+            "caveat to make the text shorter."
+        ),
+    ),
+    Skill(
+        skill_id="action_items",
+        name="Aksiyon Maddeleri",
+        description="Sonuca 'kim, ne, ne zaman' tablosuyla somut yapılacaklar listesi ekler.",
+        guidance=(
+            "Close the result with a section of concrete next steps, laid out "
+            "as a table with the columns: action, owner, deadline, and status "
+            "or dependency. Each action starts with a verb and is specific "
+            "enough to be checked as done. Fill owner and deadline only when "
+            "the input states them; otherwise write 'belirlenecek' (or 'TBD' "
+            "in English) rather than inventing a person or a date."
+        ),
+    ),
+    Skill(
+        skill_id="comparison_table",
+        name="Karşılaştırma Tablosu",
+        description="Seçenekleri ortak kriter sütunlarıyla tek bir tabloda yan yana koyar.",
+        guidance=(
+            "Whenever the work involves two or more options, products, "
+            "suppliers, versions or periods, present them side by side in a "
+            "single table: one row per option, one column per criterion, "
+            "with the criteria chosen before filling the cells. Use the same "
+            "unit and currency in each column and state it in the header. "
+            "Mark a cell as unknown instead of leaving it blank or guessing. "
+            "Put brief prose conclusions below the table, not inside it."
+        ),
+    ),
+    Skill(
+        skill_id="compliance_flags",
+        name="Mevzuat Hassasiyeti",
+        description="KVKK, iş hukuku ve sözleşme açısından dikkat gerektiren noktaları işaretler.",
+        guidance=(
+            "Watch for points with legal or regulatory weight: personal data "
+            "and KVKK/GDPR obligations, employment-law matters, contractual "
+            "commitments, deadlines, penalties and liabilities. Flag each one "
+            "where it arises and say briefly why it needs attention and which "
+            "rule or clause it concerns, if known. Do not present this as "
+            "legal advice: note that flagged items should be confirmed with "
+            "the legal or compliance team, and never invent article numbers."
         ),
     ),
 )
