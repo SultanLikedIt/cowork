@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 import urllib.parse
 import uuid
@@ -56,6 +57,7 @@ import capability_routing
 import db
 from document_ingestion import DOCLING_EXTENSIONS, DocumentParseError, parse_document
 import document_export
+import reranker
 from execution.adapter import (
     run_single_agent as run_single_agent_executor,
     run_workforce_in_thread as run_workforce_in_thread_executor,
@@ -899,6 +901,16 @@ def _rehydrate_from_db() -> None:
         _JOBS[job["job_id"]] = job
 
     camel_service.load_manual_workers(db.load_manual_workers())
+
+
+@app.on_event("startup")
+def _warm_reranker() -> None:
+    # Off the request path: otherwise the first research round pays the weight load.
+    if not reranker.enabled():
+        return
+    threading.Thread(
+        target=reranker.warm_up, name="reranker-warmup", daemon=True
+    ).start()
 
 
 def _skill_summaries(job: dict[str, Any]) -> list[SkillSummary]:

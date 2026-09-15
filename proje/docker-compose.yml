@@ -49,6 +49,12 @@ services:
       DOCLING_MAX_CHUNKS: ${DOCLING_MAX_CHUNKS:-10000}
       DOCLING_ENABLE_OCR: ${DOCLING_ENABLE_OCR:-false}
       DOCLING_ARTIFACTS_PATH: /app/vendor/docling-models
+      # In-process BGE cross-encoder that replaces the LLM URL-selection call
+      # per search round (backend/reranker.py). Loaded once per backend
+      # process (~2.5GB RAM); missing weights fall back to LLM selection.
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
+      RERANKER_MODEL_PATH: /app/vendor/bge-reranker-v2-m3
+      RERANKER_THREADS: ${RERANKER_THREADS:-4}
       # DOCX/PPTX artifacts render through a bounded Node/Carbone subprocess
       # (backend/carbone_render.py) -- see docs/carbone-docx-pptx.md.
       CARBONE_TIMEOUT_SECONDS: ${CARBONE_TIMEOUT_SECONDS:-20}

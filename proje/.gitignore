@@ -70,6 +70,8 @@ Thumbs.db
 # too large and too easy to regenerate to commit.
 backend/vendor/camel-offline-bundle-linux/
 backend/vendor/docling-models/
+# BGE reranker weights (BAAI/bge-reranker-v2-m3) -- downloadable, see .env.example.
+backend/vendor/bge-reranker-v2-m3/
 
 # --- Carbone DOCX/PPTX renderer (backend/carbone/) ---
 # node_modules is installed via `npm install --omit=dev` (see

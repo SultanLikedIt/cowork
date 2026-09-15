@@ -6,6 +6,7 @@ No network and no model -- search, fetch, and complete are injected.
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 import time
 from typing import Any, Optional
@@ -97,6 +98,121 @@ class _ScriptedComplete:
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+# Scripted SELECT tests must not reach real reranker weights when they exist locally.
+os.environ["RERANKER_ENABLED"] = "false"
+
+
+class _PatchedReranker:
+    def __init__(self, score_fn, enabled: str = "true") -> None:
+        self.score_fn = score_fn
+        self.enabled = enabled
+
+    def __enter__(self) -> "_PatchedReranker":
+        self._saved_score = web_controller.reranker.score
+        self._saved_env = os.environ.get("RERANKER_ENABLED")
+        web_controller.reranker.score = self.score_fn
+        os.environ["RERANKER_ENABLED"] = self.enabled
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        web_controller.reranker.score = self._saved_score
+        if self._saved_env is None:
+            os.environ.pop("RERANKER_ENABLED", None)
+        else:
+            os.environ["RERANKER_ENABLED"] = self._saved_env
+
+
+def _rerank_run(
+    hits: list[dict[str, Any]],
+    pages: dict[str, AcquiredPage],
+    reranker_ctx: _PatchedReranker,
+    select: Optional[list[Any]] = None,
+) -> tuple[_FakeEngine, _ScriptedComplete]:
+    engine = _FakeEngine(pages)
+    complete = _ScriptedComplete({"select": select} if select else {})
+    with tempfile.TemporaryDirectory() as root, reranker_ctx:
+        web = _tools(engine, root, searches=[hits])
+        _run(
+            web_controller.acquire_web_evidence(
+                "article facts",
+                search=web.search_raw,
+                fetch=web.read_page,
+                complete=complete,
+                select_limit=1,
+                allow_refine=False,
+            )
+        )
+    return engine, complete
+
+
+def _by_title(scores: dict[str, float]):
+    def score(query: str, passages: list[str]) -> list[float]:
+        return [scores[passage.split("\n", 1)[0]] for passage in passages]
+
+    return score
+
+
+def test_reranker_replaces_llm_select() -> None:
+    weak = "https://news.example/weak"
+    strong = "https://news.example/strong"
+    engine, complete = _rerank_run(
+        [
+            {"url": weak, "title": "Weak", "content": "hit"},
+            {"url": strong, "title": "Strong", "content": "hit"},
+        ],
+        {weak: _page(weak), strong: _page(strong)},
+        _PatchedReranker(_by_title({"Weak": 0.1, "Strong": 0.9})),
+    )
+    check("reranker path makes no SELECT model call", "select" not in complete.calls, complete.calls)
+    check("highest reranker score is opened", engine.fetches == [strong], engine.fetches)
+
+
+def test_unavailable_reranker_falls_back_to_llm_select() -> None:
+    weak = "https://news.example/weak"
+    strong = "https://news.example/strong"
+    engine, complete = _rerank_run(
+        [
+            {"url": weak, "title": "Weak", "content": "hit"},
+            {"url": strong, "title": "Strong", "content": "hit"},
+        ],
+        {weak: _page(weak), strong: _page(strong)},
+        _PatchedReranker(lambda query, passages: None),
+        select=[web_controller.UrlSelection(urls=[weak])],
+    )
+    check("fallback makes the SELECT model call", "select" in complete.calls, complete.calls)
+    check("fallback opens the LLM's pick", engine.fetches == [weak], engine.fetches)
+
+
+def test_disabled_reranker_is_never_called() -> None:
+    url = "https://news.example/article"
+
+    def _must_not_run(query: str, passages: list[str]) -> list[float]:
+        raise AssertionError("reranker ran while disabled")
+
+    engine, complete = _rerank_run(
+        [{"url": url, "title": "Article", "content": "hit"}],
+        {url: _page(url)},
+        _PatchedReranker(_must_not_run, enabled="false"),
+        select=[web_controller.UrlSelection(urls=[url])],
+    )
+    check("disabled reranker uses SELECT model call", "select" in complete.calls, complete.calls)
+    check("disabled reranker still opens a page", engine.fetches == [url], engine.fetches)
+
+
+def test_reranked_pdf_still_yields_to_html() -> None:
+    pdf = "https://gov.example/report.pdf"
+    html = "https://gov.example/report"
+    engine, _complete = _rerank_run(
+        [
+            {"url": pdf, "title": "Report PDF", "content": "hit"},
+            {"url": html, "title": "Report page", "content": "hit"},
+        ],
+        {pdf: _page(pdf), html: _page(html)},
+        _PatchedReranker(_by_title({"Report PDF": 0.99, "Report page": 0.2})),
+    )
+    check("PDF post-filter still applies after reranking", engine.fetches == [html], engine.fetches)
 
 
 def test_literal_url_skips_search() -> None:
@@ -2554,6 +2670,10 @@ def main() -> None:
     test_a_page_written_into_the_answer_becomes_prose()
     test_unwrapping_leaves_ordinary_code_answers_alone()
     test_an_answer_must_not_open_by_repeating_the_request()
+    test_reranker_replaces_llm_select()
+    test_unavailable_reranker_falls_back_to_llm_select()
+    test_disabled_reranker_is_never_called()
+    test_reranked_pdf_still_yields_to_html()
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")

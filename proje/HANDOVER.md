@@ -308,6 +308,19 @@ docling-tools models download --output-dir backend\vendor\docling-models
 
 Ayrıntı: [`docs/document-ingestion.md`](docs/document-ingestion.md).
 
+### 2.8 BGE reranker ağırlıkları (önerilir — web SELECT gecikmesi)
+
+Web SELECT adımı, her arama turunda LLM çağrısı yerine yerel
+`BAAI/bge-reranker-v2-m3` cross-encoder'ı kullanır (`backend/reranker.py`).
+Ağırlıklar yoksa otomatik olarak LLM SELECT'e düşer. Bir kere indir, sonra
+backend imajını yeniden build et:
+
+```powershell
+huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir backend\vendor\bge-reranker-v2-m3
+```
+
+Kapatmak için `RERANKER_ENABLED=false`; CPU thread sayısı `RERANKER_THREADS` (varsayılan 4).
+
 ### 2.8 Kurulum checklist
 
 - [ ] Kaynak yerinde: klasörle geldiyse `vendorgent-search` dolu, klonladıysan

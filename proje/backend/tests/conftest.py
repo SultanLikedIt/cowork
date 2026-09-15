@@ -28,3 +28,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 # for anyone who genuinely needs to point the suite at a real directory.
 if os.environ.get("PYTEST_USE_REAL_DATA_DIR") != "1":
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="agent_webapp_pytest_")
+
+# Suites script the LLM SELECT phase; real reranker weights (container or local
+# vendor dir) would silently bypass it. Reranker tests opt back in explicitly.
+os.environ["RERANKER_ENABLED"] = "false"

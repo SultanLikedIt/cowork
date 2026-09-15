@@ -16,6 +16,7 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 | Web | SEARCH → SELECT → FETCH → ANSWER (`web_controller.py`); model-facing `web_search`/`web_read` Research'te yok |
 | Artifact | Canonical kaynak: artifact-intent LLM → `apply_artifact_intent` → effective capabilities |
 | Upload | Docling; modeller `backend/vendor/docling-models` (veya `DOCLING_ARTIFACTS_PATH`) |
+| Reranker | SELECT = BGE `bge-reranker-v2-m3` (in-process CPU, `reranker.py`); ağırlıklar `backend/vendor/bge-reranker-v2-m3` (veya `RERANKER_MODEL_PATH`); yoksa LLM SELECT |
 
 ## Son tamamlanan işler
 

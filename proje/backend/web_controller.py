@@ -18,6 +18,7 @@ from urllib.parse import urlparse, urlunparse
 
 from pydantic import BaseModel, Field, ValidationError
 
+import reranker
 import web_fetch
 
 MAX_SEARCH_PHASES = 3
@@ -1803,6 +1804,53 @@ def _search_user_payload(
     return "\n\n".join(parts)
 
 
+# Tie-break weight for the heuristic order (PDF/homepage/recency penalties)
+# on top of the reranker's [0, 1] relevance.
+RERANK_HEURISTIC_WEIGHT = 0.05
+RERANK_QUERY_REQUEST_CHARS = 240
+
+
+async def _rerank_select(
+    search_result: dict[str, Any],
+    request_text: str,
+    *,
+    target: str,
+    limit: int,
+) -> Optional[list[str]]:
+    """Cross-encoder SELECT; None means use the LLM SELECT instead."""
+    if not reranker.enabled():
+        return None
+    entries = [
+        item
+        for item in (search_result.get("results") or [])
+        if isinstance(item, dict) and item.get("url")
+    ]
+    if not entries:
+        return None
+    ask = " ".join(_SEARCH_HINT_BLOCK_RE.sub(" ", request_text or "").split())
+    focus = " ".join((target or "").split())
+    query = (
+        f"{focus} {ask[:RERANK_QUERY_REQUEST_CHARS]}".strip() if focus else ask
+    )
+    if not query:
+        return None
+    passages = [
+        f"{item.get('title') or ''}\n"
+        f"{str(item.get('snippet') or item.get('content') or '')[:MAX_CANDIDATE_SNIPPET]}"
+        for item in entries
+    ]
+    scores = await asyncio.to_thread(reranker.score, query, passages)
+    if scores is None or len(scores) != len(entries):
+        return None
+    count = len(entries)
+    order = sorted(
+        range(count),
+        key=lambda i: scores[i] + RERANK_HEURISTIC_WEIGHT * (count - i) / count,
+        reverse=True,
+    )
+    return [str(entries[i]["url"]) for i in order[: max(1, limit)]]
+
+
 async def _search_select_fetch(
     result: ControllerResult,
     request_text: str,
@@ -1898,26 +1946,33 @@ async def _search_select_fetch(
         candidate_entries = _candidate_entries(search_result)
         if not candidates:
             return
-        if refine:
-            select_system = REFINE_SELECT_SYSTEM
-        elif retry:
-            select_system = RETRY_SELECT_SYSTEM
-        else:
-            select_system = SELECT_SYSTEM
-        parsed_select = await _complete(
-            complete,
-            "select",
-            select_system,
-            _with_date(
-                current_date,
-                f"USER REQUEST:\n{request_text}\n"
-                + (f"\nTHIS LOOKUP TARGET:\n{target}\n" if target else "")
-                + f"\nCANDIDATES:\n{_format_candidates(search_result)}",
-            ),
-            UrlSelection,
+        picked = await _rerank_select(
+            search_result, request_text, target=target, limit=select_limit
         )
+        if picked is not None:
+            _emit(progress, "selecting", "reranker")
+        else:
+            if refine:
+                select_system = REFINE_SELECT_SYSTEM
+            elif retry:
+                select_system = RETRY_SELECT_SYSTEM
+            else:
+                select_system = SELECT_SYSTEM
+            parsed_select = await _complete(
+                complete,
+                "select",
+                select_system,
+                _with_date(
+                    current_date,
+                    f"USER REQUEST:\n{request_text}\n"
+                    + (f"\nTHIS LOOKUP TARGET:\n{target}\n" if target else "")
+                    + f"\nCANDIDATES:\n{_format_candidates(search_result)}",
+                ),
+                UrlSelection,
+            )
+            picked = _urls_from_complete(parsed_select)
         selected = _filter_selected_urls(
-            _urls_from_complete(parsed_select),
+            picked,
             candidates,
             limit=select_limit,
         )
