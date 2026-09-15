@@ -2024,8 +2024,8 @@ async def _run_llm_worker(
 
 _TABULAR_KINDS = frozenset({"xlsx", "csv", "json"})
 _NARRATIVE_KINDS = frozenset({"pdf", "html", "txt", "md", "text"})
-_CARBONE_KINDS = frozenset({"docx", "pptx"})
-_SUPPORTED_KINDS = _TABULAR_KINDS | _NARRATIVE_KINDS | _CARBONE_KINDS | {"code"}
+_OFFICE_KINDS = frozenset({"docx", "pptx"})
+_SUPPORTED_KINDS = _TABULAR_KINDS | _NARRATIVE_KINDS | _OFFICE_KINDS | {"code"}
 _MAX_DOC_NOTES_CHARS = 6_000
 _MAX_SURVEY_DOC_NOTES_CHARS = 12_000
 # User's explicit deep_research opt-in (main.py: RunPipelineRequest.deep_research)
@@ -2152,6 +2152,26 @@ _MAX_ARTIFACT_KINDS = 3
 # Cap hard: if the API hangs, fall back to research notes instead of burning
 # another three minutes (we already saw 180s timeouts on healthy notes).
 _DOCUMENT_LLM_TIMEOUT_SECONDS = 45.0
+
+
+def _document_llm_extra_body() -> dict[str, Any]:
+    """OpenRouter options for the Document call, from the environment.
+
+    DOCUMENT_LLM_REASONING_EFFORT: low | medium | high -- how much the model
+    thinks before writing. DOCUMENT_LLM_PROVIDER_SORT: throughput | latency |
+    price -- which upstream provider OpenRouter routes to. Both unset means
+    the request is exactly what it was before these existed.
+    """
+    import os
+
+    body: dict[str, Any] = {}
+    effort = os.environ.get("DOCUMENT_LLM_REASONING_EFFORT", "").strip().lower()
+    if effort in {"low", "medium", "high"}:
+        body["reasoning"] = {"effort": effort}
+    sort = os.environ.get("DOCUMENT_LLM_PROVIDER_SORT", "").strip().lower()
+    if sort in {"throughput", "latency", "price"}:
+        body["provider"] = {"sort": sort}
+    return body
 
 
 def _document_llm_timeout(doc_max_tokens: int) -> float:
@@ -3078,6 +3098,42 @@ def _html_deck_from_payload(
 """
 
 
+def _html_deck_for(
+    payload: dict[str, Any],
+    *,
+    title: str,
+    summary: str,
+    columns: list[Any],
+    rows: list[Any],
+    body: str = "",
+    images: Optional[list[Any]] = None,
+) -> str:
+    """Deck HTML: from the typed blocks when they still describe `content`.
+
+    Same rule the PDF/DOCX writers use (document_model.resolve_payload_document):
+    if the write-up was replaced after parsing, the blocks no longer match
+    and the markdown deck is built as before.
+    """
+    import document_model
+
+    block_document = document_model.resolve_payload_document(payload)
+    if block_document is not None:
+        import document_html
+
+        document_logger.info(
+            "document html deck from %d typed blocks", len(block_document.blocks)
+        )
+        return document_html.render_deck(block_document, images=images)
+    return _html_deck_from_payload(
+        title=title,
+        summary=summary,
+        columns=columns,
+        rows=rows,
+        body=body,
+        images=images,
+    )
+
+
 def _salvage_truncated_json(text: str) -> dict[str, Any]:
     """Recover the keys of a JSON object the model did not finish.
 
@@ -3208,7 +3264,7 @@ def _ensure_extension(filename: str, kind: str) -> str:
     return f"{stem}{ext}"
 
 
-def _ensure_carbone_table(
+def _ensure_office_table(
     columns: Any,
     rows: Any,
     *,
@@ -3216,7 +3272,7 @@ def _ensure_carbone_table(
     summary: str,
     body: str,
 ) -> tuple[list[str], list[list[Any]]]:
-    """Carbone docx/pptx require ≥1 data row — synthesize from narrative."""
+    """A DOCX/PPTX/CSV table that must have ≥1 row — synthesize one from the narrative."""
     cols = [str(c) for c in columns] if isinstance(columns, list) and columns else []
     raw_rows = rows if isinstance(rows, list) else []
     cleaned: list[list[Any]] = []
@@ -3315,7 +3371,7 @@ def _write_artifact(
             filename,
         )
 
-    if kind in _CARBONE_KINDS:
+    if kind in _OFFICE_KINDS:
         # DOCX narrative reports: keep real tables only. Do not invent a
         # Bölüm/İçerik grid from prose -- document_export structures the
         # summary into paragraphs instead.
@@ -3330,7 +3386,7 @@ def _write_artifact(
             # Narrative decks: section slides only — no fake Bölüm/İçerik table.
             columns, rows = [], []
         else:
-            columns, rows = _ensure_carbone_table(
+            columns, rows = _ensure_office_table(
                 columns, rows, title=title, summary=summary, body=body
             )
         # Prefer a long narrative summary for the prose block.
@@ -3348,7 +3404,7 @@ def _write_artifact(
 
     if kind == "csv":
         if not rows:
-            columns, rows = _ensure_carbone_table(
+            columns, rows = _ensure_office_table(
                 columns, rows, title=title, summary=summary, body=body
             )
             data_json = json.dumps(rows, ensure_ascii=False)
@@ -3377,7 +3433,8 @@ def _write_artifact(
         )
     if kind in {"html"}:
         if not html:
-            html = _html_deck_from_payload(
+            html = _html_deck_for(
+                payload,
                 title=title,
                 summary=summary,
                 columns=list(columns) if isinstance(columns, list) else [],
@@ -3435,7 +3492,7 @@ def _write_artifact(
         if found_cols and found_rows:
             columns, rows = found_cols, found_rows
     if not rows:
-        columns, rows = _ensure_carbone_table(
+        columns, rows = _ensure_office_table(
             columns, rows, title=title, summary=summary, body=body
         )
     data_json = json.dumps(rows, ensure_ascii=False)
@@ -3998,6 +4055,7 @@ async def _run_document_worker(
                         # Blocks are one large JSON document: ask the
                         # provider to guarantee it is well-formed.
                         json_mode=use_blocks,
+                        extra_body=_document_llm_extra_body() or None,
                     ),
                     # The wait covers that retry, so it can actually finish.
                     timeout=_document_llm_timeout(
@@ -4367,7 +4425,8 @@ async def _run_document_worker(
             for kind in kinds:
                 piece = dict(payload)
                 if kind == "html" and not str(piece.get("html") or "").strip():
-                    piece["html"] = _html_deck_from_payload(
+                    piece["html"] = _html_deck_for(
+                        piece,
                         title=title,
                         summary=summary,
                         columns=list(columns) if isinstance(columns, list) else [],

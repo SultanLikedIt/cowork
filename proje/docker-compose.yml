@@ -55,9 +55,6 @@ services:
       RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
       RERANKER_MODEL_PATH: /app/vendor/bge-reranker-v2-m3
       RERANKER_THREADS: ${RERANKER_THREADS:-4}
-      # DOCX/PPTX artifacts render through a bounded Node/Carbone subprocess
-      # (backend/carbone_render.py) -- see docs/carbone-docx-pptx.md.
-      CARBONE_TIMEOUT_SECONDS: ${CARBONE_TIMEOUT_SECONDS:-20}
       # Narrative PDF/DOCX: Document LLM returns typed blocks (heading,
       # paragraph, list, table, quote) instead of free markdown -- see
       # backend/document_model.py. On, every narrative PDF/DOCX calls the
@@ -69,6 +66,13 @@ services:
       # on any failure.
       DOCUMENT_PDF_ENGINE: ${DOCUMENT_PDF_ENGINE:-chromium}
       DOCUMENT_PDF_TIMEOUT_SECONDS: ${DOCUMENT_PDF_TIMEOUT_SECONDS:-45}
+      # OpenRouter options for the Document LLM call only (execution/
+      # langgraph_runtime/workforce.py: _document_llm_extra_body). Empty =
+      # provider defaults. EFFORT: low|medium|high. SORT: throughput|latency|price.
+      # Leave empty for deepseek-v4-flash: measured, "low" turns ON reasoning
+      # the model otherwise skips (2-3x slower) and "throughput" gained nothing.
+      DOCUMENT_LLM_REASONING_EFFORT: ${DOCUMENT_LLM_REASONING_EFFORT:-}
+      DOCUMENT_LLM_PROVIDER_SORT: ${DOCUMENT_LLM_PROVIDER_SORT:-}
       # OpenBot remote-ag-ui bridge (POST /ag-ui, GET /health on the backend port).
       OPENBOT_AGUI_ENABLED: ${OPENBOT_AGUI_ENABLED:-false}
       OPENBOT_AGUI_TOKEN: ${OPENBOT_AGUI_TOKEN:-}

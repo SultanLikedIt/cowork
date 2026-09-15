@@ -58,7 +58,7 @@ kalanı `camel_service`'i doğrudan çağırmaz, hep adapter üzerinden geçer.
 | Model | OpenAI uyumlu `/v1/chat/completions` (OpenRouter, Ollama, vLLM, şirket gateway'i…) |
 | Web araştırma | SearXNG + AgentSearch sidecar + Crawl4AI/Playwright Chromium |
 | Belge okuma | Docling (PDF, DOCX, PPTX, XLSX, HTML) + CSV / TXT / ZIP |
-| Belge üretme | Carbone (DOCX/PPTX), reportlab (PDF), openpyxl (XLSX), HTML deck |
+| Belge üretme | Tipli bloklar → Chromium HTML/CSS (PDF), python-docx (DOCX), python-pptx (PPTX), openpyxl (XLSX), HTML deck; reportlab yedek |
 | Canlı durum | Server-Sent Events |
 | Kalıcılık | SQLite + dosya sistemi |
 
@@ -169,7 +169,7 @@ FastAPI (backend/main.py) ── SQLite (DATA_DIR/app.db)
                             → execution.adapter.run_workforce_in_thread
                                 Research / Document / Coding / Assistant
                                 web_controller: SEARCH → SELECT → FETCH → ANSWER
-                                document_export / Carbone / openpyxl
+                                document_model / document_html / openpyxl
                                 (opsiyonel) local_computer aç
 ```
 
@@ -276,7 +276,7 @@ Güncel açık listesi ve nerede düzeltileceği:
 | [docs/langgraph-migration.md](docs/langgraph-migration.md) | CAMEL ↔ LangGraph geçişi |
 | [docs/web-execution.md](docs/web-execution.md) | Arama + sayfa açma |
 | [docs/document-ingestion.md](docs/document-ingestion.md) | Docling upload pipeline |
-| [docs/carbone-docx-pptx.md](docs/carbone-docx-pptx.md) | DOCX/PPTX renderer |
+| [docs/document-generation.md](docs/document-generation.md) | PDF/DOCX/PPTX üretimi |
 | [docs/local-computer.md](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
 | [docs/agent-search.md](docs/agent-search.md) | AgentSearch sidecar |
 | [docs/README.md](docs/README.md) | `docs/` dizin indeksi |

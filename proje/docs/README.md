@@ -11,7 +11,7 @@ bazlı derinleştirmesidir.
 |---|---|
 | [STATUS.md](STATUS.md) | Branch / neredeyiz (kısa handoff) |
 | [document-ingestion.md](document-ingestion.md) | Docling upload pipeline + model cache |
-| [carbone-docx-pptx.md](carbone-docx-pptx.md) | DOCX/PPTX artifact renderer |
+| [document-generation.md](document-generation.md) | PDF/DOCX/PPTX üretimi: tipli bloklar, doğrulama, Chromium |
 | [web-execution.md](web-execution.md) | SearXNG + AgentSearch + Crawl4AI web path |
 | [agent-search.md](agent-search.md) | brcrusoe72/agent-search sidecar |
 | [langgraph-migration.md](langgraph-migration.md) | CAMEL ↔ LangGraph geçişi, `AGENT_EXECUTOR` |

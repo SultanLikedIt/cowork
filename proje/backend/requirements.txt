@@ -19,10 +19,9 @@ torch==2.6.0; platform_system == "Linux"
 torchvision==0.21.0; platform_system == "Linux"
 # python-docx writes the .docx export of a job's final answer.
 python-docx==1.2.0
-# python-pptx builds backend/carbone/templates/report.pptx (build_templates.py
-# only, not a request-time dependency) and is used by the Carbone artifact
-# tests. Already pulled in transitively by docling; pinned explicitly here so
-# it is not silently dropped if that transitive dependency ever changes.
+# python-pptx writes .pptx artifacts (document_export.build_pptx). Already
+# pulled in transitively by docling; pinned explicitly here so it is not
+# silently dropped if that transitive dependency ever changes.
 python-pptx==1.0.2
 # reportlab writes the .pdf export. Pure-Python wheel; its only real
 # dependency is pillow>=9.0.0, which the existing pinned Pillow 10.4.0

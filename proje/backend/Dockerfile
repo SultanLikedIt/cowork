@@ -14,8 +14,6 @@ WORKDIR /app
 
 # Docling's table model imports OpenCV even when OCR is disabled. Keep only
 # the native runtime libraries needed by the prebuilt wheel (no browser/UI).
-# nodejs/npm are for backend/carbone -- the bounded DOCX/PPTX renderer
-# subprocess (backend/carbone_render.py) -- not a service of their own.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
@@ -24,8 +22,6 @@ RUN apt-get update \
         libxext6 \
         libxrender1 \
         libxcb1 \
-        nodejs \
-        npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Install deps first (better layer caching) straight from the offline
@@ -70,12 +66,6 @@ RUN pip install --no-cache-dir "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
 # crawl4ai, deliberately its own pip invocation (a combined resolve of both
 # constraints is unsatisfiable, verified with `pip install --dry-run`).
 RUN pip install --no-cache-dir --no-deps "psutil>=6.1.1"
-
-# carbone's own dependency tree is tiny (~3 MB, pure JS, no native deps) --
-# installed from npm's registry here rather than vendored, unlike the Python
-# wheel bundle above.
-COPY carbone/package.json carbone/package-lock.json ./carbone/
-RUN cd carbone && npm install --omit=dev --no-audit --no-fund
 
 # Now the application source.
 COPY . .

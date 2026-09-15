@@ -49,7 +49,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-import carbone_render
 import document_verify
 import image_fetch as _image_fetch
 from workspace import WorkspaceSecurityError, _safe_child, safe_filename
@@ -119,6 +118,28 @@ def _blocks_memo_part(blocks: Any) -> str:
         return blocks
     return json.dumps(blocks, ensure_ascii=False, default=str)
 
+
+def _table_truncation_notes(header: list[str], rows: list[list[Any]], kind: str) -> list[str]:
+    """Say what a DOCX/PPTX table had to leave out, instead of dropping it silently."""
+    import document_export
+
+    notes: list[str] = []
+    max_rows = document_export.MAX_PPTX_TABLE_ROWS if kind == "pptx" else MAX_DOCX_TABLE_ROWS
+    if len(header) > MAX_OFFICE_TABLE_COLUMNS:
+        notes.append(
+            f"Only the first {MAX_OFFICE_TABLE_COLUMNS} of {len(header)} columns are "
+            f"shown in the {kind.upper()} table (a narrative document, not a raw "
+            "data dump) -- use create_xlsx_artifact or create_csv_artifact for the "
+            "full column set."
+        )
+    if len(rows) > max_rows:
+        notes.append(
+            f"Only the first {max_rows} of {len(rows)} rows are shown in the "
+            f"{kind.upper()} table -- use create_xlsx_artifact or "
+            "create_csv_artifact for the complete data."
+        )
+    return notes
+
 # Tool responses used to include a href-shaped `download_path` (`artifacts/foo.xlsx`)
 # that models pasted into the chat as a markdown link. The real download is
 # the job snapshot's disk scan + the chat's ProducedFiles list, not that field.
@@ -139,6 +160,14 @@ _MANIFEST_NAME = ".artifact-manifest.json"
 # like MAX_ARTIFACT_COLUMNS: generous for any real project (a Node API is
 # rarely more than a handful of files), cheap to make a runaway obvious.
 MAX_BUNDLE_FILES = 40
+
+# Word/PowerPoint tables belong to a narrative document, not a data dump:
+# past these bounds a request wants create_xlsx_artifact/create_csv_artifact,
+# and the tool result says so (see _table_truncation_notes). The PowerPoint
+# row bound lives in document_export.MAX_PPTX_TABLE_ROWS -- a slide table
+# cannot paginate the way a Word table can.
+MAX_OFFICE_TABLE_COLUMNS = 8
+MAX_DOCX_TABLE_ROWS = 500
 
 
 def _normalize_optional(value: Any) -> Optional[str]:
@@ -1021,7 +1050,7 @@ class ArtifactTools:
         self._memo[memo_key] = result
         return result
 
-    def _create_carbone_artifact(
+    def _create_office_artifact(
         self,
         kind: str,
         filename: str,
@@ -1033,17 +1062,17 @@ class ArtifactTools:
         image_query: str = "",
         blocks: Any = "",
     ) -> dict[str, Any]:
-        """Shared PPTX (Carbone) / DOCX (document_export) render path.
+        """Shared DOCX / PPTX render path.
 
-        The model never talks to the renderer directly -- it calls
+        The model never talks to a renderer directly -- it calls
         create_docx_artifact/create_pptx_artifact exactly like every other
-        create_*_artifact tool. XLSX/CSV/JSON keep their existing native
-        writers untouched.
+        create_*_artifact tool. XLSX/CSV/JSON keep their own native writers.
 
-        DOCX uses python-docx via document_export so long narrative reports
-        get real paragraphs, headings, and lists instead of one Carbone
-        `{d.summary}` blob. PPTX uses python-pptx via document_export for a
-        dark structured deck (title + section slides + optional table).
+        DOCX renders typed blocks through document_model when the caller
+        supplies them, otherwise the markdown writer in document_export, so
+        long narrative reports get real headings, lists and tables. PPTX uses
+        python-pptx via document_export for a structured deck (title +
+        section slides + optional table).
         """
         memo_key = self._memo_key(
             f"create_{kind}_artifact",
@@ -1079,14 +1108,8 @@ class ArtifactTools:
         )
         clean_summary = document_export.sanitize_report_prose(summary or "")
 
-        payload, notes = carbone_render.build_table_payload(
-            title=clean_title,
-            summary=clean_summary,
-            generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            header=header,
-            rows=rows,
-            kind=kind,
-        )
+        notes = _table_truncation_notes(header, rows, kind)
+        payload = {"title": clean_title or "Untitled report", "summary": clean_summary}
 
         images = self._fetch_images(
             image_query,
@@ -1102,44 +1125,69 @@ class ArtifactTools:
             block_document = document_model.document_from_blocks(clean_title, blocks)
 
         if block_document is not None:
+            import document_docx
+
+            docx_kwargs = dict(
+                images=images,
+                footnote=" ".join(notes) if notes else "",
+                data_header=list(header)[: MAX_OFFICE_TABLE_COLUMNS],
+                data_rows=[
+                    list(row)[: MAX_OFFICE_TABLE_COLUMNS]
+                    for row in list(rows)[: MAX_DOCX_TABLE_ROWS]
+                ],
+            )
+            docx_style = "styled"
             try:
-                body = document_model.build_docx(
-                    block_document,
-                    images=images,
-                    footnote=" ".join(notes) if notes else "",
-                    data_header=list(header)[: carbone_render.MAX_TABLE_COLUMNS],
-                    data_rows=[
-                        list(row)[: carbone_render.MAX_TABLE_COLUMNS]
-                        for row in list(rows)[: carbone_render.MAX_DOCX_TABLE_ROWS]
-                    ],
+                body = document_docx.build_docx(block_document, **docx_kwargs)
+            except Exception as exc:  # noqa: BLE001 - the plain renderer is the answer
+                document_logger.warning(
+                    "document docx styled renderer FAILED (%s: %s) -> plain",
+                    type(exc).__name__,
+                    str(exc)[:200],
                 )
-            except Exception as exc:  # noqa: BLE001 - surface as ArtifactError
-                raise ArtifactError(f"Could not create the DOCX artifact: {exc}") from exc
+                docx_style = "plain"
+                try:
+                    body = document_model.build_docx(block_document, **docx_kwargs)
+                except Exception as plain_exc:  # noqa: BLE001 - surface as ArtifactError
+                    raise ArtifactError(
+                        f"Could not create the DOCX artifact: {plain_exc}"
+                    ) from plain_exc
+            if docx_style == "styled":
+                # A styled file that fails its check is redrawn plainly from the
+                # same blocks before anything falls back to markdown.
+                fallback = lambda: document_model.build_docx(block_document, **docx_kwargs)  # noqa: E731
+                fallback_label = "plain_docx_fallback"
+            else:
+                fallback = lambda: document_export.build_docx(  # noqa: E731
+                    block_document.title,
+                    block_document.to_markdown(),
+                    header=docx_kwargs["data_header"],
+                    rows=docx_kwargs["data_rows"],
+                    footnote=docx_kwargs["footnote"],
+                    images=images,
+                )
+                fallback_label = "markdown_fallback"
             body, verification = self._verify_render(
                 "docx",
                 body,
                 path="blocks",
                 headings=document_verify.headings_of(block_document),
-                fallback=lambda: document_export.build_docx(
-                    block_document.title,
-                    block_document.to_markdown(),
-                    header=list(header)[: carbone_render.MAX_TABLE_COLUMNS],
-                    rows=[
-                        list(row)[: carbone_render.MAX_TABLE_COLUMNS]
-                        for row in list(rows)[: carbone_render.MAX_DOCX_TABLE_ROWS]
-                    ],
-                    footnote=" ".join(notes) if notes else "",
-                    images=images,
-                ),
+                fallback=fallback,
+                fallback_label=fallback_label,
+            )
+            verification["style"] = (
+                docx_style if verification.get("path") == "blocks"
+                else "plain" if verification.get("path") == "plain_docx_fallback"
+                else "markdown"
             )
         elif kind == "docx":
             prose = clean_summary or str(payload.get("summary") or "").strip()
             if not prose and header and rows:
                 prose = "Aşağıdaki tabloda rapor verileri özetlenmiştir."
-            bounded_header = list(header)[: carbone_render.MAX_TABLE_COLUMNS]
+            bounded_header = list(header)[: MAX_OFFICE_TABLE_COLUMNS]
             bounded_rows = [
-                list(row)[: carbone_render.MAX_TABLE_COLUMNS]
-                for row in list(rows)[: carbone_render.MAX_DOCX_TABLE_ROWS]
+                list(row)[: MAX_OFFICE_TABLE_COLUMNS]
+                for row in list(rows)[: MAX_DOCX_TABLE_ROWS]
             ]
             try:
                 body = document_export.build_docx(
@@ -1164,9 +1212,9 @@ class ArtifactTools:
             )
         else:
             prose = clean_summary or str(payload.get("summary") or "").strip()
-            bounded_header = list(header)[: carbone_render.MAX_TABLE_COLUMNS]
+            bounded_header = list(header)[: MAX_OFFICE_TABLE_COLUMNS]
             bounded_rows = [
-                list(row)[: carbone_render.MAX_TABLE_COLUMNS]
+                list(row)[: MAX_OFFICE_TABLE_COLUMNS]
                 for row in list(rows)[: document_export.MAX_PPTX_TABLE_ROWS]
             ]
             try:
@@ -1245,7 +1293,7 @@ class ArtifactTools:
         Returns:
             Dict[str, Any]: The created file's path, size, and row/column counts.
         """
-        return self._create_carbone_artifact(
+        return self._create_office_artifact(
             "docx", filename, title, summary, data, columns, from_path, image_query, blocks
         )
 
@@ -1388,9 +1436,8 @@ class ArtifactTools:
     ) -> dict[str, Any]:
         """Create a real, editable .pptx presentation.
 
-        Renders `title`, `summary`, and a data table into a maintained
-        PowerPoint template server-side (via Carbone) -- never generated as
-        text or base64 by a model. The data table is bounded to a single
+        Renders `title`, `summary`, and a data table into slides server-side
+        (python-pptx) -- never generated as text or base64 by a model. The data table is bounded to a single
         slide's worth of rows on purpose; for a full dataset use
         create_xlsx_artifact or create_csv_artifact instead.
 
@@ -1416,7 +1463,7 @@ class ArtifactTools:
         Returns:
             Dict[str, Any]: The created file's path, size, and row/column counts.
         """
-        return self._create_carbone_artifact(
+        return self._create_office_artifact(
             "pptx", filename, title, summary, data, columns, from_path, image_query
         )
 

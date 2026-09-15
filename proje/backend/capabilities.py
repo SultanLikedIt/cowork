@@ -380,13 +380,13 @@ def requires_workspace(capabilities) -> bool:
 # via create_pdf_artifact (reportlab / document_export.build_pdf).
 #
 # docx/pptx (OOXML only) ARE producible -- create_docx_artifact/
-# create_pptx_artifact render them via Carbone (see backend/carbone_render.py
-# and backend/artifacts.py). They must stay listed here, in step with
+# create_pptx_artifact render them with python-docx/python-pptx (see
+# backend/artifacts.py). They must stay listed here, in step with
 # _UNSUPPORTED_ARTIFACT_RE below and SUPPORTED_ARTIFACT_FORMATS: this regex
 # is what makes detect_artifact_request() bind the ARTIFACTS capability at
 # all, and _UNSUPPORTED_ARTIFACT_RE runs BEFORE any agent/tool is reachable
 # -- if a producible format is left out of one or listed in the other, the
-# job is rejected outright with "not supported" before the Carbone tools are
+# job is rejected outright with "not supported" before the document tools are
 # ever in scope, regardless of what artifacts.py can do.
 #
 # api/server/service/backend/script/project/node.js/fastapi/flask/express

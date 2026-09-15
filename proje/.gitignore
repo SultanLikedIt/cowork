@@ -73,12 +73,6 @@ backend/vendor/docling-models/
 # BGE reranker weights (BAAI/bge-reranker-v2-m3) -- downloadable, see .env.example.
 backend/vendor/bge-reranker-v2-m3/
 
-# --- Carbone DOCX/PPTX renderer (backend/carbone/) ---
-# node_modules is installed via `npm install --omit=dev` (see
-# backend/Dockerfile and docs/carbone-docx-pptx.md) -- package.json/
-# package-lock.json are tracked, the resolved packages are not.
-backend/carbone/node_modules/
-
 # --- Claude Code local state (worktrees, local settings) ---
 # Narrow on purpose: .claude/skills/ should stay trackable so project
 # skills (e.g. design-quality bar) are shared via git, not just local.

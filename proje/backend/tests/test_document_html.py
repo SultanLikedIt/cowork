@@ -132,3 +132,19 @@ def test_reportlab_engine_setting_skips_chromium(tmp_path, monkeypatch) -> None:
     tools = ArtifactTools(tmp_path)
     result = tools.create_pdf_artifact("r.pdf", title="T", blocks=json.dumps(BLOCKS))
     assert result["verification"]["engine"] == "reportlab"
+
+
+def test_render_deck_from_blocks() -> None:
+    page = document_html.render_deck(_document(), generated=datetime(2026, 9, 15))
+    assert "<h1>Türkiye Mısır Üretimi</h1>" in page
+    assert "Hazırlanma tarihi: 15 Eylül 2026" in page
+    # One slide per main section plus a sources slide; agenda lists the sections.
+    assert page.count('<section class="slide">') == 4
+    assert '<section class="slide sources"><h2>Kaynaklar</h2>' in page
+    assert '<div class="agenda-title">Gündem</div>' in page and "<li>Riskler</li>" in page
+    assert '<div class="no">01</div><h2>Giriş</h2>' in page
+    # Real structure, not flattened lines.
+    assert "<thead><tr><th>Yıl</th><th>Üretim</th></tr></thead>" in page
+    assert "<ol><li>Verim</li><li>Alan<ol><li>Adana</li><li>Konya</li></ol></li>" in page
+    assert '<aside class="callout">Kuraklık başlıca risktir.</aside>' in page
+    assert '<p class="lead">Üretim 2024 yılında arttı.' in page

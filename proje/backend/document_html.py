@@ -342,4 +342,179 @@ def build_pdf(document_model: DocumentModel, *, images: Optional[Sequence[Any]] 
     )
 
 
-__all__ = ["build_pdf", "footer_template", "html_to_pdf", "pdf_engine", "render_html"]
+# --- HTML presentation deck -------------------------------------------------
+#
+# "Word + HTML sunum" jobs also get an HTML deck. It used to be rebuilt by
+# re-parsing the markdown (workforce._html_deck_from_payload): tables were
+# flattened into "label: value" lines, lists became plain paragraphs, and it
+# wore its own dark theme next to a light report. When the reply carried
+# typed blocks the deck is built from them instead: one slide per main
+# section, real lists/tables/callouts, the report's palette.
+
+DECK_CSS = """
+@page { size: A4 landscape; margin: 12mm; }
+:root {
+  --ink: #1f2933; --muted: #616e7c; --accent: #2f5d8a;
+  --accent-soft: #eaf1f7; --rule: #d9e2ec; --zebra: #f5f7fa; --page: #eef2f6;
+}
+* { box-sizing: border-box; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font-family: 'Segoe UI', 'Liberation Sans', 'FreeSans', Arial, sans-serif;
+  font-size: 17px; line-height: 1.55;
+}
+.hero {
+  min-height: 100vh; display: flex; flex-direction: column; justify-content: center;
+  padding: 8vh 9vw; background: #fff; border-left: 14px solid var(--accent);
+}
+.hero .eyebrow {
+  font-size: 13px; font-weight: 700; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--accent);
+}
+.hero h1 { font-size: clamp(34px, 5vw, 58px); line-height: 1.1; margin: 14px 0 16px; letter-spacing: -.02em; max-width: 22ch; }
+.hero .lead { font-size: 20px; color: #3e4c59; max-width: 60ch; margin: 0 0 22px; }
+.hero .meta { font-size: 14px; color: var(--muted); }
+.hero .agenda { margin: 34px 0 0; padding: 18px 24px; background: var(--accent-soft); border-radius: 6px; max-width: 760px; }
+.hero .agenda-title { font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+.hero .agenda ol { margin: 0; padding-left: 22px; columns: 2; column-gap: 40px; }
+.hero .agenda li { margin: 3px 0; break-inside: avoid; }
+.deck { max-width: 1040px; margin: 0 auto; padding: 32px 22px 72px; }
+.slide {
+  position: relative; background: #fff; border-radius: 10px;
+  border-top: 5px solid var(--accent); box-shadow: 0 10px 30px -18px rgba(16,42,67,.35);
+  padding: 44px 52px 40px; margin: 0 0 28px; break-inside: avoid;
+}
+.slide .no { position: absolute; top: 18px; right: 26px; font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: .08em; }
+.slide h2 { font-size: 30px; line-height: 1.2; color: var(--accent); margin: 0 0 18px; }
+.slide h3 { font-size: 20px; margin: 22px 0 8px; }
+.slide p { margin: 0 0 12px; }
+.slide strong { color: #102a43; }
+.slide ul, .slide ol { margin: 0 0 14px; padding-left: 24px; }
+.slide li { margin: 0 0 6px; }
+.slide ol ol { list-style-type: lower-alpha; }
+.slide table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 15px; }
+.slide th { background: var(--accent); color: #fff; text-align: left; padding: 9px 12px; }
+.slide td { padding: 8px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.slide tbody tr:nth-child(even) td { background: var(--zebra); }
+.slide aside.callout { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: 14px 18px; margin: 10px 0 16px; font-size: 18px; }
+.slide figure { margin: 0; text-align: center; }
+.slide figure img { max-width: 100%; max-height: 520px; border-radius: 6px; }
+.slide figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; }
+.slide.sources { font-size: 14px; }
+.slide.sources h2 { font-size: 24px; }
+a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+@media print {
+  body { background: #fff; }
+  .hero { min-height: auto; height: 180mm; break-after: page; }
+  .deck { padding: 0; max-width: none; }
+  .slide { box-shadow: none; margin: 0; min-height: 180mm; break-after: page; border-radius: 0; }
+}
+"""
+
+
+def _block_html(block: Any, pending_images: list) -> str:
+    if isinstance(block, HeadingBlock):
+        return f"<h3>{_inline(block.text)}</h3>"
+    if isinstance(block, ParagraphBlock):
+        return f"<p>{_inline(block.text)}</p>"
+    if isinstance(block, ListBlock):
+        return _list_html(block.items, block.ordered)
+    if isinstance(block, TableBlock):
+        return _table_html(block)
+    if isinstance(block, QuoteBlock):
+        return f'<aside class="callout">{_inline(block.text)}</aside>'
+    if isinstance(block, ImageBlock) and pending_images:
+        return _image_html(pending_images.pop(0), block.caption)
+    return ""
+
+
+def render_deck(
+    document_model: DocumentModel,
+    *,
+    images: Optional[Sequence[Any]] = None,
+    generated: Optional[datetime] = None,
+) -> str:
+    """A self-contained HTML slide deck built from the document's blocks."""
+    title = document_export.short_report_title(document_model.title, fallback="Sunum")
+    pending_images = list(images or [])
+
+    sections: list[tuple[str, list[Any]]] = []
+    current_title, current_blocks = "", []
+    for block in document_model.blocks:
+        if isinstance(block, HeadingBlock) and block.level == 1:
+            if current_title or current_blocks:
+                sections.append((current_title, current_blocks))
+            current_title, current_blocks = block.text, []
+        else:
+            current_blocks.append(block)
+    if current_title or current_blocks:
+        sections.append((current_title, current_blocks))
+
+    lead = next(
+        (
+            document_export.INLINE_MARKS.sub(r"\2", b.text)
+            for _, blocks in sections
+            for b in blocks
+            if isinstance(b, ParagraphBlock)
+        ),
+        "",
+    )
+    # A cover line is read, not clicked: keep the sentence before any URL and
+    # drop the label that introduced it ("... arttı. Ayrıntı: https://...").
+    url = _URL.search(lead)
+    if url:
+        lead = re.sub(r"\s*[^\s.:]+:\s*$", "", lead[: url.start()])
+    lead = " ".join(lead.split())
+    content_titles = [t for t, _ in sections if t and not _SOURCES_LABEL.match(t)]
+    agenda = ""
+    if len(content_titles) >= 3:
+        agenda = (
+            '<nav class="agenda"><div class="agenda-title">Gündem</div><ol>'
+            + "".join(f"<li>{_inline(t)}</li>" for t in content_titles)
+            + "</ol></nav>"
+        )
+
+    slides: list[str] = []
+    explicit_images = any(isinstance(b, ImageBlock) for b in document_model.blocks)
+    if pending_images and not explicit_images:
+        slides.append(
+            '<section class="slide photo">'
+            + "".join(_image_html(image) for image in pending_images[:2])
+            + "</section>"
+        )
+        pending_images = []
+
+    number = 0
+    for section_title, blocks in sections:
+        is_sources = bool(_SOURCES_LABEL.match(section_title or ""))
+        body = "".join(_block_html(block, pending_images) for block in blocks)
+        if not section_title and not body:
+            continue
+        number += 0 if is_sources else 1
+        badge = "" if is_sources else f'<div class="no">{number:02d}</div>'
+        heading = f"<h2>{_inline(section_title)}</h2>" if section_title else ""
+        css_class = "slide sources" if is_sources else "slide"
+        slides.append(f'<section class="{css_class}">{badge}{heading}{body}</section>')
+
+    safe_title = html.escape(title, quote=False)
+    lead_html = f'<p class="lead">{html.escape(lead[:260], quote=False)}</p>' if lead else ""
+    return (
+        '<!doctype html><html lang="tr"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{safe_title}</title><style>{DECK_CSS}</style></head><body>"
+        f'<header class="hero"><div class="eyebrow">Sunum</div><h1>{safe_title}</h1>'
+        f'{lead_html}<div class="meta">Hazırlanma tarihi: {_turkish_date(generated)}</div>'
+        f"{agenda}</header>"
+        f'<main class="deck">{"".join(slides)}</main></body></html>'
+    )
+
+
+__all__ = [
+    "build_pdf",
+    "footer_template",
+    "html_to_pdf",
+    "pdf_engine",
+    "render_deck",
+    "render_html",
+]

@@ -2,7 +2,7 @@
 
 Bu dosya projeyi **hiç bilmeyen** birine devretmek için yazıldı. Kurulumdan
 mimariye, günlük kullanımdan bilinen açıklara kadar her şey burada. Repodaki
-`docs/` klasörü tek tek konuların (Docling, Carbone, web, local computer) daha
+`docs/` klasörü tek tek konuların (Docling, belge üretimi, web, local computer) daha
 derin referansıdır; bu dosya onların üstündeki tek giriş noktasıdır.
 
 **Okuma sırası:** Bölüm 1–3 (ne bu, nasıl kurulur) → Bölüm 4 (nasıl kullanılır)
@@ -40,7 +40,7 @@ Word / PDF / PowerPoint / Excel / HTML dosyası üretir.
 | Sunucu | FastAPI (Python 3.11) | Ajan orkestrasyonu, arama, belge yazma, indirme |
 | Arama | SearXNG + AgentSearch sidecar | Web keşfi (harici Google/Bing API yok) |
 | Sayfa açma | Crawl4AI + Playwright Chromium | Gerçek tarayıcı, JS çalışır |
-| Belge | Carbone (Node), reportlab, openpyxl, python-docx | DOCX / PDF / PPTX / XLSX / HTML |
+| Belge | Chromium (HTML→PDF), python-docx, python-pptx, openpyxl, reportlab (yedek) | PDF / DOCX / PPTX / XLSX / HTML |
 | Kalıcılık | SQLite + dosya sistemi | Sohbet, job, artifact |
 
 Kullanıcı **çalışma modunu kendisi seçer** — sunucu tahmin etmez:
@@ -351,7 +351,11 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `LOCAL_COMPUTER_URL` | — | Varsayılan `http://host.docker.internal:8765` |
 | `DOCLING_ENABLE_OCR` | — | Varsayılan `false`; taranmış PDF boş gelir |
 | `WEB_REQUEST_TIMEOUT_SECONDS` | — | Sayfa açma zaman aşımı |
-| `CARBONE_TIMEOUT_SECONDS` | — | Node render zaman aşımı |
+| `DOCUMENT_BLOCKS` | — | Varsayılan `true`; PDF/DOCX raporları tipli bloklarla yazılır |
+| `DOCUMENT_PDF_ENGINE` | — | `chromium` (varsayılan) veya `reportlab` |
+| `DOCUMENT_PDF_TIMEOUT_SECONDS` | — | Chromium PDF basma zaman aşımı (varsayılan 45) |
+| `DOCUMENT_LLM_REASONING_EFFORT` | — | Document LLM çağrısı için OpenRouter `reasoning.effort` (`low`/`medium`/`high`); boş = sağlayıcı varsayılanı |
+| `DOCUMENT_LLM_PROVIDER_SORT` | — | Document LLM çağrısı için OpenRouter sağlayıcı sıralaması (`throughput`/`latency`/`price`); boş = varsayılan |
 | `DATA_DIR` | — | Docker'da `/data`; yerelde `backend/` |
 | `PYTEST_USE_REAL_DATA_DIR` | — | **Test için canlı DB. Kullanma.** |
 
@@ -487,7 +491,7 @@ FastAPI (backend/main.py)
                                camel Workforce  VEYA  LangGraph supervisor
                                  Research / Document / Coding / Assistant
                                  web_controller: SEARCH → SELECT → FETCH → ANSWER
-                                 document_export / Carbone / openpyxl
+                                 document_model / document_html / openpyxl
                                  (opsiyonel) local_computer aç
 ```
 
@@ -554,10 +558,11 @@ birbirini ezmez.
 
 | Tür | Kim yazar |
 | --- | --- |
-| DOCX / PPTX | Carbone (Node alt süreç) + şablon; veya python-docx şablon doldurma |
-| PDF | reportlab / `document_export` |
+| PDF | Tipli bloklar → `document_html` (HTML/CSS, Chromium); yedek: reportlab (`document_model` / `document_export`) |
+| DOCX | Tipli bloklar → `document_docx` (PDF ile aynı tasarım; yedek `document_model`); yüklenen şablon: `document_export` doldurma / düzenleme |
+| PPTX | python-pptx / `document_export.build_pptx` |
 | XLSX / CSV / JSON | openpyxl / pandas; düzyazıdaki markdown tablo tercih edilir |
-| HTML sunum | `workforce._html_deck_from_payload` — Word ile **aynı** blok ayrıştırıcı |
+| HTML sunum | Tipli bloklar varsa `document_html.render_deck` (rapor ile aynı tasarım); yoksa `workforce._html_deck_from_payload` |
 
 Word'de tablo stili şablonda yoksa işin tamamı düşmez; var olan stile iner veya
 stilsiz yazar.
@@ -647,8 +652,10 @@ agent-webapp-langgraph/
 | `document_ingestion.py` | Docling parse + cache |
 | `document_export.py` | Markdown→DOCX/PDF/PPTX iskeleti, tablo, stiller |
 | `artifacts.py` | `create_*_artifact` tool'ları |
-| `carbone_render.py` | Node Carbone köprüsü |
-| `carbone/` | `render.js` + `report.docx` / `report.pptx` |
+| `document_model.py` | Tipli belge blokları + DOCX / reportlab PDF çizici |
+| `document_html.py` | Blokları HTML/CSS'e çevirir, Chromium ile PDF basar; HTML sunum destesi |
+| `document_docx.py` | Blokları PDF ile aynı tasarımda Word'e çizer |
+| `document_verify.py` | Üretilen PDF/DOCX'i teslimden önce yeniden açıp kontrol eder |
 | `workspace.py` | sources/artifacts sınırları, dosya araçları |
 | `code_exec.py` | Sınırlı Python |
 | `local_computer.py` | Host'ta dosya açma |
@@ -791,13 +798,13 @@ pip install "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
 pip install pytest pytest-asyncio
 ```
 
-Carbone (DOCX/PPTX) için Node host PATH'te olmalı:
+PDF'ler Playwright Chromium ile basılır (crawl4ai ile aynı tarayıcı). Yerelde bir kez:
 
 ```powershell
-cd carbone
-npm install --omit=dev
-cd ..
+python -m playwright install chromium
 ```
+
+Chromium yoksa PDF otomatik olarak reportlab ile üretilir.
 
 `backend/.env` yaz (Bölüm 3'teki iki-`.env` uyarısı), sonra:
 
@@ -1048,7 +1055,7 @@ Konu bazlı derin referanslar:
 | [`docs/langgraph-migration.md`](docs/langgraph-migration.md) | Camel ↔ LangGraph geçiş notları |
 | [`docs/web-execution.md`](docs/web-execution.md) | Arama + sayfa açma |
 | [`docs/document-ingestion.md`](docs/document-ingestion.md) | Upload / Docling |
-| [`docs/carbone-docx-pptx.md`](docs/carbone-docx-pptx.md) | Word / PowerPoint üretimi |
+| [`docs/document-generation.md`](docs/document-generation.md) | PDF / Word / PowerPoint üretimi |
 | [`docs/local-computer.md`](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
 | [`docs/agent-search.md`](docs/agent-search.md) | AgentSearch sidecar |
 | [`docs/backend-reliability-harness.md`](docs/backend-reliability-harness.md) | Deterministik güvenilirlik harness'ı |

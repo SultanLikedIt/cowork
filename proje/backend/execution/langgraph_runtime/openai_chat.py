@@ -13,6 +13,12 @@ from typing import Any, AsyncIterator, Optional
 from openai import AsyncOpenAI
 
 logger = logging.getLogger("agent_webapp.stabilization")
+# One line per non-streaming model call: how long it took and where the time
+# went (reasoning vs answer tokens, which OpenRouter provider served it).
+# INFO on its own logger because the root logger is WARNING (see main.py):
+#   docker logs proje-backend-1 | grep "llm stage="
+llm_logger = logging.getLogger("agent_webapp.llm")
+llm_logger.setLevel(logging.INFO)
 
 from model_config import (
     DEFAULT_API_KEY,
@@ -98,6 +104,32 @@ def _first_text(response: Any) -> str:
     return (getattr(choices[0].message, "content", "") or "").strip()
 
 
+def _log_call(stage: str, response: Any, seconds: float, kwargs: dict[str, Any]) -> None:
+    """The per-call timing line. Never raises: telemetry must not fail a job."""
+    try:
+        usage = getattr(response, "usage", None)
+        output_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage is not None else 0
+        details = getattr(usage, "completion_tokens_details", None) if usage is not None else None
+        reasoning_tokens = getattr(details, "reasoning_tokens", None) if details is not None else None
+        extra = getattr(response, "model_extra", None) or {}
+        llm_logger.info(
+            "llm stage=%s model=%s provider=%s seconds=%.1f output_tokens=%d "
+            "reasoning_tokens=%s tok_per_s=%.0f finish=%s max_tokens=%s extra_body=%s",
+            stage,
+            kwargs.get("model"),
+            extra.get("provider") or "?",
+            seconds,
+            output_tokens,
+            reasoning_tokens if reasoning_tokens is not None else "?",
+            output_tokens / seconds if seconds > 0 else 0.0,
+            _finish_reason(response) or "?",
+            kwargs.get("max_tokens"),
+            kwargs.get("extra_body") or "-",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _create_with_retry(
     client: Any, kwargs: dict[str, Any], *, stage: str, attempts: int = 3
 ) -> Any:
@@ -151,6 +183,7 @@ async def complete_chat(
     response_format: Optional[type] = None,
     retry_on_truncation: bool = False,
     json_mode: bool = False,
+    extra_body: Optional[dict[str, Any]] = None,
 ) -> Any:
     """One non-streaming chat call. If ``response_format`` is a Pydantic model,
     ask for JSON and validate (or recover). Used by web_controller ``complete``.
@@ -194,6 +227,11 @@ async def complete_chat(
             },
         ]
 
+    if extra_body:
+        # Provider-specific request options (e.g. OpenRouter "reasoning" or
+        # "provider" routing), sent as-is in the JSON body.
+        kwargs["extra_body"] = dict(extra_body)
+
     if json_mode and response_format is None:
         # Same provider JSON mode as above, but the caller parses the text
         # itself. A model left to write a large JSON document freehand
@@ -231,6 +269,8 @@ async def complete_chat(
         # ignores the larger ceiling must not cost us the first answer.
         if len(_first_text(retried)) > len(_first_text(response)):
             response = retried
+    _log_call(stage, response, time.monotonic() - started, kwargs)
+
     if tracker is not None:
         # Covers the retry too when one happened -- the stage really did
         # cost that long, and hiding the retry would understate it.

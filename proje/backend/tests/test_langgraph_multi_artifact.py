@@ -108,8 +108,8 @@ def test_word_plus_powerpoint_stays_narrative_kinds() -> None:
     assert needs_table is False
 
 
-def test_carbone_table_from_narrative() -> None:
-    cols, rows = lg_wf._ensure_carbone_table(
+def test_office_table_from_narrative() -> None:
+    cols, rows = lg_wf._ensure_office_table(
         [],
         [],
         title="Maven",
@@ -125,5 +125,5 @@ if __name__ == "__main__":
     test_word_plus_html_sunum()
     test_sunum_alone_is_html()
     test_html_deck_builds_without_llm()
-    test_carbone_table_from_narrative()
+    test_office_table_from_narrative()
     print("All multi-artifact checks passed")

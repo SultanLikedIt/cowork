@@ -26,8 +26,3 @@ __pycache__/
 # context (1-2GB).
 venv/
 .venv/
-
-# Installed inside the image by `npm install` in the Dockerfile instead --
-# a locally-installed carbone/node_modules must not overwrite that step's
-# Linux-native result via the later `COPY . .`.
-carbone/node_modules/
