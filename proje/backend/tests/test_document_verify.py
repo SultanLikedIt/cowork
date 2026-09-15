@@ -110,6 +110,7 @@ def test_failed_blocks_file_falls_back_to_markdown_writer(tmp_path, monkeypatch)
     from artifacts import ArtifactTools
 
     # Simulate a blocks renderer that silently produces an empty report.
+    monkeypatch.setenv("DOCUMENT_PDF_ENGINE", "reportlab")
     monkeypatch.setattr(
         document_model, "build_pdf", lambda doc, images=None: document_export.build_pdf("x", "")
     )

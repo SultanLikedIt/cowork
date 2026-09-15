@@ -42,6 +42,7 @@ import json
 import logging
 import math
 import re
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -570,6 +571,7 @@ class ArtifactTools:
         headings: Sequence[str] = (),
         expect_sources: bool = False,
         fallback: Optional[Callable[[], bytes]] = None,
+        fallback_label: str = "markdown_fallback",
     ) -> tuple[bytes, dict[str, Any]]:
         """Reopen a rendered PDF/DOCX and check it before it is written.
 
@@ -602,13 +604,14 @@ class ArtifactTools:
                 )
                 if second.ok:
                     document_logger.warning(
-                        "document verify: using the markdown writer instead of %s (%s)",
+                        "document verify: using %s instead of %s (%s)",
+                        fallback_label,
                         path,
                         second.summary(),
                     )
                     return alternative, {
                         **second.as_dict(),
-                        "path": "markdown_fallback",
+                        "path": fallback_label,
                         "rejected": {**report.as_dict(), "path": path},
                     }
                 document_logger.warning(
@@ -617,6 +620,36 @@ class ArtifactTools:
                     path,
                 )
         return body, {**report.as_dict(), "path": path}
+
+    def _render_blocks_pdf(self, block_document: Any, images: list) -> tuple[bytes, str]:
+        """PDF bytes for typed blocks, and the engine that produced them.
+
+        Chromium (HTML/CSS) first, unless DOCUMENT_PDF_ENGINE=reportlab. Any
+        Chromium failure -- not installed, crashed, timed out -- is logged
+        and answered with the reportlab renderer, never with a failed job.
+        """
+        import document_html
+        import document_model
+
+        if document_html.pdf_engine() == "chromium":
+            started = time.monotonic()
+            try:
+                data = document_html.build_pdf(block_document, images=images)
+            except Exception as exc:  # noqa: BLE001 - reportlab is the answer
+                document_logger.warning(
+                    "document pdf engine=chromium FAILED after %.1fs (%s: %s) -> reportlab",
+                    time.monotonic() - started,
+                    type(exc).__name__,
+                    str(exc)[:200],
+                )
+            else:
+                document_logger.info(
+                    "document pdf engine=chromium (%.1fs, %d bytes)",
+                    time.monotonic() - started,
+                    len(data),
+                )
+                return data, "chromium"
+        return document_model.build_pdf(block_document, images=images), "reportlab"
 
     def _target(self, filename: str, kind: str, subdir: str = "") -> Path:
         """Resolve a model-supplied filename to a real, confined path.
@@ -1452,18 +1485,33 @@ class ArtifactTools:
                 image_query, context=block_document.title, require_user_ask=True
             )
             try:
-                payload = document_model.build_pdf(block_document, images=images)
+                payload, engine = self._render_blocks_pdf(block_document, images)
             except Exception as exc:  # noqa: BLE001
                 raise ArtifactError(f"Could not create the PDF artifact: {exc}") from exc
+            if engine == "chromium":
+                # A Chromium file that fails its check is redrawn from the same
+                # blocks by reportlab before anything falls back to markdown.
+                fallback = lambda: document_model.build_pdf(block_document, images=images)  # noqa: E731
+                fallback_label = "reportlab_fallback"
+            else:
+                fallback = lambda: document_export.build_pdf(  # noqa: E731
+                    block_document.title, block_document.to_markdown(), images=images
+                )
+                fallback_label = "markdown_fallback"
             payload, verification = self._verify_render(
                 "pdf",
                 payload,
                 path="blocks",
                 headings=document_verify.headings_of(block_document),
-                fallback=lambda: document_export.build_pdf(
-                    block_document.title, block_document.to_markdown(), images=images
-                ),
+                fallback=fallback,
+                fallback_label=fallback_label,
             )
+            if verification.get("path") == "blocks":
+                verification["engine"] = engine
+            else:
+                verification["engine"] = (
+                    "reportlab" if verification.get("path") == "reportlab_fallback" else "reportlab-markdown"
+                )
             record = self._write(
                 self._target(filename, "pdf"), payload, "pdf", producer="create_pdf_artifact"
             )

@@ -63,6 +63,12 @@ services:
       # backend/document_model.py. On, every narrative PDF/DOCX calls the
       # Document LLM. false = the previous markdown path, unchanged.
       DOCUMENT_BLOCKS: ${DOCUMENT_BLOCKS:-true}
+      # How typed-block PDFs are drawn: chromium = HTML/CSS printed by the
+      # Playwright Chromium already in this image (backend/document_html.py);
+      # reportlab = the previous renderer. Chromium falls back to reportlab
+      # on any failure.
+      DOCUMENT_PDF_ENGINE: ${DOCUMENT_PDF_ENGINE:-chromium}
+      DOCUMENT_PDF_TIMEOUT_SECONDS: ${DOCUMENT_PDF_TIMEOUT_SECONDS:-45}
       # OpenBot remote-ag-ui bridge (POST /ag-ui, GET /health on the backend port).
       OPENBOT_AGUI_ENABLED: ${OPENBOT_AGUI_ENABLED:-false}
       OPENBOT_AGUI_TOKEN: ${OPENBOT_AGUI_TOKEN:-}
