@@ -1345,6 +1345,9 @@ def _make_web_controller_astep(
             current_date=current_date,
             wants_artifact=wants_artifact,
             targets=targets,
+            on_timing=lambda name, seconds, detail: tracker.record_event(
+                name, name, seconds, detail=detail
+            ),
         )
         if task is not None:
             _record_lookup_coverage(task, acquired, cfg)

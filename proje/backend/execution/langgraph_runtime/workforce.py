@@ -1673,6 +1673,15 @@ async def _run_research(
             allow_refine=allow_refine and not compact,
             depth=research_depth,
             compact=compact,
+            on_timing=(
+                (
+                    lambda name, seconds, detail: tracker.record_event(
+                        name, name, seconds, detail=detail
+                    )
+                )
+                if tracker is not None
+                else None
+            ),
         )
 
     async def _answer(

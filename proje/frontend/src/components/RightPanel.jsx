@@ -22,6 +22,7 @@ import {
 } from '../stages.js'
 import { cn } from '../lib/utils.js'
 import { UsageSummary } from './JobDetails.jsx'
+import { TimingLog, formatMs } from './TimingLog.jsx'
 import { Badge, MarkSlot, StatusDot } from './ui/badge.jsx'
 import { Button } from './ui/button.jsx'
 import { Progress } from './ui/progress.jsx'
@@ -348,8 +349,13 @@ function ToolsSection({ job }) {
                     aria-hidden="true"
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="font-mono text-[11px] text-foreground/80">
-                      {safeText(call.tool_name, 'Tool')}
+                    <div className="flex items-baseline justify-between gap-2 font-mono text-[11px] text-foreground/80">
+                      <span className="min-w-0 truncate">{safeText(call.tool_name, 'Tool')}</span>
+                      {typeof call?.duration_ms === 'number' && (
+                        <span className="shrink-0 tabular-nums text-muted-foreground/70">
+                          {formatMs(call.duration_ms)}
+                        </span>
+                      )}
                     </div>
                     {query != null && (
                       <div className="mt-0.5 truncate text-[11px] text-muted-foreground/60">
@@ -573,6 +579,9 @@ export default function RightPanel({
                   detail you scroll to once that raises a question. */}
               <Section label="Usage">
                 <UsageSummary job={job} compact />
+              </Section>
+              <Section label="Timing">
+                <TimingLog job={job} />
               </Section>
               <FilesSection job={job} />
               <ToolsSection job={job} />

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -88,6 +90,9 @@ MODEL_CALL_TIMEOUT_SECONDS = 600.0
 # whatever you set, exactly as CAMEL intends.
 MODEL_CONTEXT_TOKENS = int(os.environ.get("MODEL_CONTEXT_TOKENS") or 32_768)
 
+# Per-job cap on timed steps kept for the UI timing log (oldest dropped first).
+MAX_TIMELINE_EVENTS = 500
+
 
 def _empty_stage_bucket() -> dict[str, float]:
     return {
@@ -125,6 +130,7 @@ class UsageTracker:
         self.output_tokens = 0
         self.total_tokens = 0
         self._stages: dict[str, dict[str, int]] = {}
+        self._events: list[dict[str, Any]] = []
 
     def record(
         self,
@@ -162,6 +168,55 @@ class UsageTracker:
                 bucket["output_tokens"] += completion_tokens
                 bucket["total_tokens"] += total_tokens
                 bucket["duration_seconds"] += float(duration_seconds or 0.0)
+            if duration_seconds:
+                self._append_event_locked(
+                    "llm",
+                    stage or "model",
+                    float(duration_seconds),
+                    input_tokens=prompt_tokens,
+                    output_tokens=completion_tokens,
+                )
+
+    def record_event(
+        self,
+        kind: str,
+        name: str,
+        duration_seconds: float,
+        *,
+        detail: str = "",
+        ok: bool = True,
+    ) -> None:
+        """A timed non-model step (e.g. reranking) for the job's timing log."""
+        with self._lock:
+            self._append_event_locked(
+                kind, name, float(duration_seconds), detail=detail, ok=ok
+            )
+
+    def _append_event_locked(
+        self,
+        kind: str,
+        name: str,
+        duration_seconds: float,
+        *,
+        detail: str = "",
+        ok: bool = True,
+        **extra: Any,
+    ) -> None:
+        seconds = max(0.0, duration_seconds)
+        finished = datetime.now(timezone.utc)
+        self._events.append(
+            {
+                "kind": kind,
+                "name": name,
+                "started_at": (finished - timedelta(seconds=seconds)).isoformat(),
+                "duration_ms": round(seconds * 1000, 1),
+                "detail": str(detail or "")[:300],
+                "ok": ok,
+                **extra,
+            }
+        )
+        if len(self._events) > MAX_TIMELINE_EVENTS:
+            del self._events[: len(self._events) - MAX_TIMELINE_EVENTS]
 
     def snapshot(self) -> dict[str, int]:
         with self._lock:
@@ -175,6 +230,10 @@ class UsageTracker:
     def stage_snapshot(self) -> dict[str, dict[str, float]]:
         with self._lock:
             return {stage: dict(bucket) for stage, bucket in self._stages.items()}
+
+    def timeline_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(event) for event in self._events]
 
 
 class _UsageTrackingModel(BaseModelBackend):
@@ -214,14 +273,26 @@ class _UsageTrackingModel(BaseModelBackend):
         return MODEL_CONTEXT_TOKENS
 
     def _run(self, messages, response_format=None, tools=None):
+        started = time.monotonic()
         response = self._backend.run(messages, response_format, tools)
-        self._tracker.record(response, stage=self._stage)
+        self._tracker.record(
+            response, stage=self._stage, duration_seconds=self._elapsed(started)
+        )
         return response
 
     async def _arun(self, messages, response_format=None, tools=None):
+        started = time.monotonic()
         response = await self._backend.arun(messages, response_format, tools)
-        self._tracker.record(response, stage=self._stage)
+        self._tracker.record(
+            response, stage=self._stage, duration_seconds=self._elapsed(started)
+        )
         return response
+
+    def _elapsed(self, started: float) -> float:
+        # A streamed call returns before generation ends, so its wall time would be a lie.
+        if self.model_config_dict.get("stream"):
+            return 0.0
+        return time.monotonic() - started
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._backend, name)

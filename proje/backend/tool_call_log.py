@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
@@ -46,6 +47,9 @@ class ToolCallRecorder:
         args: dict[str, Any],
         result: Any = None,
         error: Optional[str] = None,
+        *,
+        duration_ms: Optional[float] = None,
+        started_at: Optional[str] = None,
     ) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -54,6 +58,8 @@ class ToolCallRecorder:
             "args": args,
             "result": result,
             "error": error,
+            "started_at": started_at,
+            "duration_ms": duration_ms,
         }
         with self._lock:
             self.calls.append(entry)
@@ -102,13 +108,27 @@ def logged_tool(func: Callable, recorder: ToolCallRecorder) -> Callable:
     @wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         call_args = kwargs if kwargs else {"args": args}
+        started_at = datetime.now(timezone.utc).isoformat()
+        started = time.monotonic()
         try:
             result = func(*args, **kwargs)
-            recorder.record(func.__name__, call_args, result=result)
-            return result
         except Exception as exc:  # re-raise after recording
-            recorder.record(func.__name__, call_args, error=repr(exc))
+            recorder.record(
+                func.__name__,
+                call_args,
+                error=repr(exc),
+                duration_ms=round((time.monotonic() - started) * 1000, 1),
+                started_at=started_at,
+            )
             raise
+        recorder.record(
+            func.__name__,
+            call_args,
+            result=result,
+            duration_ms=round((time.monotonic() - started) * 1000, 1),
+            started_at=started_at,
+        )
+        return result
 
     # @wraps copies __dict__ from `func`, so set the marker afterwards --
     # otherwise a wrapped-but-unmarked tool would still be re-wrappable.

@@ -59,6 +59,17 @@ const STAGE_LABELS = {
   dynamic_worker: 'Dynamic worker',
   manual_worker: 'Manual worker',
   single_agent: 'Single agent',
+  web_search: 'Web · query writing',
+  web_select: 'Web · URL selection',
+  web_answer: 'Web · answer',
+  web_plan: 'Web · research plan',
+  web_coverage: 'Web · coverage check',
+  artifact_intent: 'Artifact intent',
+}
+
+function formatStageTime(seconds) {
+  const value = Number(seconds)
+  return value > 0 ? formatDuration(value) : '—'
 }
 
 function StageBreakdown({ byStage, tokensReported }) {
@@ -94,6 +105,7 @@ function StageBreakdown({ byStage, tokensReported }) {
               <tr className="bg-muted/50 text-muted-foreground">
                 <th className="px-2 py-1.5 text-left font-medium">Stage</th>
                 <th className="px-2 py-1.5 text-right font-medium">Calls</th>
+                <th className="px-2 py-1.5 text-right font-medium">Time</th>
                 <th className="px-2 py-1.5 text-right font-medium">Input</th>
                 <th className="px-2 py-1.5 text-right font-medium">Output</th>
                 <th className="px-2 py-1.5 text-right font-medium">Total</th>
@@ -107,6 +119,9 @@ function StageBreakdown({ byStage, tokensReported }) {
                   </td>
                   <td className="px-2 py-1.5 text-right">
                     {Number(stats.model_call_count || 0).toLocaleString()}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    {formatStageTime(stats.duration_seconds)}
                   </td>
                   <td className="px-2 py-1.5 text-right text-muted-foreground">
                     {tokensReported

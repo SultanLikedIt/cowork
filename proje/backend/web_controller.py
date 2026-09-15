@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional
@@ -105,6 +106,8 @@ class ControllerResult:
     skipped_search: bool = False
     covered_targets: list[str] = field(default_factory=list)
     target_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # (step name, seconds, detail) for timed steps that are neither tool nor model calls.
+    on_timing: Optional[Callable[[str, float, str], None]] = None
 
 
 def _normalize_url(url: str) -> str:
@@ -1608,6 +1611,17 @@ def _emit(progress: Optional[ProgressFn], stage: str, detail: str = "") -> None:
         pass
 
 
+def _report_timing(
+    result: ControllerResult, name: str, seconds: float, detail: str = ""
+) -> None:
+    if result.on_timing is None:
+        return
+    try:
+        result.on_timing(name, seconds, detail)
+    except Exception:  # noqa: BLE001 - telemetry must never fail a research phase
+        pass
+
+
 async def _complete(
     complete: CompleteFn,
     phase: str,
@@ -1946,11 +1960,18 @@ async def _search_select_fetch(
         candidate_entries = _candidate_entries(search_result)
         if not candidates:
             return
+        rerank_started = time.monotonic()
         picked = await _rerank_select(
             search_result, request_text, target=target, limit=select_limit
         )
         if picked is not None:
             _emit(progress, "selecting", "reranker")
+            _report_timing(
+                result,
+                "rerank",
+                time.monotonic() - rerank_started,
+                f"{len(candidates)} candidates, picked {len(picked)}",
+            )
         else:
             if refine:
                 select_system = REFINE_SELECT_SYSTEM
@@ -2087,6 +2108,7 @@ async def acquire_web_evidence(
     allow_refine: bool = True,
     depth: str = "lookup",
     compact: bool = False,
+    on_timing: Optional[Callable[[str, float, str], None]] = None,
 ) -> ControllerResult:
     """Run SEARCH → SELECT → FETCH. ANSWER is a separate call.
 
@@ -2109,7 +2131,7 @@ async def acquire_web_evidence(
     ``data_path`` alone does not produce a handoff; ``wants_artifact`` must
     also be true.
     """
-    result = ControllerResult()
+    result = ControllerResult(on_timing=on_timing)
     search_cap, fetch_cap, select_limit, allow_retry_loop = _lookup_budgets(
         wants_artifact=wants_artifact,
         compact=compact,

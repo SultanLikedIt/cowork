@@ -215,6 +215,28 @@ def test_reranked_pdf_still_yields_to_html() -> None:
     check("PDF post-filter still applies after reranking", engine.fetches == [html], engine.fetches)
 
 
+def test_reranker_time_is_reported() -> None:
+    url = "https://news.example/article"
+    engine = _FakeEngine({url: _page(url)})
+    timings: list[tuple[str, float, str]] = []
+    with tempfile.TemporaryDirectory() as root, _PatchedReranker(
+        lambda query, passages: [0.5] * len(passages)
+    ):
+        web = _tools(engine, root, searches=[[{"url": url, "title": "Article", "content": "hit"}]])
+        _run(
+            web_controller.acquire_web_evidence(
+                "article facts",
+                search=web.search_raw,
+                fetch=web.read_page,
+                complete=_ScriptedComplete({}),
+                allow_refine=False,
+                on_timing=lambda name, seconds, detail: timings.append((name, seconds, detail)),
+            )
+        )
+    check("reranker step reports its duration", [t[0] for t in timings] == ["rerank"], timings)
+    check("reranker duration is non-negative", timings[0][1] >= 0, timings)
+
+
 def test_literal_url_skips_search() -> None:
     url = "https://data.example/table"
     engine = _FakeEngine({url: _page(url)})
@@ -2674,6 +2696,7 @@ def main() -> None:
     test_unavailable_reranker_falls_back_to_llm_select()
     test_disabled_reranker_is_never_called()
     test_reranked_pdf_still_yields_to_html()
+    test_reranker_time_is_reported()
     print()
     if failures:
         print(f"{len(failures)} FAILED: {failures}")

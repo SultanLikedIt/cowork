@@ -610,6 +610,8 @@ class UsageTelemetry(BaseModel):
     # float, not int: the buckets carry token counts *and* duration_seconds,
     # and a fractional duration made this model reject the whole job status.
     by_stage: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Every timed step (model calls, tool calls, reranking), oldest first -- see _timeline.
+    timeline: list[dict[str, Any]] = Field(default_factory=list)
     # Which execution strategy actually ran this job -- "direct" (single
     # ChatAgent, no Workforce), "specialist" (one known fixed worker,
     # decompose+assign skipped), or "workforce" (full CAMEL decompose +
@@ -716,6 +718,8 @@ class ToolCallRecord(BaseModel):
     args: dict[str, Any]
     result: Optional[Any] = None
     error: Optional[str] = None
+    started_at: Optional[str] = None
+    duration_ms: Optional[float] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -1086,6 +1090,33 @@ def _tool_activity(calls: list[dict[str, Any]]) -> tuple[int, int, dict[str, int
     return len(calls), errors, by_name
 
 
+MAX_TIMELINE_EVENTS = 500
+_TOOL_DETAIL_KEYS = ("query", "url", "path", "q", "search_query")
+
+
+def _timeline(tracker: Any, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Model calls, tool calls and reranking as one oldest-first timing log."""
+    events = list(tracker.timeline_snapshot())
+    for call in tool_calls:
+        duration_ms = call.get("duration_ms")
+        if duration_ms is None:
+            continue
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        detail = next((str(args[key]) for key in _TOOL_DETAIL_KEYS if args.get(key)), "")
+        events.append(
+            {
+                "kind": "tool",
+                "name": str(call.get("tool_name") or "tool"),
+                "started_at": call.get("started_at") or call.get("timestamp"),
+                "duration_ms": duration_ms,
+                "detail": detail[:300],
+                "ok": not call.get("error"),
+            }
+        )
+    events.sort(key=lambda event: str(event.get("started_at") or ""))
+    return events[-MAX_TIMELINE_EVENTS:]
+
+
 def _suggests_workforce(job: dict[str, Any]) -> bool:
     """Whether this Single run was asked for something it cannot do.
 
@@ -1137,6 +1168,7 @@ def _job_snapshot(job_id: str) -> JobStatusResponse:
         **tracker_usage,
         "usage_available": tracker_usage["model_call_count"] > 0,
         "by_stage": control.usage_tracker.stage_snapshot(),
+        "timeline": _timeline(control.usage_tracker, tool_calls),
         # Usage.total_duration_seconds was declared but never assigned, so
         # the Usage table's Duration row always fell through to
         # job.duration_seconds. Feed it from the same measurement rather
@@ -1243,6 +1275,8 @@ def _event_snapshot(job_id: str) -> dict[str, Any]:
                     if call.get("error")
                     else None
                 ),
+                "started_at": call.get("started_at"),
+                "duration_ms": call.get("duration_ms"),
             }
         )
     snapshot["tool_calls"] = compact_calls
@@ -1864,6 +1898,8 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
             **final_usage,
             "usage_available": final_usage["model_call_count"] > 0,
             "by_stage": control.usage_tracker.stage_snapshot(),
+            # Persisted in usage_json: job_tool_calls has no duration columns.
+            "timeline": _timeline(control.usage_tracker, final_tool_calls),
             # Folded into the persisted row too, so history keeps the same
             # answers a live snapshot gives -- otherwise these fields would
             # silently become null for every job after a restart.
