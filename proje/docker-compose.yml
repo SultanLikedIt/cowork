@@ -58,6 +58,11 @@ services:
       # DOCX/PPTX artifacts render through a bounded Node/Carbone subprocess
       # (backend/carbone_render.py) -- see docs/carbone-docx-pptx.md.
       CARBONE_TIMEOUT_SECONDS: ${CARBONE_TIMEOUT_SECONDS:-20}
+      # Narrative PDF/DOCX: Document LLM returns typed blocks (heading,
+      # paragraph, list, table, quote) instead of free markdown -- see
+      # backend/document_model.py. On, every narrative PDF/DOCX calls the
+      # Document LLM. false = the previous markdown path, unchanged.
+      DOCUMENT_BLOCKS: ${DOCUMENT_BLOCKS:-true}
       # OpenBot remote-ag-ui bridge (POST /ag-ui, GET /health on the backend port).
       OPENBOT_AGUI_ENABLED: ${OPENBOT_AGUI_ENABLED:-false}
       OPENBOT_AGUI_TOKEN: ${OPENBOT_AGUI_TOKEN:-}

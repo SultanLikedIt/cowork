@@ -33,6 +33,11 @@ from tool_call_log import ToolCallRecorder, logged_tool
 from workforce.events import ActivityEvent
 
 stabilization_logger = logging.getLogger("agent_webapp.stabilization")
+# Which writer produced each PDF/DOCX (typed blocks vs markdown) and why.
+# Own logger at INFO because the root logger is WARNING (see main.py):
+#   docker logs proje-backend-1 | grep "document path"
+document_logger = logging.getLogger("agent_webapp.document")
+document_logger.setLevel(logging.INFO)
 
 ROLE_RESEARCH = "Research Agent"
 ROLE_DOCUMENT = "Document Agent"
@@ -2048,6 +2053,11 @@ _DOC_MAX_TOKENS = 4_096
 _DOC_MAX_TOKENS_PAGED = 6_144
 _DOC_MAX_TOKENS_DEEP = 16_384
 _DOC_MAX_TOKENS_CEILING = 32_768
+# Typed blocks on a reasoning model. Its thinking tokens come out of the same
+# max_tokens as the answer: live, deepseek-v4-flash spent all 4,710 of a
+# blocks call on reasoning and returned no content at all, so the job fell
+# back to the markdown writer and the new path never ran.
+_DOC_BLOCKS_REASONING_HEADROOM = 6_000
 
 
 def _doc_token_budget(
@@ -3097,14 +3107,21 @@ def _salvage_truncated_json(text: str) -> dict[str, Any]:
     in_string = False
     escaped = False
     stack: list[str] = []
-    for ch in body:
+    for index, ch in enumerate(body):
         if in_string:
             if escaped:
                 escaped = False
             elif ch == "\\":
                 escaped = True
             elif ch == '"':
-                in_string = False
+                if _quote_closes_string(body, index):
+                    in_string = False
+                else:
+                    # A quote inside the text the model forgot to escape
+                    # ('... örneğin "X ton" ...'): it cannot end the string,
+                    # because what follows is not , } ] or :.
+                    out.append('\\"')
+                    continue
             elif ch in "\n\r\t":
                 out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[ch])
                 continue
@@ -3112,8 +3129,15 @@ def _salvage_truncated_json(text: str) -> dict[str, Any]:
             in_string = True
         elif ch in "{[":
             stack.append("}" if ch == "{" else "]")
-        elif ch in "}]" and stack:
-            stack.pop()
+        elif ch in "}]":
+            # A trailing comma before a closer ("a", "b", ]) is invalid JSON.
+            back = len(out) - 1
+            while back >= 0 and out[back].isspace():
+                back -= 1
+            if back >= 0 and out[back] == ",":
+                del out[back]
+            if stack:
+                stack.pop()
         out.append(ch)
 
     if escaped:
@@ -3128,6 +3152,19 @@ def _salvage_truncated_json(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _quote_closes_string(text: str, index: int) -> bool:
+    """True when the '"' at ``index`` can end a JSON string.
+
+    A closing quote is followed, after optional whitespace, by one of
+    , } ] : -- or by the end of a (possibly truncated) reply.
+    """
+    for follower in text[index + 1 :]:
+        if follower.isspace():
+            continue
+        return follower in ",}]:"
+    return True
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
@@ -3262,6 +3299,22 @@ def _write_artifact(
     image_query = str(payload.get("image_query") or "").strip()
     filename = _ensure_extension(filename, kind)
 
+    # Typed blocks, when the Document reply had them and `content` was not
+    # replaced afterwards; otherwise "" and the markdown writers run.
+    blocks_json = ""
+    if kind in {"pdf", "docx"}:
+        import document_model
+
+        block_document = document_model.resolve_payload_document(payload)
+        if block_document is not None:
+            blocks_json = json.dumps(block_document.blocks_as_dicts(), ensure_ascii=False)
+        document_logger.info(
+            "document path=%s kind=%s file=%s",
+            "blocks" if blocks_json else "markdown",
+            kind,
+            filename,
+        )
+
     if kind in _CARBONE_KINDS:
         # DOCX narrative reports: keep real tables only. Do not invent a
         # Bölüm/İçerik grid from prose -- document_export structures the
@@ -3320,6 +3373,7 @@ def _write_artifact(
             title=title,
             content=body or summary,
             image_query=image_query,
+            blocks=blocks_json,
         )
     if kind in {"html"}:
         if not html:
@@ -3343,6 +3397,7 @@ def _write_artifact(
             data=data_json,
             columns=columns_json,
             image_query=image_query,
+            blocks=blocks_json,
         )
     if kind == "pptx":
         return artifact.create_pptx_artifact(
@@ -3494,6 +3549,15 @@ async def _run_document_worker(
     else:
         reuse_signal = bool(reuses_uploaded_document)
     wants_template_match = bool(template_path and reuse_signal)
+    import document_model
+
+    # Typed blocks only for narrative PDF/Word. Tables, template edits and
+    # interactive apps keep their own shapes below.
+    use_blocks = (
+        document_model.blocks_enabled()
+        and primary in {"pdf", "docx"}
+        and not (needs_table or keep_docx_table or wants_template_match or wants_interactive_app)
+    )
     if needs_table or keep_docx_table:
         if keep_docx_table:
             shape = (
@@ -3597,6 +3661,35 @@ async def _run_document_worker(
             "whole brief into one section. summary: one short sentence. "
             "Do not write a Kaynaklar section — the server appends sources. "
             "filename must end with .pptx."
+        )
+    elif use_blocks:
+        shape = (
+            "Return ONLY JSON with keys: filename, title, summary, blocks. "
+            "summary: one or two sentences. blocks is the whole report as an "
+            "ordered array; every element is exactly one of:\n"
+            '{"type": "heading", "level": 1, "text": "..."} -- level 1 for a '
+            "main section, 2 for a subsection, 3 rarely\n"
+            '{"type": "paragraph", "text": "..."} -- ONE paragraph of 2-5 '
+            "sentences; use several paragraph blocks, never a whole section "
+            "in one\n"
+            '{"type": "list", "ordered": false, "items": ["...", "..."]} -- '
+            'ordered true for steps/rankings; a nested item is {"text": '
+            '"...", "items": ["..."]}\n'
+            '{"type": "table", "columns": ["..."], "rows": [["...", "..."]]}'
+            " -- only for real comparable data from the notes, max 8 columns\n"
+            '{"type": "quote", "text": "..."} -- a key finding or warning '
+            "worth highlighting, at most two in the report\n"
+            "Start EVERY section with a heading block. Inside text you may "
+            "mark key terms or figures as **bold**; write no other markup "
+            "(no #, no leading - or 1., no | tables) -- structure goes in "
+            "the block type, not in the text.\n"
+            "Write the report itself and nothing about making it: no block "
+            "that suggests images, proposes a layout, or explains your "
+            "approach. Do not repeat the title as the first block. "
+            "Carry over every section, figure and caveat in the research "
+            "notes: this is the full report, about as long as the notes, "
+            "not a summary of them."
+            f" filename must end with .{primary}."
         )
     else:
         shape = (
@@ -3716,8 +3809,13 @@ async def _run_document_worker(
         + (
             (
                 " For Word/PDF/PowerPoint: put the FULL research narrative in "
-                "summary/content as numbered sections (1. 2. 3. …), each with "
-                "2–4 sentences from the notes. Prefer depth over a short "
+                + (
+                    "blocks, one heading block per section followed by paragraph "
+                    "blocks of "
+                    if use_blocks
+                    else "summary/content as numbered sections (1. 2. 3. …), each with "
+                )
+                + "2–4 sentences from the notes. Prefer depth over a short "
                 "overview. Cover technical, operational, and disputed/sensitive "
                 "angles when the notes support them. Do not omit a section "
                 "because notes are thin — write from notes plus clearly marked "
@@ -3740,8 +3838,9 @@ async def _run_document_worker(
         )
         + source_rule
         + " Write summary/content as clean report prose only: no chat "
-        "openers (Elbette/Sure), no echoing the user prompt, no markdown "
-        "bold markers, no MACHINE blocks, no 'I cannot create PDF' lines. "
+        "openers (Elbette/Sure), no echoing the user prompt, "
+        + ("" if use_blocks else "no markdown bold markers, ")
+        + "no MACHINE blocks, no 'I cannot create PDF' lines. "
         + (
             " When research notes contain verified figures, write a REAL "
             "report (intro + findings with those numbers + short conclusion). "
@@ -3795,6 +3894,13 @@ async def _run_document_worker(
             # uploaded.
             source_text=content if _workspace_has_uploaded_sources(workspace_root) else "",
         )
+        if use_blocks:
+            # Block JSON carries ~15% more syntax than the same markdown, and
+            # a reasoning model needs room to think before it writes any.
+            doc_max_tokens = min(
+                _DOC_MAX_TOKENS_CEILING,
+                int(doc_max_tokens * 1.15) + _DOC_BLOCKS_REASONING_HEADROOM,
+            )
         # Failed research: skip the slow Document LLM — write a short failure
         # file from notes so the user is not billed another minutes of wait.
         # Ready research brief: same skip — Research already wrote the report
@@ -3824,7 +3930,9 @@ async def _run_document_worker(
                 "rows": [],
                 "content": fail_body[:4000],
             }
-        elif _notes_ready_for_direct_deliverable(
+        # With typed blocks on, PDF/DOCX always go through the Document LLM:
+        # copying the notes straight in would leave no blocks to render.
+        elif not use_blocks and _notes_ready_for_direct_deliverable(
             notes,
             primary=primary,
             kinds=kinds,
@@ -3863,6 +3971,14 @@ async def _run_document_worker(
                 "content": body if primary != "pptx" else body[:12000],
             }
         else:
+            if use_blocks:
+                document_logger.info(
+                    "document path: calling Document LLM for typed blocks "
+                    "(kind=%s, notes=%d chars, max_tokens=%d)",
+                    primary,
+                    len(notes),
+                    doc_max_tokens,
+                )
             try:
                 raw = await asyncio.wait_for(
                     complete_chat(
@@ -3875,8 +3991,18 @@ async def _run_document_worker(
                         max_tokens=doc_max_tokens,
                         temperature=0,
                         response_format=None,
+                        # A reply cut at the ceiling is re-asked once at double
+                        # the room; an empty one is otherwise indistinguishable
+                        # from a model that had nothing to say.
+                        retry_on_truncation=True,
+                        # Blocks are one large JSON document: ask the
+                        # provider to guarantee it is well-formed.
+                        json_mode=use_blocks,
                     ),
-                    timeout=_document_llm_timeout(doc_max_tokens),
+                    # The wait covers that retry, so it can actually finish.
+                    timeout=_document_llm_timeout(
+                        doc_max_tokens * 2 if use_blocks else doc_max_tokens
+                    ),
                 )
             except asyncio.TimeoutError:
                 stabilization_logger.warning(
@@ -3902,10 +4028,22 @@ async def _run_document_worker(
                 # to nothing, is recoverable; shipping that is not.
                 salvage = (raw or "").strip()
                 if salvage.startswith("{") or salvage.startswith("["):
+                    # Keep the reply: without it an unparseable answer can only
+                    # be guessed at after the fact.
+                    saved_to = ""
+                    try:
+                        debug_dir = Path(workspace_root or "") / "debug"
+                        debug_dir.mkdir(parents=True, exist_ok=True)
+                        debug_file = debug_dir / f"document_reply_{int(time.time())}.txt"
+                        debug_file.write_text(salvage, encoding="utf-8")
+                        saved_to = str(debug_file)
+                    except OSError:
+                        pass
                     stabilization_logger.warning(
                         "Document Agent returned unparseable JSON (%d chars); "
-                        "writing from notes instead of the raw reply",
+                        "writing from notes instead of the raw reply (saved: %s)",
                         len(salvage),
+                        saved_to or "no",
                     )
                     salvage = ""
                 fallback_body = notes or salvage[:8000]
@@ -3968,6 +4106,37 @@ async def _run_document_worker(
         for key in ("summary", "content", "body", "title"):
             if payload.get(key):
                 payload[key] = _strip_capability_refusals(str(payload[key]))
+        if use_blocks and payload.get("blocks") is not None:
+            # Mirrors the blocks into `content` as markdown, so every step
+            # below (length check, sources, HTML/PPTX extras) works unchanged.
+            block_document = document_model.attach_blocks_to_payload(
+                payload, text_filter=_strip_capability_refusals
+            )
+            if block_document is not None:
+                progress("building", "typed_blocks")
+                document_logger.info(
+                    "document path: received %d typed blocks (%d chars as markdown)",
+                    len(block_document.blocks),
+                    len(str(payload.get("content") or "")),
+                )
+            else:
+                document_logger.warning(
+                    "document path: blocks were unusable -> markdown fallback"
+                )
+        elif use_blocks:
+            if not (raw or "").strip():
+                document_logger.warning(
+                    "document path: Document LLM returned an EMPTY reply (output "
+                    "budget used up or timed out; max_tokens=%d) -> markdown fallback",
+                    doc_max_tokens,
+                )
+            else:
+                document_logger.warning(
+                    "document path: Document LLM reply had no blocks key -> markdown "
+                    "fallback (reply=%d chars, starts=%r)",
+                    len(raw),
+                    raw[:80],
+                )
         summary = str(payload.get("summary") or "").strip()
         title = str(payload.get("title") or summary or "Report").strip()
         body = str(
@@ -4030,6 +4199,13 @@ async def _run_document_worker(
                     _strip_capability_refusals(notes or "")
                 ).strip()
                 if notes_body and len(body) < len(notes_body) * 0.6:
+                    if payload.get("blocks"):
+                        document_logger.warning(
+                            "document path: write-up too short (%d vs %d notes chars) "
+                            "-> research notes replace it, markdown fallback",
+                            len(body),
+                            len(notes_body),
+                        )
                     body = notes_body
                     summary = notes_body[:600]
                     payload["content"] = body

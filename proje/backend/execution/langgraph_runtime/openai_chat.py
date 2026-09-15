@@ -150,6 +150,7 @@ async def complete_chat(
     temperature: Optional[float] = None,
     response_format: Optional[type] = None,
     retry_on_truncation: bool = False,
+    json_mode: bool = False,
 ) -> Any:
     """One non-streaming chat call. If ``response_format`` is a Pydantic model,
     ask for JSON and validate (or recover). Used by web_controller ``complete``.
@@ -193,9 +194,29 @@ async def complete_chat(
             },
         ]
 
+    if json_mode and response_format is None:
+        # Same provider JSON mode as above, but the caller parses the text
+        # itself. A model left to write a large JSON document freehand
+        # occasionally emits an unescaped quote inside a string, and the
+        # whole reply is lost to one character.
+        kwargs["response_format"] = {"type": "json_object"}
+
     client = _client()
     started = time.monotonic()
-    response = await _create_with_retry(client, kwargs, stage=stage)
+    try:
+        response = await _create_with_retry(client, kwargs, stage=stage)
+    except Exception as exc:  # noqa: BLE001 - only the json_mode case is retried
+        from openai import BadRequestError
+
+        if not (json_mode and response_format is None and isinstance(exc, BadRequestError)):
+            raise
+        logger.warning(
+            "chat stage=%s: provider rejected JSON mode (%s); retrying without it",
+            stage,
+            str(exc)[:160],
+        )
+        kwargs.pop("response_format", None)
+        response = await _create_with_retry(client, kwargs, stage=stage)
 
     if retry_on_truncation and _finish_reason(response) == "length":
         logger.warning(
@@ -236,6 +257,18 @@ async def complete_chat(
     choices = getattr(response, "choices", None) or []
     if choices:
         text = (choices[0].message.content or "").strip()
+    if not text:
+        # A reasoning model that spends its whole budget thinking returns
+        # content=None with finish_reason "length"; callers only ever saw "".
+        usage = getattr(response, "usage", None)
+        logger.warning(
+            "chat stage=%s returned no content (finish_reason=%s, "
+            "completion_tokens=%s, max_tokens=%s)",
+            stage,
+            _finish_reason(response) or "?",
+            getattr(usage, "completion_tokens", None) if usage is not None else None,
+            kwargs.get("max_tokens"),
+        )
 
     if response_format is None:
         return text

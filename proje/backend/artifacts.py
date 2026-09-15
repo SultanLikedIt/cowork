@@ -39,17 +39,24 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import math
 import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import carbone_render
+import document_verify
 import image_fetch as _image_fetch
 from workspace import WorkspaceSecurityError, _safe_child, safe_filename
+
+# Same logger as the Document worker's path lines, so one grep shows the
+# whole story: docker logs proje-backend-1 | grep "document "
+document_logger = logging.getLogger("agent_webapp.document")
+document_logger.setLevel(logging.INFO)
 
 
 # --- Bounds ---------------------------------------------------------------
@@ -97,6 +104,19 @@ def usable_workspace_path(value: Any) -> str:
     if not text or text.casefold() in _UNSET_PATH_TOKENS:
         return ""
     return text
+
+
+def _has_blocks(blocks: Any) -> bool:
+    """True when a create_* call actually supplied typed blocks."""
+    if isinstance(blocks, str):
+        return bool(usable_workspace_path(blocks)) and blocks.strip() not in {"[]", "{}"}
+    return bool(blocks)
+
+
+def _blocks_memo_part(blocks: Any) -> str:
+    if isinstance(blocks, str):
+        return blocks
+    return json.dumps(blocks, ensure_ascii=False, default=str)
 
 # Tool responses used to include a href-shaped `download_path` (`artifacts/foo.xlsx`)
 # that models pasted into the chat as a markdown link. The real download is
@@ -541,6 +561,63 @@ class ArtifactTools:
         cache[query] = embeds
         return list(embeds)
 
+    def _verify_render(
+        self,
+        kind: str,
+        body: bytes,
+        *,
+        path: str,
+        headings: Sequence[str] = (),
+        expect_sources: bool = False,
+        fallback: Optional[Callable[[], bytes]] = None,
+    ) -> tuple[bytes, dict[str, Any]]:
+        """Reopen a rendered PDF/DOCX and check it before it is written.
+
+        ``fallback`` renders the same content with another writer. It runs
+        only when the first file fails, and wins only if it passes. The
+        user always gets a file: a check that fails on both is reported in
+        the logs and the tool result, not turned into a lost deliverable.
+        """
+        report = document_verify.verify_document(
+            kind, body, expected_headings=headings, expect_sources=expect_sources
+        )
+        if report.ok:
+            document_logger.info("document verify %s path=%s", report.summary(), path)
+            return body, {**report.as_dict(), "path": path}
+
+        document_logger.warning(
+            "document verify FAILED %s path=%s missing=%s",
+            report.summary(),
+            path,
+            report.missing_headings,
+        )
+        if fallback is not None:
+            try:
+                alternative = fallback()
+            except Exception as exc:  # noqa: BLE001 - keep the first file
+                document_logger.warning("document verify: fallback writer raised (%s)", exc)
+            else:
+                second = document_verify.verify_document(
+                    kind, alternative, expected_headings=headings, expect_sources=expect_sources
+                )
+                if second.ok:
+                    document_logger.warning(
+                        "document verify: using the markdown writer instead of %s (%s)",
+                        path,
+                        second.summary(),
+                    )
+                    return alternative, {
+                        **second.as_dict(),
+                        "path": "markdown_fallback",
+                        "rejected": {**report.as_dict(), "path": path},
+                    }
+                document_logger.warning(
+                    "document verify: fallback also failed (%s); keeping %s",
+                    second.summary(),
+                    path,
+                )
+        return body, {**report.as_dict(), "path": path}
+
     def _target(self, filename: str, kind: str, subdir: str = "") -> Path:
         """Resolve a model-supplied filename to a real, confined path.
 
@@ -921,6 +998,7 @@ class ArtifactTools:
         columns: str,
         from_path: str,
         image_query: str = "",
+        blocks: Any = "",
     ) -> dict[str, Any]:
         """Shared PPTX (Carbone) / DOCX (document_export) render path.
 
@@ -935,7 +1013,15 @@ class ArtifactTools:
         dark structured deck (title + section slides + optional table).
         """
         memo_key = self._memo_key(
-            f"create_{kind}_artifact", filename, title, summary, data, columns, from_path, image_query
+            f"create_{kind}_artifact",
+            filename,
+            title,
+            summary,
+            data,
+            columns,
+            from_path,
+            image_query,
+            _blocks_memo_part(blocks),
         )
         cached = self._memoized(memo_key)
         if cached is not None:
@@ -975,7 +1061,45 @@ class ArtifactTools:
             require_user_ask=(kind == "docx"),
         )
 
-        if kind == "docx":
+        verification: Optional[dict[str, Any]] = None
+        block_document = None
+        if kind == "docx" and _has_blocks(blocks):
+            import document_model
+
+            block_document = document_model.document_from_blocks(clean_title, blocks)
+
+        if block_document is not None:
+            try:
+                body = document_model.build_docx(
+                    block_document,
+                    images=images,
+                    footnote=" ".join(notes) if notes else "",
+                    data_header=list(header)[: carbone_render.MAX_TABLE_COLUMNS],
+                    data_rows=[
+                        list(row)[: carbone_render.MAX_TABLE_COLUMNS]
+                        for row in list(rows)[: carbone_render.MAX_DOCX_TABLE_ROWS]
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001 - surface as ArtifactError
+                raise ArtifactError(f"Could not create the DOCX artifact: {exc}") from exc
+            body, verification = self._verify_render(
+                "docx",
+                body,
+                path="blocks",
+                headings=document_verify.headings_of(block_document),
+                fallback=lambda: document_export.build_docx(
+                    block_document.title,
+                    block_document.to_markdown(),
+                    header=list(header)[: carbone_render.MAX_TABLE_COLUMNS],
+                    rows=[
+                        list(row)[: carbone_render.MAX_TABLE_COLUMNS]
+                        for row in list(rows)[: carbone_render.MAX_DOCX_TABLE_ROWS]
+                    ],
+                    footnote=" ".join(notes) if notes else "",
+                    images=images,
+                ),
+            )
+        elif kind == "docx":
             prose = clean_summary or str(payload.get("summary") or "").strip()
             if not prose and header and rows:
                 prose = "Aşağıdaki tabloda rapor verileri özetlenmiştir."
@@ -997,6 +1121,14 @@ class ArtifactTools:
                 raise ArtifactError(
                     f"Could not create the DOCX artifact: {exc}"
                 ) from exc
+            docx_title = str(payload.get("title") or clean_title or "Report")
+            body, verification = self._verify_render(
+                "docx",
+                body,
+                path="markdown",
+                headings=document_verify.headings_of_markdown(docx_title, prose),
+                expect_sources=document_verify.expects_sources(prose),
+            )
         else:
             prose = clean_summary or str(payload.get("summary") or "").strip()
             bounded_header = list(header)[: carbone_render.MAX_TABLE_COLUMNS]
@@ -1021,7 +1153,11 @@ class ArtifactTools:
             self._target(filename, kind), body, kind, producer=f"create_{kind}_artifact"
         )
         result = self._ok(
-            record, row_count=len(rows), column_count=len(header), table_notes=notes
+            record,
+            row_count=len(rows),
+            column_count=len(header),
+            table_notes=notes,
+            **({"verification": verification} if verification else {}),
         )
         self._memo[memo_key] = result
         return result
@@ -1035,6 +1171,7 @@ class ArtifactTools:
         columns: str = "",
         from_path: str = "",
         image_query: str = "",
+        blocks: str = "",
     ) -> dict[str, Any]:
         """Create a real, professionally formatted .docx report.
 
@@ -1064,12 +1201,19 @@ class ArtifactTools:
             image_query (str): Search term for a royalty-free image to embed
                 below the title (e.g. "polar bear arctic"). Fetched from
                 Wikimedia Commons; no API key. (default: "")
+            blocks (str): Optional JSON array of typed blocks that replaces
+                `summary` as the body: {"type": "heading", "level": 1-3,
+                "text"}, {"type": "paragraph", "text"}, {"type": "list",
+                "ordered": bool, "items": [...]}, {"type": "table",
+                "columns": [...], "rows": [[...]]}, {"type": "quote",
+                "text"}, {"type": "image", "caption"}. **bold** is allowed
+                inside text. (default: "")
 
         Returns:
             Dict[str, Any]: The created file's path, size, and row/column counts.
         """
         return self._create_carbone_artifact(
-            "docx", filename, title, summary, data, columns, from_path, image_query
+            "docx", filename, title, summary, data, columns, from_path, image_query, blocks
         )
 
     def edit_docx_template(
@@ -1250,6 +1394,7 @@ class ArtifactTools:
         content: str = "",
         from_path: str = "",
         image_query: str = "",
+        blocks: str = "",
     ) -> dict[str, Any]:
         """Create a real .pdf report from title + body text.
 
@@ -1268,16 +1413,63 @@ class ArtifactTools:
             image_query (str): Search term for a royalty-free image to embed
                 below the title (e.g. "polar bear arctic"). Fetched from
                 Wikimedia Commons; no API key. (default: "")
+            blocks (str): Optional JSON array of typed blocks used as the
+                body instead of `content` -- same block types as
+                create_docx_artifact. (default: "")
 
         Returns:
             Dict[str, Any]: The created file's path and size.
         """
         memo_key = self._memo_key(
-            "create_pdf_artifact", filename, title, content, from_path, image_query
+            "create_pdf_artifact",
+            filename,
+            title,
+            content,
+            from_path,
+            image_query,
+            _blocks_memo_part(blocks),
         )
         cached = self._memoized(memo_key)
         if cached is not None:
             return cached
+
+        import document_export
+
+        block_document = None
+        if _has_blocks(blocks):
+            import document_model
+
+            block_document = document_model.document_from_blocks(
+                document_export.short_report_title(
+                    (title or "").strip()
+                    or Path(filename or "report").stem.replace("-", " ").replace("_", " "),
+                    fallback="Rapor",
+                ),
+                blocks,
+            )
+        if block_document is not None:
+            images = self._fetch_images(
+                image_query, context=block_document.title, require_user_ask=True
+            )
+            try:
+                payload = document_model.build_pdf(block_document, images=images)
+            except Exception as exc:  # noqa: BLE001
+                raise ArtifactError(f"Could not create the PDF artifact: {exc}") from exc
+            payload, verification = self._verify_render(
+                "pdf",
+                payload,
+                path="blocks",
+                headings=document_verify.headings_of(block_document),
+                fallback=lambda: document_export.build_pdf(
+                    block_document.title, block_document.to_markdown(), images=images
+                ),
+            )
+            record = self._write(
+                self._target(filename, "pdf"), payload, "pdf", producer="create_pdf_artifact"
+            )
+            result = self._ok(record, verification=verification)
+            self._memo[memo_key] = result
+            return result
 
         body = ""
         if usable_workspace_path(from_path):
@@ -1311,8 +1503,14 @@ class ArtifactTools:
             image_query, context=heading, require_user_ask=True
         )
 
-        payload = document_export.build_pdf(
-            heading, document_export.sanitize_report_prose(body), images=images
+        prose = document_export.sanitize_report_prose(body)
+        payload = document_export.build_pdf(heading, prose, images=images)
+        payload, verification = self._verify_render(
+            "pdf",
+            payload,
+            path="markdown",
+            headings=document_verify.headings_of_markdown(heading, prose),
+            expect_sources=document_verify.expects_sources(prose),
         )
         record = self._write(
             self._target(filename, "pdf"),
@@ -1320,7 +1518,7 @@ class ArtifactTools:
             "pdf",
             producer="create_pdf_artifact",
         )
-        result = self._ok(record)
+        result = self._ok(record, verification=verification)
         self._memo[memo_key] = result
         return result
 
