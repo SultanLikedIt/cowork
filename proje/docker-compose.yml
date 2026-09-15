@@ -40,14 +40,21 @@ services:
       WEB_MAX_CONCURRENT_REQUESTS: ${WEB_MAX_CONCURRENT_REQUESTS:-8}
       WEB_MAX_CONCURRENT_ACQUISITIONS: ${WEB_MAX_CONCURRENT_ACQUISITIONS:-4}
       WEB_MAX_RETRIES: ${WEB_MAX_RETRIES:-1}
-      # Uploaded documents are parsed internally by Docling. OCR is opt-in to
-      # avoid implicit runtime model downloads for ordinary text PDFs.
-      DOCLING_PARSE_TIMEOUT_SECONDS: ${DOCLING_PARSE_TIMEOUT_SECONDS:-60}
+      # Uploaded documents are parsed internally by Docling. OCR reads text
+      # from scanned PDF pages and image uploads; it only touches bitmap
+      # regions, so text-bearing PDFs are unaffected. Tesseract (installed in
+      # the image, Turkish + English) needs no model download. OCR costs
+      # seconds per page, hence the longer parse timeout.
+      DOCLING_PARSE_TIMEOUT_SECONDS: ${DOCLING_PARSE_TIMEOUT_SECONDS:-300}
       DOCLING_MAX_FILE_BYTES: ${DOCLING_MAX_FILE_BYTES:-20971520}
       DOCLING_MAX_PAGES: ${DOCLING_MAX_PAGES:-500}
       DOCLING_MAX_TABLES: ${DOCLING_MAX_TABLES:-100}
       DOCLING_MAX_CHUNKS: ${DOCLING_MAX_CHUNKS:-10000}
-      DOCLING_ENABLE_OCR: ${DOCLING_ENABLE_OCR:-false}
+      DOCLING_ENABLE_OCR: ${DOCLING_ENABLE_OCR:-true}
+      # tesseract | easyocr | rapidocr. OCR_LANGS uses the engine's own codes.
+      OCR_ENGINE: ${OCR_ENGINE:-tesseract}
+      OCR_LANGS: ${OCR_LANGS:-tur,eng}
+      OCR_FORCE_FULL_PAGE: ${OCR_FORCE_FULL_PAGE:-false}
       DOCLING_ARTIFACTS_PATH: /app/vendor/docling-models
       # In-process BGE cross-encoder that replaces the LLM URL-selection call
       # per search round (backend/reranker.py). Loaded once per backend

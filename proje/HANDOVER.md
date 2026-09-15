@@ -349,7 +349,11 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `SEARXNG_BASE_URL` | — | Host'ta backend çalıştırırken gerekir |
 | `LOCAL_COMPUTER_ENABLED` | — | "Bilgisayarımda aç" köprüsü |
 | `LOCAL_COMPUTER_URL` | — | Varsayılan `http://host.docker.internal:8765` |
-| `DOCLING_ENABLE_OCR` | — | Varsayılan `false`; taranmış PDF boş gelir |
+| `DOCLING_ENABLE_OCR` | — | Compose'ta `true`; taranmış PDF ve görsel yüklemelerini okur. `false` → taranmış PDF boş, görsel reddedilir |
+| `OCR_ENGINE` | — | `tesseract` (varsayılan, imajda kurulu) \| `easyocr` \| `rapidocr` |
+| `OCR_LANGS` | — | Varsayılan `tur,eng` (motorun kendi dil kodları) |
+| `OCR_FORCE_FULL_PAGE` | — | `true` = her sayfa OCR'lanır (yavaş); varsayılan yalnız görsel bölgeler |
+| `DOCLING_PARSE_TIMEOUT_SECONDS` | — | Upload parse zaman aşımı; compose'ta 300 (OCR sayfa başına saniyeler sürer) |
 | `WEB_REQUEST_TIMEOUT_SECONDS` | — | Sayfa açma zaman aşımı |
 | `DOCUMENT_BLOCKS` | — | Varsayılan `true`; PDF/DOCX raporları tipli bloklarla yazılır |
 | `DOCUMENT_PDF_ENGINE` | — | `chromium` (varsayılan) veya `reportlab` |
@@ -397,7 +401,7 @@ Sayfa yenilendiğinde aynı sohbette kalırsın (`frontend/src/routing.js`).
 2. **Single / Workforce** anahtarı
 3. **Deep research** (yalnız Workforce)
 4. **Skills** seçici
-5. **Ataç** — PDF, Word, Excel, CSV, TXT, ZIP.
+5. **Ataç** — PDF, Word, Excel, CSV, TXT, ZIP, görsel (PNG/JPG/TIFF/BMP/WEBP — OCR ile okunur).
    En fazla **10 dosya**, dosya başına **20 MB**, toplam **50 MB**
 
 Gönderince iyimser bir job kartı görünür; gerçek id gelince SSE bağlanır.
@@ -549,8 +553,9 @@ o satırı atar.
 
 ### 5.4 Dosyalar
 
-**Giriş (upload):** PDF, DOCX, XLSX, CSV, TXT, ZIP. Docling PDF/DOCX/PPTX/XLSX/HTML'i
-kanonik JSON + markdown + tablo CSV'ye çevirir. Büyük belge model context'ine
+**Giriş (upload):** PDF, DOCX, XLSX, CSV, TXT, ZIP, görsel. Docling PDF/DOCX/PPTX/XLSX/HTML'i
+ve görselleri kanonik JSON + markdown + tablo CSV'ye çevirir. Taranmış sayfalar ve görseller
+Tesseract OCR ile okunur (Türkçe + İngilizce; [`docs/document-ingestion.md`](docs/document-ingestion.md)). Büyük belge model context'ine
 gömülmez; önizleme + yol gider. Yüklenenler `sources/`, üretilenler `artifacts/` —
 birbirini ezmez.
 
@@ -1018,7 +1023,11 @@ Kodda duruyor, **henüz bitmedi**:
 
 - 422 `docling_conversion_failed` → modeller yok; ilk indirme ağ ister
   ([`docs/document-ingestion.md`](docs/document-ingestion.md))
-- OCR kapalı (`DOCLING_ENABLE_OCR=false`) → taranmış PDF boş gelebilir
+- 422 `ocr_disabled` → görsel yüklendi ama `DOCLING_ENABLE_OCR=false`
+- Taranmış PDF / görsel boş geliyor → `DOCLING_ENABLE_OCR=true` mi,
+  `docker compose exec backend tesseract --list-langs` içinde `tur` var mı;
+  manifest'te `text_empty: true` ise görüntü okunamayacak kadar kötü
+- 422 `document_parse_timeout` büyük taramada → `DOCLING_PARSE_TIMEOUT_SECONDS`'ı artır
 - Frontend upload listesinde pptx/html yok; bunlar **çıktı** olarak üretilir
 
 ### Executor karışıklığı

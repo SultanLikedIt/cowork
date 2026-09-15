@@ -49,6 +49,14 @@ const ACCEPTED_UPLOAD_EXTENSIONS = [
   '.csv',
   '.txt',
   '.zip',
+  // Images are read with OCR on the backend (document_ingestion.py).
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.tif',
+  '.tiff',
+  '.bmp',
+  '.webp',
 ]
 const ACCEPTED_UPLOAD_ATTR = ACCEPTED_UPLOAD_EXTENSIONS.join(',')
 

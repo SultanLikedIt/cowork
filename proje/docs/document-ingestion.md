@@ -1,7 +1,7 @@
 # Document ingestion
 
-Uploaded PDF, DOCX, PPTX, XLSX, and HTML documents are converted internally by
-Docling. This path is independent from Scrapy web acquisition and is not
+Uploaded PDF, DOCX, PPTX, XLSX, HTML, and image (PNG, JPG, TIFF, BMP, WEBP)
+documents are converted internally by Docling. This path is independent from Scrapy web acquisition and is not
 exposed as a model-facing tool.
 
 For each upload, the backend persists a reusable `.docling/` directory:
@@ -19,8 +19,37 @@ separate.
 
 Bounds are configurable with `DOCLING_PARSE_TIMEOUT_SECONDS`,
 `DOCLING_MAX_FILE_BYTES`, `DOCLING_MAX_PAGES`, `DOCLING_MAX_TABLES`, and
-`DOCLING_MAX_CHUNKS`. `DOCLING_ENABLE_OCR` defaults to `false`; enable it only
-when OCR model assets and the additional processing cost are acceptable.
+`DOCLING_MAX_CHUNKS`.
+
+## OCR (scanned PDFs and images)
+
+Scanned PDFs and photos have no text layer, so without OCR they parse to
+nothing. OCR is controlled by:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DOCLING_ENABLE_OCR` | `true` in compose, `false` in code | Master switch |
+| `OCR_ENGINE` | `tesseract` | `tesseract`, `easyocr`, or `rapidocr` |
+| `OCR_LANGS` | `tur,eng` | Comma- or `+`-separated, in the engine's own codes (Tesseract `tur`, EasyOCR `tr`) |
+| `OCR_FORCE_FULL_PAGE` | `false` | `true` OCRs every page, not just bitmap regions |
+
+Tesseract is installed in the backend image (`tesseract-ocr`,
+`tesseract-ocr-tur`) and needs no model download. EasyOCR and RapidOCR are
+not installed and would fetch weights on first use. When OCR is on, Docling
+only OCRs bitmap regions, so text-bearing PDFs keep their native text and do not
+get slower. Budget a few seconds per scanned page, which is why compose raises
+`DOCLING_PARSE_TIMEOUT_SECONDS` to 300.
+
+- An image upload while OCR is disabled fails with the `ocr_disabled` reason
+  rather than parsing to empty text.
+- `manifest.json` records the `ocr` settings used. A cached PDF or image is
+  reparsed when those settings change.
+- `manifest.json` sets `text_empty: true` when no readable text came out (a blank
+  or unreadable scan), so the agent can say so instead of guessing.
+
+Running the backend on the host: install Tesseract with Turkish data yourself
+(Windows: UB Mannheim installer, and select Turkish; Debian/Ubuntu: `apt install
+tesseract-ocr tesseract-ocr-tur`) and make sure `tesseract` is on `PATH`.
 
 ## Model artifacts (`vendor/docling-models/`)
 

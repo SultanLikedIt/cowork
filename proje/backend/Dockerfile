@@ -14,6 +14,8 @@ WORKDIR /app
 
 # Docling's table model imports OpenCV even when OCR is disabled. Keep only
 # the native runtime libraries needed by the prebuilt wheel (no browser/UI).
+# tesseract-ocr is the default OCR engine for scanned PDFs and image uploads
+# (document_ingestion.py); it pulls in English + OSD data, -tur adds Turkish.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
@@ -22,6 +24,8 @@ RUN apt-get update \
         libxext6 \
         libxrender1 \
         libxcb1 \
+        tesseract-ocr \
+        tesseract-ocr-tur \
     && rm -rf /var/lib/apt/lists/*
 
 # Install deps first (better layer caching) straight from the offline
