@@ -70,12 +70,21 @@ docling-tools models download --output-dir backend/vendor/docling-models
 
 If the directory is absent, Docling falls back to downloading models from
 Hugging Face on first use, which requires outbound network access at runtime.
-That fallback holds even when `DOCLING_ARTIFACTS_PATH` points somewhere
-unusable: Docling reads that variable itself and validates it before our
-pipeline options apply, so `_resolve_artifacts_path()` clears it rather than
-letting every upload fail with `docling_conversion_failed`. Since
-`docker-compose.yml` always sets the variable, this is the ordinary path on a
-fresh clone, not an edge case.
+That fallback has to be forced when `DOCLING_ARTIFACTS_PATH` points somewhere
+unusable, and clearing the environment variable is **not** enough to do it.
+Docling's global settings object reads that variable once, when
+`docling.datamodel.settings` is imported, and `BasePipeline` falls back to the
+captured value whenever `pipeline_options.artifacts_path` is `None`. It then
+fails validation on the missing directory, so every upload -- PDF, image and
+DOCX alike -- returned `docling_conversion_failed`. `_resolve_artifacts_path()`
+therefore resets `settings.artifacts_path` as well as popping the env var.
+
+Since `docker-compose.yml` always sets the variable and
+`backend/vendor/docling-models/` is not in git, this is the ordinary path on a
+fresh clone, not an edge case. Measured in the container on that path: a DOCX
+converts immediately, and the first PDF takes ~45 s while the layout models
+download (later ones are fast). Pre-downloading the models as described above
+removes that first-use delay and the network dependency.
 
 For air-gapped deployments, run the command above before building the backend
 image so the models are baked in via the existing `COPY . .` step in

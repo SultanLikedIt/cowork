@@ -220,9 +220,16 @@ class DoclingArtifactsFallbackTests(unittest.TestCase):
 
     def test_unusable_artifacts_path_is_cleared_from_the_environment(self) -> None:
         import document_ingestion
+        from docling.datamodel.settings import settings as docling_settings
 
         missing = Path(tempfile.mkdtemp()) / "no-such-models"
         os.environ["DOCLING_ARTIFACTS_PATH"] = str(missing)
+        self.addCleanup(
+            setattr, docling_settings, "artifacts_path", docling_settings.artifacts_path
+        )
+        # What docling captured when it was imported, which is what
+        # BasePipeline actually reads.
+        docling_settings.artifacts_path = missing
         original = document_ingestion._artifacts_dir_usable
         document_ingestion._artifacts_dir_usable = lambda path: False
         try:
@@ -232,6 +239,9 @@ class DoclingArtifactsFallbackTests(unittest.TestCase):
 
         self.assertIsNone(resolved)
         self.assertNotIn("DOCLING_ARTIFACTS_PATH", os.environ)
+        # Popping the env var alone left every upload failing with
+        # docling_conversion_failed: docling had already captured the path.
+        self.assertIsNone(docling_settings.artifacts_path)
 
     def test_usable_artifacts_path_is_kept(self) -> None:
         import document_ingestion

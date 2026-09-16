@@ -90,12 +90,24 @@ def _resolve_artifacts_path() -> Optional[Path]:
         if _artifacts_dir_usable(candidate):
             return candidate
     if configured:
-        # Returning None is not enough: Docling reads DOCLING_ARTIFACTS_PATH
-        # from the environment itself and then hard-fails validation on a
-        # directory that does not exist, so every PDF/DOCX/PPTX upload died
-        # with "docling_conversion_failed" instead of falling back. Clearing
-        # it here is what actually restores the documented fallback.
+        # Returning None is not enough, and neither is clearing the env var.
+        # Docling's global settings object reads DOCLING_ARTIFACTS_PATH once,
+        # when docling.datamodel.settings is imported, and BasePipeline falls
+        # back to that captured value whenever pipeline_options.artifacts_path
+        # is None (base_pipeline.py: "elif settings.artifacts_path is not
+        # None"). It then hard-fails validation on the missing directory, so
+        # every upload -- PDF, image, and DOCX alike -- died with
+        # "docling_conversion_failed". Popping the env var only helps a
+        # process that has not imported docling yet, which is never the case
+        # here; resetting the live settings object is what actually restores
+        # the documented download-on-first-use fallback.
         os.environ.pop("DOCLING_ARTIFACTS_PATH", None)
+        try:
+            from docling.datamodel.settings import settings as docling_settings
+
+            docling_settings.artifacts_path = None
+        except Exception:  # noqa: BLE001 - never block ingestion on this
+            _logger.warning("Could not reset docling settings", exc_info=True)
         _logger.warning(
             "DOCLING_ARTIFACTS_PATH=%s is missing or empty; Docling will "
             "download models on first use (requires outbound network). Run "
