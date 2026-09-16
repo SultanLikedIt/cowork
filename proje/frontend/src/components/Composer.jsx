@@ -39,16 +39,27 @@ const MODE_OPTIONS = [
 const MIN_TEXTAREA_HEIGHT = 52
 const MAX_TEXTAREA_HEIGHT = 320
 
-// One list for both ways a file arrives. The file input's accept= is a
+// One list for every way a file arrives. The file input's accept= is a
 // string and a drop has no accept at all, so keeping the extensions here
-// is what stops the two paths from drifting apart.
-const ACCEPTED_UPLOAD_EXTENSIONS = [
+// is what stops those paths from drifting apart. Exported because App.jsx
+// gates uploads a second time before calling the API -- that gate is
+// derived from this list rather than restating it, which is exactly the
+// drift that once let an image reach a "Choose PDF, DOCX, ..." error.
+export const ACCEPTED_UPLOAD_EXTENSIONS = [
   '.pdf',
   '.docx',
   '.xlsx',
   '.csv',
   '.txt',
   '.zip',
+  // Images are read with OCR on the backend (document_ingestion.py).
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.tif',
+  '.tiff',
+  '.bmp',
+  '.webp',
 ]
 const ACCEPTED_UPLOAD_ATTR = ACCEPTED_UPLOAD_EXTENSIONS.join(',')
 

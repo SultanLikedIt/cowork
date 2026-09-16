@@ -8,6 +8,7 @@ that DO need a real bridge running.
 from __future__ import annotations
 
 import base64
+import inspect
 import tempfile
 import time
 import uuid
@@ -19,11 +20,29 @@ import capabilities
 import db
 import local_computer
 from execution.langgraph_runtime.workforce import (
+    _build_graph,
     _open_local_file_step,
     _request_wants_local_open,
 )
 
 db.run_migrations()
+
+
+def test_build_graph_declares_every_flag_its_worker_loop_reads():
+    """Regression: run_next read ``opens_on_user_computer`` to choose the
+    local-open fast path, but ``_build_graph`` never declared it as a
+    parameter, so the name resolved to nothing at runtime:
+
+        NameError: name 'opens_on_user_computer' is not defined
+
+    ``and`` short-circuits, so only jobs whose role was ROLE_GENERAL ever
+    evaluated it. Research jobs passed and looked healthy, while every
+    "summarize this attachment" job died in 0.02s with the UI showing
+    only "This message could not be completed."
+    """
+    declared = inspect.signature(_build_graph).parameters
+    for flag in ("reuses_uploaded_document", "opens_on_user_computer"):
+        assert flag in declared, f"_build_graph must declare {flag}"
 
 
 def _make_job(job_id: str, conversation_id: str, created_at: float) -> dict:

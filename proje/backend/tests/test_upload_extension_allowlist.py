@@ -96,10 +96,20 @@ def test_zip_still_accepted() -> None:
     check("zip archives are still accepted", _accepts("bundle.zip"))
 
 
+def test_ocr_image_extensions_accepted() -> None:
+    """Images are Docling documents read through OCR, not arbitrary binaries."""
+    for filename in ("photo.png", "scan.jpg", "scan.jpeg", "fax.tiff", "page.webp"):
+        check(
+            f"OCR image extension {filename!r} is accepted",
+            _accepts(filename),
+            filename,
+        )
+
+
 def test_genuinely_unsupported_extensions_still_rejected() -> None:
     """Malformed/binary rejection behavior must be unchanged -- only
     extensions the workspace can actually read as text were added."""
-    for filename in ("photo.png", "archive.rar", "archive.7z", "app.exe", "data.bin"):
+    for filename in ("anim.gif", "archive.rar", "archive.7z", "app.exe", "data.bin"):
         check(
             f"unsupported binary extension {filename!r} is still rejected",
             not _accepts(filename),
@@ -124,6 +134,7 @@ def main_() -> None:
     test_previously_rejected_extensions_are_now_accepted()
     test_original_document_extensions_still_accepted()
     test_zip_still_accepted()
+    test_ocr_image_extensions_accepted()
     test_genuinely_unsupported_extensions_still_rejected()
     test_workspace_cannot_read_anything_newly_allowed()
 

@@ -20,6 +20,11 @@ jobs:
           cache: "pip"
           cache-dependency-path: backend/requirements.txt
 
+      # Same OCR engine the backend image installs; without it the real-OCR
+      # tests in test_docling_ingestion.py skip instead of running.
+      - name: Install Tesseract OCR
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-tur
+
       - name: Install backend dependencies
         working-directory: backend
         run: |
