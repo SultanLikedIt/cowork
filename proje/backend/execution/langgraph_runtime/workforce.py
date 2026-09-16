@@ -4509,6 +4509,13 @@ def _build_graph(
     deep_research: bool = False,
     conversation_id: Optional[str] = None,
     reuses_uploaded_document: Optional[bool] = None,
+    # run_next below reads this. It was referenced there but never declared
+    # here, so the ROLE_GENERAL branch raised "NameError: name
+    # 'opens_on_user_computer' is not defined" and failed the whole job.
+    # `and` short-circuits, so only jobs whose role is ROLE_GENERAL ever
+    # evaluated it -- research jobs passed, and an attached document ("bu
+    # pdf'i özetle") died instantly.
+    opens_on_user_computer: Optional[bool] = None,
 ) -> Any:
     async def run_next(state: WorkforceState) -> dict[str, Any]:
         if handle.cancelled:
@@ -4761,6 +4768,7 @@ async def _run_workforce_async(
         deep_research=deep_research,
         conversation_id=conversation_id,
         reuses_uploaded_document=reuses_uploaded_document,
+        opens_on_user_computer=opens_on_user_computer,
     )
 
     final_state = await app.ainvoke(
