@@ -17,6 +17,7 @@ import {
 } from './api.js'
 import { AlertCircle } from 'lucide-react'
 import AddAgentModal from './components/AddAgentModal.jsx'
+import { ACCEPTED_UPLOAD_EXTENSIONS } from './components/Composer.jsx'
 import HomeView from './components/HomeView.jsx'
 import RightPanel from './components/RightPanel.jsx'
 import Sidebar from './components/Sidebar.jsx'
@@ -36,14 +37,16 @@ import { executionLabelOf, isActiveJob, tabForJob } from './stages.js'
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 const MAX_BATCH_UPLOAD_BYTES = 50 * 1024 * 1024
 const MAX_UPLOAD_SOURCES = 10
-const SUPPORTED_EXTENSIONS = new Set([
-  'pdf',
-  'docx',
-  'xlsx',
-  'csv',
-  'txt',
-  'zip',
-])
+// Derived, never restated: Composer owns the one upload allowlist (its
+// accept= attribute and drop filter read the same array). Listing the
+// extensions again here is what let an image pass Composer's picker and
+// then fail this gate with a message naming only the old formats.
+const SUPPORTED_EXTENSIONS = new Set(
+  ACCEPTED_UPLOAD_EXTENSIONS.map((extension) => extension.replace(/^\./, '')),
+)
+const SUPPORTED_EXTENSIONS_LABEL = [...SUPPORTED_EXTENSIONS]
+  .map((extension) => extension.toUpperCase())
+  .join(', ')
 
 function userSafeMessage(error, fallback) {
   if (error?.name === 'AbortError') return null
@@ -815,8 +818,8 @@ export default function App() {
       setErrors((previous) => ({
         ...previous,
         upload:
-          `${unsupported.name} is unsupported. Choose PDF, DOCX, XLSX, ` +
-          'CSV, TXT, or ZIP files.',
+          `${unsupported.name} is unsupported. Choose one of: ` +
+          `${SUPPORTED_EXTENSIONS_LABEL}.`,
       }))
       return
     }
