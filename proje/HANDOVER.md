@@ -297,14 +297,27 @@ docker compose up -d --build backend frontend   # kod değişince
 > uvicorn'u yenilemez. Tek yol `--build`, ve rebuild o anda `running` olan
 > job'ları öldürür.
 
-### 2.7 Docling model cache (opsiyonel ama önerilir)
+### 2.7 Docling model ağırlıkları (artık imajın içinde)
 
-İlk upload parse'ı, ağırlıklar yoksa Hugging Face'den indirir. Kalıcı cache
-(host'ta Docling kuruluysa, bir kere):
+Docling'in düzen/tablo ağırlıkları (~506 MB) `backend/Dockerfile` içinde build
+sırasında iniyor, yani Docker yolunda yapman gereken bir şey yok. Bu adım
+`COPY . .` satırının **üstünde** duruyor; Python kodunu değiştirdiğinde
+yarım gigabayt yeniden inmesin diye.
+
+Klasörü elle doldurmak istersen (backend'i host'ta çalıştırıyorsan):
 
 ```powershell
-docling-tools models download --output-dir backend\vendor\docling-models
+docling-tools models download layout tableformer --output-dir backend\vendor\docling-models
 ```
+
+**İki model adını mutlaka yaz.** Düz `docling-tools models download` varsayılan
+seti indirir; o set RapidOCR ağırlıklarını `modelscope.cn` üzerinden çekmeye
+çalışır, oraya erişim zaman aşımına uğrayınca komut (ve Docker build'i) komple
+düşer. Üstelik bu pipeline'ın hiç kullanmadığı modelleri de indirir: 506 MB
+yerine 1.2 GB.
+
+Ağırlıklar yoksa sistem çalışmayı sürdürür: ilk PDF/görselde Hugging Face'den
+indirir (~45 sn) ve dışarı ağ erişimi ister.
 
 Ayrıntı: [`docs/document-ingestion.md`](docs/document-ingestion.md).
 

@@ -61,12 +61,23 @@ tesseract-ocr tesseract-ocr-tur`) and make sure `tesseract` is on `PATH`.
 Hugging Face repos (~500 MB) and is **not** committed to git -- it is a
 deterministic download, not reviewed source, and too large for the repo.
 
-Fetch it once per machine/image build with Docling's own CLI (installed as
-part of `requirements.txt`):
+**The backend image already contains them**: `backend/Dockerfile` runs the
+download at build time, above `COPY . .` so that editing Python source does
+not re-fetch them. Nothing to do for the Docker path.
+
+To populate the directory by hand (running the backend on the host, or
+pre-seeding a build context), use Docling's own CLI, which `requirements.txt`
+installs:
 
 ```bash
-docling-tools models download --output-dir backend/vendor/docling-models
+docling-tools models download layout tableformer --output-dir backend/vendor/docling-models
 ```
+
+Name those two models explicitly. Plain `docling-tools models download` grabs
+a default set that also pulls RapidOCR weights from `modelscope.cn` -- that
+host can time out and take the whole command (or a Docker build) down with it,
+and the extra models it fetches are never loaded by this pipeline: 1.2GB
+instead of 506MB.
 
 If the directory is absent, Docling falls back to downloading models from
 Hugging Face on first use, which requires outbound network access at runtime.
@@ -79,12 +90,12 @@ fails validation on the missing directory, so every upload -- PDF, image and
 DOCX alike -- returned `docling_conversion_failed`. `_resolve_artifacts_path()`
 therefore resets `settings.artifacts_path` as well as popping the env var.
 
-Since `docker-compose.yml` always sets the variable and
-`backend/vendor/docling-models/` is not in git, this is the ordinary path on a
-fresh clone, not an edge case. Measured in the container on that path: a DOCX
+This matters whenever the directory is missing -- an image built before the
+Dockerfile baked the models in, a host run without the CLI download, or a
+build that skipped that step. Measured in the container on that path: a DOCX
 converts immediately, and the first PDF takes ~45 s while the layout models
-download (later ones are fast). Pre-downloading the models as described above
-removes that first-use delay and the network dependency.
+download (later ones are fast). With the models baked in there is no
+first-use delay and no runtime network dependency.
 
 For air-gapped deployments, run the command above before building the backend
 image so the models are baked in via the existing `COPY . .` step in

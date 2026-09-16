@@ -55,6 +55,23 @@ RUN pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir docling==2.114.0 python-pptx==1.0.2
 
+# Docling's layout/table weights (~506MB), baked in rather than fetched on
+# first upload. docker-compose.yml points DOCLING_ARTIFACTS_PATH here; when
+# the directory is absent, document_ingestion falls back to downloading from
+# Hugging Face at runtime, which costs ~45s on the first PDF or image and
+# needs outbound network. Deliberately ABOVE `COPY . .` so editing Python
+# source does not re-download half a gigabyte on every rebuild.
+#
+# The two models are named explicitly. Plain `docling-tools models download`
+# (the default set) pulls RapidOCR weights from modelscope.cn, which times
+# out from here and would fail the whole build -- and it also drags in
+# CodeFormula and the figure classifier, which this pipeline never loads,
+# for 1.2GB total. Measured: layout + tableformer alone satisfy the standard
+# PDF pipeline's artifacts_path validation. The easyocr/rapidocr OCR engines
+# have their own weights and are NOT included; OCR_ENGINE=tesseract (the
+# default) needs none, since it is the apt package installed above.
+RUN docling-tools models download layout tableformer -q -o /app/vendor/docling-models
+
 RUN pip install --no-cache-dir --no-index \
         --find-links=vendor/camel-offline-bundle-linux \
         -r requirements.txt \
