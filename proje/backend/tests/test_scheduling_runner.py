@@ -7,93 +7,10 @@ no web) and an in-memory job table standing in for main._JOBS.
 from __future__ import annotations
 
 import asyncio
-import tempfile
-import time
-import uuid
-from pathlib import Path
-from typing import Any, Optional
-
-import pytest
 
 import db
-from scheduling import runner, store, watch
-
-IST = "Europe/Istanbul"
-
-
-@pytest.fixture()
-def temp_db():
-    original_dir, original_path = db.DATA_DIR, db.DB_PATH
-    tmp = Path(tempfile.mkdtemp(prefix="scheduling_db_test_"))
-    db.DATA_DIR = tmp
-    db.DB_PATH = tmp / "app.db"
-    db.run_migrations()
-    db.create_workspace("ws-1", "Test", time.time())
-    try:
-        yield
-    finally:
-        db.DATA_DIR, db.DB_PATH = original_dir, original_path
-
-
-class Harness:
-    def __init__(self, now: float) -> None:
-        self.now = now
-        self.jobs: dict[str, dict[str, Any]] = {}
-        self.submitted: list[dict[str, Any]] = []
-        self.fail_submit: Optional[Exception] = None
-        self.page_texts: dict[str, str] = {}
-        self.diff_result: Optional[watch.DiffResult] = None
-        self.diff_calls: list[tuple[str, str, str]] = []
-
-        async def submit(**kwargs: Any) -> runner.SubmittedJob:
-            if self.fail_submit is not None:
-                raise self.fail_submit
-            job_id = f"job-{len(self.submitted) + 1}"
-            self.submitted.append(kwargs)
-            self.jobs[job_id] = {"status": "running", "result": None}
-            return runner.SubmittedJob(job_id=job_id, conversation_id=f"conv-{job_id}")
-
-        async def diff(prev: str, new: str, criteria: str) -> Optional[watch.DiffResult]:
-            self.diff_calls.append((prev, new, criteria))
-            return self.diff_result
-
-        def fetch(url: str) -> str:
-            return self.page_texts[url]
-
-        self.scheduler = runner.Scheduler(
-            submit=submit,
-            job_state=self.jobs.get,
-            clock=lambda: self.now,
-            fetch_text=fetch,
-            diff=diff,
-        )
-
-    def tick(self) -> None:
-        asyncio.run(self.scheduler.tick())
-
-    def finish(self, job_id: str, status: str = "done", result: str = "Rapor metni.") -> None:
-        self.jobs[job_id] = {"status": status, "result": result, "error": "boom" if status in {"failed", "error"} else None}
-
-
-def _task(**overrides: Any) -> str:
-    now = overrides.pop("now")
-    record = {
-        "task_id": str(uuid.uuid4()),
-        "workspace_id": "ws-1",
-        "name": "Haftalık bülten",
-        "prompt": "{hafta} sektör haberleri",
-        "mode": "multi",
-        "trigger_kind": "cron",
-        "cron_expr": "0 9 * * 1",
-        "timezone": IST,
-        "next_run_at": now - 5,
-        "created_at": now - 1000,
-        "updated_at": now - 1000,
-    }
-    record.update(overrides)
-    store.create_task(record)
-    return record["task_id"]
-
+from scheduling import store, watch
+from tests_support.scheduling_harness import Harness, make_task as _task, temp_db  # noqa: F401
 
 NOW = 1_790_000_000.0  # a fixed moment; only relative times matter here
 

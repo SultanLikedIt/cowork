@@ -124,6 +124,10 @@ services:
       SCHEDULE_MIN_DEEP_INTERVAL_HOURS: ${SCHEDULE_MIN_DEEP_INTERVAL_HOURS:-24}
       SCHEDULE_MAX_CONSECUTIVE_FAILURES: ${SCHEDULE_MAX_CONSECUTIVE_FAILURES:-3}
       SCHEDULE_DEFAULT_TIMEZONE: ${SCHEDULE_DEFAULT_TIMEZONE:-Europe/Istanbul}
+      # Task chains (scheduling/chains.py): links after a chain's first task,
+      # and runs one chain may start through its links in 24 hours.
+      SCHEDULE_MAX_CHAIN_DEPTH: ${SCHEDULE_MAX_CHAIN_DEPTH:-3}
+      SCHEDULE_MAX_CHAINED_RUNS_PER_DAY: ${SCHEDULE_MAX_CHAINED_RUNS_PER_DAY:-10}
       LOCAL_COMPUTER_ENABLED: ${LOCAL_COMPUTER_ENABLED:-false}
       LOCAL_COMPUTER_URL: ${LOCAL_COMPUTER_URL:-http://host.docker.internal:8765}
     volumes:

@@ -3155,6 +3155,7 @@ async def _submit_scheduled_run(
     prompt: str,
     context_text: Optional[str],
     conversation_title: str,
+    file_ids: Optional[list[str]] = None,
 ) -> SubmittedJob:
     response = await submit_job(
         RunPipelineRequest(
@@ -3164,6 +3165,7 @@ async def _submit_scheduled_run(
             workspace_id=task["workspace_id"],
             skill_ids=list(task.get("skill_ids") or []),
             context_text=context_text,
+            file_ids=_existing_upload_ids(file_ids or []),
         ),
         conversation_title=conversation_title,
         origin="schedule",
@@ -3171,8 +3173,78 @@ async def _submit_scheduled_run(
     return SubmittedJob(job_id=response.job_id, conversation_id=response.conversation_id)
 
 
-_SCHEDULER = Scheduler(submit=_submit_scheduled_run, job_state=_JOBS.get)
-app.include_router(build_scheduling_router(lambda: _SCHEDULER))
+def _existing_upload_ids(file_ids: list[str]) -> list[str]:
+    """Drop uploads that have since disappeared, so one missing attachment
+    does not reject the whole scheduled run with a 404."""
+    kept: list[str] = []
+    for file_id in file_ids:
+        try:
+            _load_upload_record(file_id)
+        except HTTPException:
+            continue
+        kept.append(file_id)
+    return kept
+
+
+def _describe_upload(file_id: str) -> Optional[dict[str, Any]]:
+    try:
+        record = _load_upload_record(file_id)
+    except HTTPException:
+        return None
+    return {"file_id": file_id, "filename": record.get("filename") or file_id}
+
+
+async def _collect_job_files(job_id: str) -> tuple[list[str], list[str]]:
+    """A finished job's artifacts, registered as uploads for a chained run.
+
+    Going through _store_upload means the next job reads them exactly as it
+    would a file a user attached: Docling parse, workspace context, and the
+    template path for a .docx. Bundles (folders) are skipped -- a project
+    directory is not a document to read.
+    """
+    job = _JOBS.get(job_id)
+    if job is None:
+        return [], ["The upstream job is no longer available, so its files were not passed on."]
+    file_ids: list[str] = []
+    notes: list[str] = []
+    total_bytes = 0
+    root = _resolve_workspace_root(job)
+    for entry in _job_artifacts(job):
+        name = str(entry.get("filename") or "")
+        if entry.get("bundle"):
+            notes.append(f"Skipped folder {entry.get('bundle')}: folders are not passed on.")
+            continue
+        if len(file_ids) >= MAX_UPLOAD_SOURCES:
+            notes.append(f"Skipped {name}: at most {MAX_UPLOAD_SOURCES} files are passed on.")
+            continue
+        size = int(entry.get("size_bytes") or 0)
+        if total_bytes + size > MAX_BATCH_UPLOAD_BYTES:
+            notes.append(f"Skipped {name}: files passed on are limited to {MAX_BATCH_UPLOAD_BYTES // (1024 * 1024)} MB in total.")
+            continue
+        try:
+            source = _safe_child(Path(str(root)), str(entry["path"]), must_exist=True)
+            content = await asyncio.to_thread(source.read_bytes)
+            stored = await _store_upload(name, content)
+        except HTTPException as exc:
+            detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
+            notes.append(f"Skipped {name}: {detail}")
+            continue
+        except Exception as exc:  # noqa: BLE001 - one bad file must not stop the chain
+            notes.append(f"Skipped {name}: {type(exc).__name__}: {exc}")
+            continue
+        file_ids.append(stored.file_id)
+        total_bytes += size
+    return file_ids, notes
+
+
+_SCHEDULER = Scheduler(
+    submit=_submit_scheduled_run,
+    job_state=_JOBS.get,
+    collect_files=_collect_job_files,
+)
+app.include_router(
+    build_scheduling_router(lambda: _SCHEDULER, describe_upload=_describe_upload)
+)
 
 
 @app.on_event("startup")

@@ -20,7 +20,27 @@ export const SCHEDULE_KINDS = [
   { value: 'weekly', label: 'Every week' },
   { value: 'monthly', label: 'Every month' },
   { value: 'once', label: 'Once' },
+  { value: 'after_task', label: 'After another task' },
   { value: 'custom', label: 'Custom (cron)' },
+]
+
+// When a task that runs after another one starts (backend scheduling/chains.py).
+export const CONDITIONS = [
+  {
+    value: 'success',
+    label: 'When it succeeds',
+    description: 'Runs after every run of that task that produced a result.',
+  },
+  {
+    value: 'change',
+    label: 'Only when it found a change',
+    description: 'For watch tasks: runs only when that task flagged a change.',
+  },
+  {
+    value: 'always',
+    label: 'Always',
+    description: 'Runs after every run of that task, even a failed one.',
+  },
 ]
 
 // Variables the backend resolves at run time (scheduling/prompts.py).
@@ -52,6 +72,35 @@ export const TASK_TEMPLATES = [
   },
 ]
 
+// Two tasks created together: a short daily check, and a full report that
+// only runs when that check found something new. The check compares its own
+// reports (research_diff) rather than hashing the gazette's home page, which
+// is a JavaScript shell with almost no extractable text.
+export const CHAIN_TEMPLATE = {
+  name: 'Watch → report',
+  description: 'A short daily check; the full report runs only when the check finds something new.',
+  upstream: {
+    name: 'Resmi Gazete watch',
+    prompt: "Resmi Gazete'nin {tarih} sayısında yayımlanan düzenlemeleri kısaca listele.",
+    mode: 'multi',
+    trigger_kind: 'cron',
+    cron_expr: '0 10 * * *',
+    watch: {
+      strategies: ['research_diff'],
+      urls: [],
+      criteria: 'Şirketimizi veya sektörümüzü etkileyebilecek yeni yönetmelik, tebliğ veya kanun',
+    },
+  },
+  follower: {
+    name: 'Regulation impact report',
+    prompt:
+      'Önceki görevin bulduğu yeni düzenlemelerin şirketimize etkisini araştır ve kaynaklı 1-2 sayfalık PDF rapor hazırla.',
+    mode: 'multi',
+    trigger_kind: 'after_task',
+    condition: 'change',
+  },
+}
+
 const pad = (value) => String(value).padStart(2, '0')
 
 function parseTime(time) {
@@ -67,6 +116,17 @@ function parseTime(time) {
 // the state cannot be turned into a schedule yet.
 export function scheduleToTrigger(schedule, timezone = DEFAULT_TIMEZONE) {
   const kind = schedule?.kind || 'daily'
+  if (kind === 'after_task') {
+    if (!schedule.upstreamTaskId) return { error: 'Choose the task this one runs after.' }
+    return {
+      trigger_kind: 'after_task',
+      cron_expr: null,
+      run_at: null,
+      timezone,
+      upstream_task_id: schedule.upstreamTaskId,
+      condition: schedule.condition || 'success',
+    }
+  }
   if (kind === 'custom') {
     const expression = String(schedule.cron || '').trim().split(/\s+/).join(' ')
     if (expression.split(' ').length !== 5) {
@@ -94,6 +154,13 @@ export function scheduleToTrigger(schedule, timezone = DEFAULT_TIMEZONE) {
 // A saved task -> editor state. Anything the presets cannot express opens
 // as a custom cron rather than being rounded to the nearest preset.
 export function triggerToSchedule(task, timezone = DEFAULT_TIMEZONE) {
+  if (task?.trigger_kind === 'after_task') {
+    return {
+      kind: 'after_task',
+      upstreamTaskId: task.upstream_task_id || '',
+      condition: task.condition || 'success',
+    }
+  }
   if (task?.trigger_kind === 'once' && task.run_at) {
     const { date, time } = epochToLocalParts(task.run_at, task.timezone || timezone)
     return { kind: 'once', date, time }
@@ -123,6 +190,11 @@ const ordinal = (day) => {
 
 export function describeSchedule(task) {
   if (!task) return ''
+  if (task.trigger_kind === 'after_task') {
+    const upstream = task.upstream_name ? `After ${task.upstream_name}` : 'After a deleted task'
+    const suffix = { change: ' · on change', always: ' · always' }[task.condition] || ''
+    return `${upstream}${suffix}`
+  }
   if (task.trigger_kind === 'once') {
     return task.run_at ? `Once, ${formatDateTime(task.run_at, task.timezone)}` : 'Once'
   }
@@ -228,6 +300,8 @@ const RUN_STATUS = {
   skipped_overlap: { label: 'Skipped', variant: 'secondary' },
   missed: { label: 'Missed', variant: 'secondary' },
   no_change: { label: 'No change', variant: 'secondary' },
+  queued: { label: 'Queued', variant: 'running' },
+  skipped_condition: { label: 'Not triggered', variant: 'secondary' },
 }
 
 export function runStatusMeta(status) {
@@ -239,6 +313,57 @@ export const RUN_TRIGGER_LABELS = {
   catch_up: 'Catch-up',
   manual: 'Run now',
   retry: 'Retry',
+  chained: 'Chained',
+}
+
+// Tasks in display order with their chain depth: each root (a task that
+// does not follow another listed task) followed by its followers, depth
+// first. Followers keep creation order under their parent.
+export function buildTaskTree(tasks) {
+  const list = Array.isArray(tasks) ? tasks : []
+  const ids = new Set(list.map((task) => task.task_id))
+  const children = new Map()
+  for (const task of list) {
+    const parent = task.upstream_task_id
+    if (parent && ids.has(parent)) {
+      if (!children.has(parent)) children.set(parent, [])
+      children.get(parent).push(task)
+    }
+  }
+  for (const group of children.values()) {
+    group.sort((left, right) => (left.created_at || 0) - (right.created_at || 0))
+  }
+  const ordered = []
+  const seen = new Set()
+  const visit = (task, depth) => {
+    if (seen.has(task.task_id)) return
+    seen.add(task.task_id)
+    ordered.push({ task, depth })
+    for (const child of children.get(task.task_id) || []) visit(child, depth + 1)
+  }
+  for (const task of list) {
+    if (!task.upstream_task_id || !ids.has(task.upstream_task_id)) visit(task, 0)
+  }
+  // Anything left is part of a cycle the server should have refused; still show it.
+  for (const task of list) visit(task, 0)
+  return ordered
+}
+
+// A task and everything that follows it -- the tasks it may not follow.
+export function chainDescendantIds(tasks, taskId) {
+  const found = new Set()
+  if (!taskId) return found
+  const frontier = [taskId]
+  while (frontier.length > 0) {
+    const current = frontier.pop()
+    for (const task of tasks || []) {
+      if (task.upstream_task_id === current && !found.has(task.task_id)) {
+        found.add(task.task_id)
+        frontier.push(task.task_id)
+      }
+    }
+  }
+  return found
 }
 
 // Editor state for a new task, optionally prefilled from a finished chat
@@ -258,6 +383,10 @@ export function newTaskDraft(seed = {}) {
       criteria: seed.watch?.criteria || '',
     },
     includePreviousSummary: seed.includePreviousSummary ?? true,
+    passUpstreamResult: seed.passUpstreamResult ?? true,
+    passUpstreamFiles: seed.passUpstreamFiles ?? true,
+    // [{ file_id, filename }]
+    attachedFiles: seed.attachedFiles || [],
   }
 }
 
@@ -271,6 +400,9 @@ export function draftFromTask(task) {
     schedule: triggerToSchedule(task),
     watch: task.watch,
     includePreviousSummary: task.include_previous_summary,
+    passUpstreamResult: task.pass_upstream_result,
+    passUpstreamFiles: task.pass_upstream_files,
+    attachedFiles: task.attached_files,
   })
 }
 
@@ -303,9 +435,14 @@ export function draftToPayload(draft, timezone = DEFAULT_TIMEZONE) {
       mode: draft.mode,
       deep_research: draft.mode === 'multi' && draft.deepResearch,
       skill_ids: draft.skillIds,
+      upstream_task_id: null,
+      condition: 'success',
       ...trigger,
       watch,
       include_previous_summary: draft.includePreviousSummary,
+      pass_upstream_result: draft.passUpstreamResult,
+      pass_upstream_files: draft.passUpstreamFiles,
+      attached_file_ids: draft.attachedFiles.map((file) => file.file_id),
     },
   }
 }

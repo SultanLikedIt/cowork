@@ -1,19 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
-import { Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Paperclip, Sparkles, X } from 'lucide-react'
 
-import { createScheduledTask, parseSchedule, previewSchedule, updateScheduledTask } from '../api.js'
+import {
+  createScheduledTask,
+  parseSchedule,
+  previewSchedule,
+  updateScheduledTask,
+  uploadFiles,
+} from '../api.js'
 import { cn } from '../lib/utils.js'
 import {
+  CONDITIONS,
   DEFAULT_TIMEZONE,
   PROMPT_VARIABLES,
   SCHEDULE_KINDS,
   WEEKDAYS,
+  chainDescendantIds,
   draftToPayload,
   formatDateTime,
   newTaskDraft,
   scheduleToTrigger,
   triggerToSchedule,
 } from '../schedule.js'
+import { ACCEPTED_UPLOAD_EXTENSIONS } from './Composer.jsx'
 import SkillPicker from './SkillPicker.jsx'
 import { Button } from './ui/button.jsx'
 import {
@@ -25,6 +34,8 @@ import {
   DialogTitle,
 } from './ui/dialog.jsx'
 import { Input, Label, Textarea } from './ui/input.jsx'
+
+const MAX_ATTACHED_FILES = 10
 
 const selectClass =
   'flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm transition-colors duration-150 hover:border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40'
@@ -99,6 +110,7 @@ export default function ScheduleEditorDialog({
   workspaceId,
   skillCatalog = [],
   maxActiveSkills = 3,
+  tasks = [],
   onClose,
   onSaved,
 }) {
@@ -109,6 +121,9 @@ export default function ScheduleEditorDialog({
   const [scheduleText, setScheduleText] = useState('')
   const [parsing, setParsing] = useState(false)
   const [parseNote, setParseNote] = useState(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState(null)
+  const fileInputRef = useRef(null)
   const promptRef = useRef(null)
   const nameRef = useRef(null)
   const timezone = task?.timezone || DEFAULT_TIMEZONE
@@ -119,7 +134,16 @@ export default function ScheduleEditorDialog({
     setError(null)
     setScheduleText('')
     setParseNote(null)
+    setUploadError(null)
   }, [open, initialDraft])
+
+  // A task may follow any task in the workspace except itself and the tasks
+  // that already follow it (that link would loop).
+  const upstreamOptions = useMemo(() => {
+    const excluded = chainDescendantIds(tasks, task?.task_id)
+    if (task?.task_id) excluded.add(task.task_id)
+    return tasks.filter((candidate) => !excluded.has(candidate.task_id))
+  }, [tasks, task])
 
   const update = (changes) => setDraft((previous) => ({ ...previous, ...changes }))
   const updateSchedule = (changes) =>
@@ -135,6 +159,10 @@ export default function ScheduleEditorDialog({
     if (!open) return undefined
     if (trigger.error) {
       setPreview({ runs: [], error: trigger.error })
+      return undefined
+    }
+    if (trigger.trigger_kind === 'after_task') {
+      setPreview({ runs: [], error: null })
       return undefined
     }
     const controller = new AbortController()
@@ -181,6 +209,36 @@ export default function ScheduleEditorDialog({
     }
   }
 
+  const attachFiles = async (fileList) => {
+    const picked = Array.from(fileList || [])
+    if (picked.length === 0 || uploading) return
+    const room = MAX_ATTACHED_FILES - draft.attachedFiles.length
+    if (room <= 0) {
+      setUploadError(`A task can keep at most ${MAX_ATTACHED_FILES} files.`)
+      return
+    }
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const uploaded = await uploadFiles(picked.slice(0, room))
+      setDraft((previous) => ({
+        ...previous,
+        attachedFiles: [
+          ...previous.attachedFiles,
+          ...uploaded.map((file) => ({ file_id: file.file_id, filename: file.filename })),
+        ],
+      }))
+      if (picked.length > room) {
+        setUploadError(`Only the first ${room} file${room === 1 ? '' : 's'} were added.`)
+      }
+    } catch (err) {
+      setUploadError(err.message || 'Upload failed.')
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
   const submit = async (event) => {
     event.preventDefault()
     if (saving) return
@@ -204,6 +262,9 @@ export default function ScheduleEditorDialog({
   }
 
   const { schedule } = draft
+  const isFollower = schedule.kind === 'after_task'
+  const upstreamTask = tasks.find((item) => item.task_id === schedule.upstreamTaskId) || null
+  const upstreamIsWatch = Boolean(upstreamTask?.watch)
   const watchUrlsOn = draft.watch.strategies.includes('url_hash')
   const toggleStrategy = (strategy, on) =>
     updateWatch({
@@ -309,8 +370,11 @@ export default function ScheduleEditorDialog({
             )}
           </Section>
 
-          <Section title="Schedule" description={`Times are in ${timezone}.`}>
-            <div className="flex flex-col gap-2">
+          <Section
+            title="Schedule"
+            description={isFollower ? 'Starts when another task in this workspace finishes.' : `Times are in ${timezone}.`}
+          >
+            <div className={cn('flex flex-col gap-2', isFollower && 'hidden')}>
               <Label htmlFor="schedule-text">Describe it</Label>
               <div className="flex gap-2">
                 <Input
@@ -363,6 +427,11 @@ export default function ScheduleEditorDialog({
                       weekly: { kind, time, weekday: schedule.weekday ?? 1 },
                       monthly: { kind, time, dayOfMonth: schedule.dayOfMonth ?? 1 },
                       once: { kind, time, date: schedule.date || '' },
+                      after_task: {
+                        kind,
+                        upstreamTaskId: schedule.upstreamTaskId || '',
+                        condition: schedule.condition || 'success',
+                      },
                       custom: { kind, cron: trigger.cron_expr || '0 9 * * 1' },
                     }
                     update({ schedule: defaults[kind] })
@@ -417,7 +486,37 @@ export default function ScheduleEditorDialog({
                   />
                 </div>
               )}
-              {schedule.kind === 'custom' ? (
+              {isFollower && (
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="schedule-upstream">Runs after</Label>
+                  <select
+                    id="schedule-upstream"
+                    className={selectClass}
+                    value={schedule.upstreamTaskId || ''}
+                    onChange={(event) => {
+                      const nextUpstream = tasks.find((item) => item.task_id === event.target.value)
+                      updateSchedule({
+                        upstreamTaskId: event.target.value,
+                        // "change" only means something after a watch task.
+                        condition:
+                          schedule.condition === 'change' && !nextUpstream?.watch
+                            ? 'success'
+                            : schedule.condition,
+                      })
+                    }}
+                  >
+                    <option value="" disabled>
+                      {upstreamOptions.length ? 'Choose a task…' : 'No other tasks yet'}
+                    </option>
+                    {upstreamOptions.map((candidate) => (
+                      <option key={candidate.task_id} value={candidate.task_id}>
+                        {candidate.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {isFollower ? null : schedule.kind === 'custom' ? (
                 <div className="flex flex-col gap-2 sm:col-span-2">
                   <Label htmlFor="schedule-cron">Cron expression</Label>
                   <Input
@@ -441,6 +540,63 @@ export default function ScheduleEditorDialog({
               )}
             </div>
 
+            {isFollower ? (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-3" role="radiogroup" aria-label="When it runs">
+                  {CONDITIONS.map((option) => {
+                    const disabled = option.value === 'change' && !upstreamIsWatch
+                    return (
+                      <label
+                        key={option.value}
+                        className={cn(
+                          'flex items-start gap-3',
+                          disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="schedule-condition"
+                          value={option.value}
+                          checked={(schedule.condition || 'success') === option.value}
+                          disabled={disabled}
+                          onChange={() => updateSchedule({ condition: option.value })}
+                          className="mt-0.5 h-4 w-4 shrink-0 accent-[hsl(var(--primary))]"
+                        />
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-[13px] font-medium leading-5">{option.label}</span>
+                          <span className="text-xs leading-relaxed text-muted-foreground">
+                            {disabled
+                              ? 'Available when the chosen task watches for changes.'
+                              : option.description}
+                          </span>
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+                <div className="flex flex-col gap-3 border-t border-border/60 pt-4">
+                  <CheckRow
+                    id="schedule-pass-result"
+                    checked={draft.passUpstreamResult}
+                    onChange={(passUpstreamResult) => update({ passUpstreamResult })}
+                    title="Give it that task's report"
+                    description="The report is added as context, so the instructions can say “summarize the previous report”."
+                  />
+                  <CheckRow
+                    id="schedule-pass-files"
+                    checked={draft.passUpstreamFiles}
+                    onChange={(passUpstreamFiles) => update({ passUpstreamFiles })}
+                    title="Give it that task's files"
+                    description="Files the run created (PDF, Word, Excel…) are attached, up to 10 files and 50 MB."
+                  />
+                </div>
+                {preview.error && (
+                  <p className="text-xs text-destructive" role="alert">
+                    {preview.error}
+                  </p>
+                )}
+              </div>
+            ) : (
             <div className="rounded-md bg-muted/40 px-3 py-2.5">
               {preview.error ? (
                 <p className="text-xs text-destructive" role="alert">
@@ -459,6 +615,63 @@ export default function ScheduleEditorDialog({
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">Checking schedule…</p>
+              )}
+            </div>
+            )}
+          </Section>
+
+          <Section
+            title="Files"
+            description="Attached to every run, e.g. a template to fill in or a spreadsheet to update."
+          >
+            {draft.attachedFiles.length > 0 && (
+              <ul className="flex flex-wrap gap-2">
+                {draft.attachedFiles.map((file) => (
+                  <li
+                    key={file.file_id}
+                    className="flex max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 py-1 pl-2.5 pr-1 text-[13px]"
+                  >
+                    <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="truncate">{file.filename}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        update({
+                          attachedFiles: draft.attachedFiles.filter((item) => item.file_id !== file.file_id),
+                        })
+                      }
+                      aria-label={`Remove ${file.filename}`}
+                      className="rounded p-0.5 text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-center gap-3">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={ACCEPTED_UPLOAD_EXTENSIONS.join(',')}
+                className="hidden"
+                onChange={(event) => attachFiles(event.target.files)}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading || draft.attachedFiles.length >= MAX_ATTACHED_FILES}
+              >
+                <Paperclip className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                {uploading ? 'Uploading…' : 'Attach files'}
+              </Button>
+              {uploadError && (
+                <span className="text-xs text-destructive" role="alert">
+                  {uploadError}
+                </span>
               )}
             </div>
           </Section>

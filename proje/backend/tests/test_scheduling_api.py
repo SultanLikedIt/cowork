@@ -45,8 +45,17 @@ def client(monkeypatch):
     async def fake_complete(messages, **kwargs):
         return parse_replies.pop(0)
 
+    uploads = {"file-1": {"filename": "sablon.docx"}}
+
     app = FastAPI()
-    app.include_router(api.build_router(lambda: scheduler, clock=lambda: NOW, complete=fake_complete))
+    app.include_router(
+        api.build_router(
+            lambda: scheduler,
+            clock=lambda: NOW,
+            complete=fake_complete,
+            describe_upload=lambda file_id: uploads.get(file_id),
+        )
+    )
     test_client = TestClient(app)
     test_client.scheduler = scheduler
     test_client.parse_replies = parse_replies
@@ -197,3 +206,101 @@ def test_parse_schedule_once(client: TestClient) -> None:
 def test_parse_schedule_unclear(client: TestClient) -> None:
     client.parse_replies.append(api.ParsedSchedule(trigger_kind="unclear"))
     assert client.post("/scheduled-tasks/parse-schedule", json={"text": "merhaba"}).status_code == 422
+
+
+# -- chains --------------------------------------------------------------------
+
+
+def _follow(client: TestClient, upstream_id: str, **overrides: Any):
+    body = {
+        "trigger_kind": "after_task",
+        "cron_expr": None,
+        "upstream_task_id": upstream_id,
+        "name": "Takip",
+        "prompt": "Önceki raporu özetle",
+    }
+    body.update(overrides)
+    return _create(client, **body)
+
+
+def test_create_follower(client: TestClient) -> None:
+    upstream = _create(client, name="İzleme").json()
+    response = _follow(client, upstream["task_id"], condition="change", pass_upstream_files=False)
+    assert response.status_code == 201, response.text
+    follower = response.json()
+    assert follower["trigger_kind"] == "after_task"
+    assert follower["next_run_at"] is None
+    assert follower["upcoming_runs"] == []
+    assert follower["condition"] == "change"
+    assert follower["upstream_name"] == "İzleme"
+    assert follower["pass_upstream_files"] is False
+
+    listed = {t["task_id"]: t for t in client.get("/scheduled-tasks").json()["tasks"]}
+    assert listed[upstream["task_id"]]["downstream_task_ids"] == [follower["task_id"]]
+    assert client.get(f"/scheduled-tasks/{upstream['task_id']}").json()["downstream_task_ids"] == [
+        follower["task_id"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"upstream_task_id": None},
+        {"upstream_task_id": "missing"},
+    ],
+)
+def test_follower_needs_a_real_upstream(client: TestClient, overrides: dict[str, Any]) -> None:
+    body = {
+        "trigger_kind": "after_task",
+        "cron_expr": None,
+        "name": "Takip",
+        "prompt": "x",
+        **overrides,
+    }
+    assert _create(client, **body).status_code == 422
+
+
+def test_patch_rejects_cycle(client: TestClient) -> None:
+    a = _create(client, name="A").json()
+    b = _follow(client, a["task_id"], name="B").json()
+    response = client.patch(
+        f"/scheduled-tasks/{a['task_id']}",
+        json={"trigger_kind": "after_task", "upstream_task_id": b["task_id"]},
+    )
+    assert response.status_code == 422
+    assert "loop" in response.json()["detail"]
+
+
+def test_patch_follower_back_to_cron(client: TestClient) -> None:
+    a = _create(client, name="A").json()
+    b = _follow(client, a["task_id"]).json()
+    updated = client.patch(
+        f"/scheduled-tasks/{b['task_id']}",
+        json={"trigger_kind": "cron", "cron_expr": "0 9 * * 1"},
+    ).json()
+    assert updated["upstream_task_id"] is None
+    assert updated["condition"] is None
+    assert updated["next_run_at"] is not None
+
+
+def test_resume_orphaned_follower_is_refused(client: TestClient) -> None:
+    a = _create(client, name="A").json()
+    b = _follow(client, a["task_id"]).json()
+    client.post(f"/scheduled-tasks/{b['task_id']}/pause")
+    client.delete(f"/scheduled-tasks/{a['task_id']}")
+    assert client.get(f"/scheduled-tasks/{b['task_id']}").json()["upstream_task_id"] is None
+    assert client.post(f"/scheduled-tasks/{b['task_id']}/resume").status_code == 422
+
+
+def test_attached_files(client: TestClient) -> None:
+    task = _create(client, attached_file_ids=["file-1"]).json()
+    assert task["attached_files"] == [{"file_id": "file-1", "filename": "sablon.docx"}]
+    assert _create(client, attached_file_ids=["nope"]).status_code == 404
+    cleared = client.patch(f"/scheduled-tasks/{task['task_id']}", json={"attached_file_ids": []}).json()
+    assert cleared["attached_files"] == []
+
+
+def test_preview_after_task(client: TestClient) -> None:
+    body = client.post("/scheduled-tasks/preview", json={"trigger_kind": "after_task"}).json()
+    assert body["upcoming_runs"] == []
+

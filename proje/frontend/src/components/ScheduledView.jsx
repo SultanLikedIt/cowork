@@ -3,7 +3,10 @@ import {
   AlertCircle,
   ArrowUpRight,
   CalendarClock,
+  CornerDownRight,
+  Link2,
   PanelLeft,
+  Paperclip,
   Pause,
   Pencil,
   Play,
@@ -13,6 +16,7 @@ import {
 } from 'lucide-react'
 
 import {
+  createScheduledTask,
   deleteScheduledTask,
   getScheduledRuns,
   getScheduledTasks,
@@ -23,8 +27,11 @@ import {
 } from '../api.js'
 import { cn } from '../lib/utils.js'
 import {
+  CHAIN_TEMPLATE,
+  CONDITIONS,
   RUN_TRIGGER_LABELS,
   TASK_TEMPLATES,
+  buildTaskTree,
   describeSchedule,
   draftFromTask,
   formatDateTime,
@@ -61,22 +68,28 @@ function TaskStateBadge({ task }) {
 
 function nextRunLabel(task) {
   if (!task.enabled) return 'Paused'
+  if (task.trigger_kind === 'after_task') return ''
   if (task.next_run_at) return `Next ${formatRelative(task.next_run_at)}`
   return task.trigger_kind === 'once' ? 'Finished' : 'No upcoming run'
 }
 
-function TaskRow({ task, selected, onSelect }) {
+function TaskRow({ task, depth = 0, selected, onSelect }) {
   return (
     <button
       type="button"
       onClick={() => onSelect(task.task_id)}
       aria-current={selected ? 'true' : undefined}
+      // Followers sit under the task they run after, one step (16px) per link.
+      style={{ paddingLeft: `${12 + depth * 16}px` }}
       className={cn(
-        'flex w-full flex-col gap-1 rounded-md px-3 py-2.5 text-left transition-colors duration-150',
+        'flex w-full flex-col gap-1 rounded-md py-2.5 pr-3 text-left transition-colors duration-150',
         selected ? 'bg-accent text-foreground' : 'hover:bg-accent/50',
       )}
     >
       <span className="flex items-center gap-2">
+        {depth > 0 && (
+          <CornerDownRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Runs after the task above" />
+        )}
         {task.watch && <Radar className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Watch task" />}
         <span className={cn('min-w-0 flex-1 truncate text-[13px] leading-5', selected && 'font-medium')}>
           {task.name}
@@ -112,6 +125,7 @@ function RunRow({ run, timezone, onOpen }) {
         {run.change_detected === true && <Badge variant="default">Changed</Badge>}
         <span className="text-[13px] tabular-nums">{formatDateTime(when, timezone)}</span>
         <span className="text-xs text-muted-foreground">{RUN_TRIGGER_LABELS[run.trigger] || run.trigger}</span>
+        {run.status === 'queued' && <StatusDot pulse className="text-link" />}
         {!run.seen_at && openable && ['done', 'partial', 'failed', 'error'].includes(run.status) && (
           <span className="h-1.5 w-1.5 rounded-full bg-link" aria-label="New" />
         )}
@@ -131,12 +145,39 @@ function RunRow({ run, timezone, onOpen }) {
       {run.change_summary && (
         <p className="whitespace-pre-line text-xs leading-relaxed text-muted-foreground">{run.change_summary}</p>
       )}
-      {run.error && <p className="text-xs leading-relaxed text-destructive">{run.error}</p>}
+      {run.error && (
+        <p
+          className={cn(
+            'text-xs leading-relaxed',
+            ['skipped_condition', 'skipped_overlap', 'missed', 'no_change'].includes(run.status)
+              ? 'text-muted-foreground'
+              : 'text-destructive',
+          )}
+        >
+          {run.error}
+        </p>
+      )}
+      {run.input?.upstream_name && (
+        <p className="text-xs text-muted-foreground">
+          Input from {run.input.upstream_name}
+          {run.input.file_ids?.length ? ` · ${run.input.file_ids.length} file${run.input.file_ids.length === 1 ? '' : 's'}` : ''}
+          {run.input.context ? ' · report' : ''}
+        </p>
+      )}
+      {run.input?.notes?.length > 0 && (
+        <ul className="flex flex-col gap-0.5">
+          {run.input.notes.map((note) => (
+            <li key={note} className="text-xs leading-relaxed text-muted-foreground">
+              {note}
+            </li>
+          ))}
+        </ul>
+      )}
     </li>
   )
 }
 
-function EmptyState({ onCreate }) {
+function EmptyState({ onCreate, onCreateChain, creatingChain }) {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-10 px-6 py-12 sm:px-8">
       <div className="flex flex-col gap-3">
@@ -187,6 +228,34 @@ function EmptyState({ onCreate }) {
           ))}
         </div>
       </div>
+
+      <div className="flex flex-col gap-3">
+        <h3 className="eyebrow">Or chain two tasks</h3>
+        <button
+          type="button"
+          onClick={onCreateChain}
+          disabled={creatingChain}
+          className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/60 p-4 text-left transition-colors duration-150 hover:border-border hover:bg-card disabled:opacity-60 sm:flex-row sm:items-center sm:gap-6"
+        >
+          <span className="flex flex-col gap-1 sm:w-64 sm:shrink-0">
+            <span className="flex items-center gap-2 text-[13px] font-medium">
+              <Link2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              {creatingChain ? 'Creating…' : CHAIN_TEMPLATE.name}
+            </span>
+            <span className="text-xs leading-relaxed text-muted-foreground">{CHAIN_TEMPLATE.description}</span>
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col gap-1.5 text-xs text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <Radar className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{CHAIN_TEMPLATE.upstream.name} · every day at 10:00</span>
+            </span>
+            <span className="flex items-center gap-2 pl-4">
+              <CornerDownRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{CHAIN_TEMPLATE.follower.name} · only when it changed</span>
+            </span>
+          </span>
+        </button>
+      </div>
     </div>
   )
 }
@@ -199,7 +268,22 @@ function scheduleCron({ schedule }) {
   return `${minute} ${hour} * * *`
 }
 
-function TaskDetail({ task, runs, runsState, busy, onRunNow, onTogglePause, onEdit, onDelete, onOpenRun }) {
+function TaskDetail({
+  task,
+  tasks,
+  runs,
+  runsState,
+  busy,
+  onRunNow,
+  onTogglePause,
+  onEdit,
+  onDelete,
+  onOpenRun,
+  onSelectTask,
+}) {
+  const followers = tasks.filter((item) => item.upstream_task_id === task.task_id)
+  const upstream = tasks.find((item) => item.task_id === task.upstream_task_id) || null
+  const condition = CONDITIONS.find((item) => item.value === task.condition)
   const [confirmDelete, setConfirmDelete] = useState(false)
   useEffect(() => setConfirmDelete(false), [task.task_id])
 
@@ -274,6 +358,55 @@ function TaskDetail({ task, runs, runsState, busy, onRunNow, onTogglePause, onEd
           </div>
         )}
 
+        {(task.trigger_kind === 'after_task' || followers.length > 0) && (
+          <dl className="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-2 text-[13px]">
+            {task.trigger_kind === 'after_task' && (
+              <>
+                <dt className="text-muted-foreground">Runs after</dt>
+                <dd className="flex flex-wrap items-baseline gap-x-2">
+                  {upstream ? (
+                    <button
+                      type="button"
+                      onClick={() => onSelectTask(upstream.task_id)}
+                      className="font-medium text-link underline-offset-4 hover:underline"
+                    >
+                      {upstream.name}
+                    </button>
+                  ) : (
+                    <span className="text-muted-foreground">a deleted task</span>
+                  )}
+                  {condition && <span className="text-muted-foreground">{condition.label.toLowerCase()}</span>}
+                  <span className="text-xs text-muted-foreground">
+                    {[
+                      task.pass_upstream_result && 'gets its report',
+                      task.pass_upstream_files && 'gets its files',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || 'gets no input from it'}
+                  </span>
+                </dd>
+              </>
+            )}
+            {followers.length > 0 && (
+              <>
+                <dt className="text-muted-foreground">Starts</dt>
+                <dd className="flex flex-wrap gap-x-3 gap-y-1">
+                  {followers.map((follower) => (
+                    <button
+                      key={follower.task_id}
+                      type="button"
+                      onClick={() => onSelectTask(follower.task_id)}
+                      className="font-medium text-link underline-offset-4 hover:underline"
+                    >
+                      {follower.name}
+                    </button>
+                  ))}
+                </dd>
+              </>
+            )}
+          </dl>
+        )}
+
         <p className="whitespace-pre-wrap rounded-md bg-muted/40 px-4 py-3 text-[13px] leading-relaxed">
           {task.prompt}
         </p>
@@ -293,6 +426,12 @@ function TaskDetail({ task, runs, runsState, busy, onRunNow, onTogglePause, onEd
             </Badge>
           )}
           {task.include_previous_summary && <Badge variant="outline">Focuses on what is new</Badge>}
+          {task.attached_files?.map((file) => (
+            <Badge key={file.file_id} variant="outline" title="Attached to every run">
+              <Paperclip className="h-3 w-3" aria-hidden="true" />
+              {file.filename}
+            </Badge>
+          ))}
         </div>
       </div>
 
@@ -305,9 +444,12 @@ function TaskDetail({ task, runs, runsState, busy, onRunNow, onTogglePause, onEd
           <p className="py-3 text-[13px] text-muted-foreground">Loading runs…</p>
         ) : runs.length === 0 ? (
           <p className="py-3 text-[13px] leading-relaxed text-muted-foreground">
-            No runs yet. {task.enabled && task.next_run_at
-              ? `The first one starts ${formatRelative(task.next_run_at)}, or use Run now to try it.`
-              : 'Use Run now to try it.'}
+            No runs yet.{' '}
+            {task.trigger_kind === 'after_task'
+              ? `It starts after ${upstream ? upstream.name : 'its upstream task'} finishes, or use Run now to try it with that task's latest result.`
+              : task.enabled && task.next_run_at
+                ? `The first one starts ${formatRelative(task.next_run_at)}, or use Run now to try it.`
+                : 'Use Run now to try it.'}
           </p>
         ) : (
           <ul className="divide-y divide-border/60">
@@ -343,6 +485,8 @@ export default function ScheduledView({
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState(null)
   const [editor, setEditor] = useState({ open: false, task: null, draft: null })
+  const [creatingChain, setCreatingChain] = useState(false)
+  const tree = useMemo(() => buildTaskTree(tasks), [tasks])
 
   const loadTasks = useCallback(
     async (signal) => {
@@ -391,9 +535,9 @@ export default function ScheduledView({
   useEffect(() => {
     if (tasks.length === 0) return
     if (!selectedId || !tasks.some((task) => task.task_id === selectedId)) {
-      setSelectedId(tasks[0].task_id)
+      setSelectedId(tree[0].task.task_id)
     }
-  }, [tasks, selectedId])
+  }, [tasks, tree, selectedId])
 
   const selected = useMemo(
     () => tasks.find((task) => task.task_id === selectedId) || null,
@@ -444,6 +588,26 @@ export default function ScheduledView({
 
   const openCreate = (draft) => setEditor({ open: true, task: null, draft })
 
+  const createChainTemplate = async () => {
+    if (creatingChain) return
+    setCreatingChain(true)
+    setActionError(null)
+    try {
+      const upstream = await createScheduledTask({ ...CHAIN_TEMPLATE.upstream, workspace_id: workspaceId })
+      const follower = await createScheduledTask({
+        ...CHAIN_TEMPLATE.follower,
+        workspace_id: workspaceId,
+        upstream_task_id: upstream.task_id,
+      })
+      await loadTasks()
+      setSelectedId(follower.task_id)
+    } catch (error) {
+      setActionError(error.message || 'Unable to create the example chain.')
+    } finally {
+      setCreatingChain(false)
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border/70 px-4">
@@ -493,17 +657,18 @@ export default function ScheduledView({
         <p className="px-8 py-10 text-[13px] text-muted-foreground">Loading scheduled tasks…</p>
       ) : tasks.length === 0 ? (
         <ScrollArea className="surface-grid min-h-0 flex-1">
-          <EmptyState onCreate={openCreate} />
+          <EmptyState onCreate={openCreate} onCreateChain={createChainTemplate} creatingChain={creatingChain} />
         </ScrollArea>
       ) : (
         <div className="flex min-h-0 flex-1 max-lg:flex-col">
           <div className="flex min-h-0 shrink-0 flex-col border-border/70 max-lg:max-h-[40%] max-lg:border-b lg:w-[22rem] lg:border-r">
             <ScrollArea className="min-h-0 flex-1">
               <div className="flex flex-col gap-px p-3">
-                {tasks.map((task) => (
+                {tree.map(({ task, depth }) => (
                   <TaskRow
                     key={task.task_id}
                     task={task}
+                    depth={depth}
                     selected={task.task_id === selectedId}
                     onSelect={setSelectedId}
                   />
@@ -515,6 +680,8 @@ export default function ScheduledView({
             {selected && (
               <TaskDetail
                 task={selected}
+                tasks={tasks}
+                onSelectTask={setSelectedId}
                 runs={runs}
                 runsState={runsState}
                 busy={busy}
@@ -547,6 +714,7 @@ export default function ScheduledView({
         workspaceId={workspaceId}
         skillCatalog={skillCatalog}
         maxActiveSkills={maxActiveSkills}
+        tasks={tasks}
         onClose={() => setEditor({ open: false, task: null, draft: null })}
         onSaved={(saved) => {
           setEditor({ open: false, task: null, draft: null })
