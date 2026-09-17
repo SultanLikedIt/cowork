@@ -64,6 +64,9 @@ export default function Sidebar({
   onNew,
   onGoHome,
   workspacesSelected = false,
+  scheduledSelected = false,
+  scheduledUnseen = 0,
+  onOpenScheduled,
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(null)
   return (
@@ -133,20 +136,27 @@ export default function Sidebar({
           <LayoutGrid className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>Workspaces</span>
         </button>
-        {/* Navigation placeholder: scheduling has no backend in this
-            release, so the item announces itself as unavailable rather
-            than leading to a dead screen. */}
         <button
           type="button"
-          disabled
-          title="Scheduled runs are not available yet"
-          className="flex w-full cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium text-muted-foreground/50"
+          onClick={onOpenScheduled}
+          className={cn(
+            'flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors duration-150',
+            scheduledSelected
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+          )}
         >
           <Clock className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>Scheduled</span>
-          <Badge variant="outline" className="ml-auto border-border/60">
-            Soon
-          </Badge>
+          {scheduledUnseen > 0 && (
+            <Badge
+              variant="default"
+              className="ml-auto tabular-nums"
+              aria-label={`${scheduledUnseen} new scheduled result${scheduledUnseen === 1 ? '' : 's'}`}
+            >
+              {scheduledUnseen}
+            </Badge>
+          )}
         </button>
       </nav>
 

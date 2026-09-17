@@ -1089,6 +1089,7 @@ Konu bazlı derin referanslar:
 | [`docs/web-execution.md`](docs/web-execution.md) | Arama + sayfa açma |
 | [`docs/document-ingestion.md`](docs/document-ingestion.md) | Upload / Docling |
 | [`docs/document-generation.md`](docs/document-generation.md) | PDF / Word / PowerPoint üretimi |
+| [`docs/scheduling.md`](docs/scheduling.md) | Zamanlanmış ve izleme görevleri |
 | [`docs/local-computer.md`](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
 | [`docs/agent-search.md`](docs/agent-search.md) | AgentSearch sidecar |
 | [`docs/backend-reliability-harness.md`](docs/backend-reliability-harness.md) | Deterministik güvenilirlik harness'ı |

@@ -113,6 +113,17 @@ services:
       # machine. Same-machine only: host.docker.internal always resolves to
       # whichever machine runs these containers, never a different browser
       # client. See backend/local_computer.py and docs/local-computer.md.
+      # Scheduled and watch tasks (backend/scheduling/, docs/scheduling.md).
+      # The loop runs inside this process; state lives in the /data database.
+      SCHEDULING_ENABLED: ${SCHEDULING_ENABLED:-true}
+      SCHEDULE_TICK_SECONDS: ${SCHEDULE_TICK_SECONDS:-30}
+      SCHEDULE_MAX_CONCURRENT: ${SCHEDULE_MAX_CONCURRENT:-2}
+      SCHEDULE_CATCHUP_WINDOW_HOURS: ${SCHEDULE_CATCHUP_WINDOW_HOURS:-6}
+      SCHEDULE_MAX_TASKS_PER_WORKSPACE: ${SCHEDULE_MAX_TASKS_PER_WORKSPACE:-20}
+      SCHEDULE_MIN_INTERVAL_MINUTES: ${SCHEDULE_MIN_INTERVAL_MINUTES:-60}
+      SCHEDULE_MIN_DEEP_INTERVAL_HOURS: ${SCHEDULE_MIN_DEEP_INTERVAL_HOURS:-24}
+      SCHEDULE_MAX_CONSECUTIVE_FAILURES: ${SCHEDULE_MAX_CONSECUTIVE_FAILURES:-3}
+      SCHEDULE_DEFAULT_TIMEZONE: ${SCHEDULE_DEFAULT_TIMEZONE:-Europe/Istanbul}
       LOCAL_COMPUTER_ENABLED: ${LOCAL_COMPUTER_ENABLED:-false}
       LOCAL_COMPUTER_URL: ${LOCAL_COMPUTER_URL:-http://host.docker.internal:8765}
     volumes:

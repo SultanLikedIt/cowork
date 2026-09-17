@@ -32,3 +32,7 @@ if os.environ.get("PYTEST_USE_REAL_DATA_DIR") != "1":
 # Suites script the LLM SELECT phase; real reranker weights (container or local
 # vendor dir) would silently bypass it. Reranker tests opt back in explicitly.
 os.environ["RERANKER_ENABLED"] = "false"
+
+# The scheduler loop would tick against the test database in the background
+# of any test that starts the app. Scheduling tests drive ticks directly.
+os.environ["SCHEDULER_AUTOSTART"] = "false"

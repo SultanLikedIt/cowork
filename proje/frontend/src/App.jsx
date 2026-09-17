@@ -12,6 +12,7 @@ import {
   getWorkers,
   getSkills,
   getWorkspaces,
+  getScheduledTasks,
   startPipeline,
   uploadFiles,
 } from './api.js'
@@ -20,12 +21,14 @@ import AddAgentModal from './components/AddAgentModal.jsx'
 import { ACCEPTED_UPLOAD_EXTENSIONS } from './components/Composer.jsx'
 import HomeView from './components/HomeView.jsx'
 import RightPanel from './components/RightPanel.jsx'
+import ScheduledView from './components/ScheduledView.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import ThreadView from './components/ThreadView.jsx'
 import TopBar from './components/TopBar.jsx'
 import WorkspacePicker from './components/WorkspacePicker.jsx'
 import { TooltipProvider } from './components/ui/tooltip.jsx'
 import { conversationIdOf, readRoute, routePath } from './routing.js'
+import { newTaskDraft } from './schedule.js'
 import { executionLabelOf, isActiveJob, tabForJob } from './stages.js'
 
 // Internal view ids stay 'Home'/'Task' (matches tabForJob() in stages.js
@@ -126,8 +129,14 @@ export default function App() {
   // Read once, synchronously, so the very first paint already reflects the
   // requested route instead of rendering the picker and correcting later.
   const initialRouteRef = useRef(readRoute())
+  // A third view, 'Scheduled', is the workspace's scheduled tasks screen
+  // (/w/:id/scheduled); it has no job of its own.
   const [tab, setTab] = useState(
-    initialRouteRef.current.conversationId ? 'Task' : 'Home',
+    initialRouteRef.current.view === 'scheduled'
+      ? 'Scheduled'
+      : initialRouteRef.current.conversationId
+        ? 'Task'
+        : 'Home',
   )
   const [input, setInput] = useState('')
   // Manual choice only, no auto-detection. Defaults to Single Agent.
@@ -212,6 +221,10 @@ export default function App() {
     !initialRouteRef.current.workspaceId,
   )
   const [creatingWorkspace, setCreatingWorkspace] = useState(false)
+  // New scheduled results not yet opened, for the sidebar badge; and a draft
+  // handed from a finished chat ("Repeat on a schedule") to the editor.
+  const [scheduledUnseen, setScheduledUnseen] = useState(0)
+  const [scheduleSeed, setScheduleSeed] = useState(null)
   const [workspaceCreateError, setWorkspaceCreateError] = useState(null)
 
   const uploadSequenceRef = useRef(0)
@@ -420,7 +433,6 @@ export default function App() {
     }
 
     if (!route.conversationId) return
-
     const newest = newestJobInConversation(route.conversationId)
     if (newest) {
       setActiveJobId(newest.job_id)
@@ -455,11 +467,15 @@ export default function App() {
     if (!routeApplied) return
     const next = pickerOpen
       ? '/'
-      : routePath(workspaceId, activeConversationId)
+      : routePath(
+          workspaceId,
+          activeConversationId,
+          tab === 'Scheduled' ? 'scheduled' : null,
+        )
     if (window.location.pathname !== next) {
       window.history.pushState({}, '', next)
     }
-  }, [routeApplied, pickerOpen, workspaceId, activeConversationId])
+  }, [routeApplied, pickerOpen, workspaceId, activeConversationId, tab])
 
   useEffect(() => {
     const onPopState = () => {
@@ -471,7 +487,13 @@ export default function App() {
         ? newestJobInConversation(route.conversationId)
         : null
       setActiveJobId(newest?.job_id ?? null)
-      setTab(newest ? 'Task' : 'Home')
+      setTab(
+        route.view === 'scheduled' && route.workspaceId
+          ? 'Scheduled'
+          : newest
+            ? 'Task'
+            : 'Home',
+      )
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
@@ -982,6 +1004,119 @@ export default function App() {
     setTab('Home')
   }, [handleClearAttachment, setWorkspaceId, workspaceId, workspaces])
 
+  // Scheduled runs create jobs on the server with nobody watching, so the
+  // job list loaded at startup never contains them. Merge the server's list
+  // in (live local entries win, as in hydrate) whenever that can have changed.
+  const refreshJobs = useCallback(async () => {
+    try {
+      const response = await getJobs()
+      if (!Array.isArray(response)) return
+      const fresh = response.filter((job) => job?.job_id)
+      setJobs((previous) => ({
+        ...Object.fromEntries(fresh.map((job) => [job.job_id, job])),
+        ...previous,
+      }))
+      setOrder((previous) => [
+        ...previous,
+        ...fresh
+          .sort((left, right) => (right.created_at || 0) - (left.created_at || 0))
+          .map((job) => job.job_id)
+          .filter((id) => !previous.includes(id)),
+      ])
+    } catch {
+      // Non-fatal: the next poll tries again.
+    }
+  }, [])
+
+  // Badge count for the sidebar, and the signal that a scheduled run has
+  // started or finished somewhere (its task's last_job_id/last_status moved).
+  const scheduledSignatureRef = useRef(null)
+  useEffect(() => {
+    if (!workspaceId) {
+      setScheduledUnseen(0)
+      return undefined
+    }
+    let disposed = false
+    const poll = async () => {
+      try {
+        const data = await getScheduledTasks(workspaceId)
+        if (disposed) return
+        setScheduledUnseen(data.unseen_runs || 0)
+        const signature = (data.tasks || [])
+          .map((task) => `${task.task_id}:${task.last_job_id}:${task.last_status}`)
+          .join('|')
+        if (scheduledSignatureRef.current !== null && scheduledSignatureRef.current !== signature) {
+          refreshJobs()
+        }
+        scheduledSignatureRef.current = signature
+      } catch {
+        // Non-fatal: the badge just keeps its last value.
+      }
+    }
+    scheduledSignatureRef.current = null
+    poll()
+    const timer = window.setInterval(poll, 30000)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [workspaceId, refreshJobs])
+
+  const handleOpenScheduled = useCallback(() => {
+    if (!workspaceId) {
+      setPickerOpen(true)
+      setTab('Home')
+      return
+    }
+    setPickerOpen(false)
+    setActiveJobId(null)
+    setActiveConversationId(null)
+    setTab('Scheduled')
+  }, [workspaceId])
+
+  const handleOpenScheduledRun = useCallback(
+    async (run) => {
+      if (!run?.job_id) return
+      try {
+        const job = await getJob(run.job_id)
+        setJobs((previous) => ({ ...previous, [job.job_id]: previous[job.job_id] || job }))
+        setOrder((previous) =>
+          previous.includes(job.job_id) ? previous : [job.job_id, ...previous],
+        )
+        setActiveJobId(job.job_id)
+        if (job.workspace_id) setWorkspaceId(job.workspace_id)
+        setActiveConversationId(conversationIdOf(job))
+        setPickerOpen(false)
+        setTab('Task')
+        refreshJobs()
+      } catch (error) {
+        setErrors((previous) => ({
+          ...previous,
+          submission: userSafeMessage(error, 'Unable to open that run.'),
+        }))
+      }
+    },
+    [refreshJobs, setWorkspaceId],
+  )
+
+  const handleRepeatOnSchedule = useCallback(
+    (job) => {
+      const request = String(job?.usage?.resolved_request || job?.topic || '').trim()
+      const name = String(job?.topic || '').trim()
+      setScheduleSeed(
+        newTaskDraft({
+          name: name.length > 60 ? `${name.slice(0, 57)}…` : name,
+          prompt: request,
+          mode: job?.mode || 'multi',
+          deepResearch: Boolean(job?.deep_research),
+          skillIds: (job?.skills || []).map((skill) => skill.skill_id).filter(Boolean),
+        }),
+      )
+      handleOpenScheduled()
+    },
+    [handleOpenScheduled],
+  )
+
   const handleOpenWorkspacePicker = useCallback(() => {
     setActiveJobId(null)
     setActiveConversationId(null)
@@ -1229,6 +1364,14 @@ export default function App() {
             handleNewConversation()
           }}
           workspacesSelected={pickerOpen}
+          scheduledSelected={!pickerOpen && tab === 'Scheduled'}
+          scheduledUnseen={scheduledUnseen}
+          onOpenScheduled={() => {
+            if (typeof window !== 'undefined' && window.innerWidth < 768) {
+              setSidebarOpen(false)
+            }
+            handleOpenScheduled()
+          }}
           onGoHome={() => {
             if (typeof window !== 'undefined' && window.innerWidth < 768) {
               setSidebarOpen(false)
@@ -1261,7 +1404,7 @@ export default function App() {
         />
 
         <div className="app-ground flex min-h-0 min-w-0 flex-1 flex-col">
-          {!pickerOpen && tab !== 'Home' && (
+          {!pickerOpen && tab === 'Task' && (
             <TopBar
               workspaceName={activeWorkspace?.name || 'Untitled workspace'}
               title={threadJobs.length > 0 ? threadJobs[0].topic : null}
@@ -1352,9 +1495,24 @@ export default function App() {
                     onSelectConversation={handleSelectConversation}
                   />
                 )}
+                {tab === 'Scheduled' && workspaceId && (
+                  <ScheduledView
+                    workspaceId={workspaceId}
+                    workspaceName={activeWorkspace?.name || 'Untitled workspace'}
+                    skillCatalog={skillCatalog}
+                    maxActiveSkills={maxActiveSkills}
+                    editorSeed={scheduleSeed}
+                    onEditorSeedConsumed={() => setScheduleSeed(null)}
+                    onOpenRun={handleOpenScheduledRun}
+                    onUnseenChange={setScheduledUnseen}
+                    onToggleNav={() => setSidebarOpen((open) => !open)}
+                    navOpen={sidebarOpen}
+                  />
+                )}
                 {tab === 'Task' && (
                   <ThreadView
                     jobs={threadJobs}
+                    onRepeat={handleRepeatOnSchedule}
                     onSwitchToWorkforce={
                       isThreadModeLocked ? handleSwitchToWorkforce : null
                     }

@@ -10,10 +10,11 @@
 //   /                                 workspace picker
 //   /w/:workspaceId                   workspace home
 //   /w/:workspaceId/c/:conversationId one conversation
+//   /w/:workspaceId/scheduled         the workspace's scheduled tasks
 //
 // Kept in its own module (rather than inline in App.jsx) so the parsing and
 // building rules can be tested directly -- see frontend/routing.test.mjs.
-const ROUTE_PATTERN = /^\/w\/([^/]+)(?:\/c\/([^/]+))?\/?$/
+const ROUTE_PATTERN = /^\/w\/([^/]+)(?:\/c\/([^/]+)|\/(scheduled))?\/?$/
 
 export function readRoute(pathname) {
   const target =
@@ -30,12 +31,17 @@ export function readRoute(pathname) {
     // A malformed percent-escape must not throw during the first render.
     return { workspaceId: null, conversationId: null }
   }
-  return { workspaceId, conversationId }
+  // `view` is only present for non-default views, so every existing route
+  // keeps its exact two-key shape.
+  return match[3]
+    ? { workspaceId, conversationId, view: 'scheduled' }
+    : { workspaceId, conversationId }
 }
 
-export function routePath(workspaceId, conversationId) {
+export function routePath(workspaceId, conversationId, view = null) {
   if (!workspaceId) return '/'
   const base = `/w/${encodeURIComponent(workspaceId)}`
+  if (view === 'scheduled') return `${base}/scheduled`
   return conversationId
     ? `${base}/c/${encodeURIComponent(conversationId)}`
     : base
