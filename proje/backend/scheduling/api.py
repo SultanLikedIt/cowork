@@ -14,11 +14,15 @@ from pydantic import BaseModel, Field
 
 import db
 import skills as skills_catalog
-from scheduling import config, cron, prompts, store, watch
+from scheduling import chains, config, cron, prompts, store, watch
 from scheduling.runner import Scheduler, compute_next_run
 
 MAX_PROMPT_CHARS = 4000
 PREVIEW_COUNT = 5
+MAX_ATTACHED_FILES = 10
+
+TriggerKind = Literal["cron", "once", "after_task"]
+Condition = Literal["success", "change", "always"]
 
 
 class WatchPayload(BaseModel):
@@ -36,13 +40,18 @@ class TaskCreate(BaseModel):
     mode: Literal["single", "multi"] = "multi"
     deep_research: bool = False
     skill_ids: list[str] = Field(default_factory=list, max_length=32)
-    trigger_kind: Literal["cron", "once"] = "cron"
+    trigger_kind: TriggerKind = "cron"
     cron_expr: Optional[str] = None
     run_at: Optional[float] = None
     timezone: Optional[str] = None
     watch: Optional[WatchPayload] = None
     include_previous_summary: bool = True
     enabled: bool = True
+    upstream_task_id: Optional[str] = None
+    condition: Condition = "success"
+    pass_upstream_result: bool = True
+    pass_upstream_files: bool = True
+    attached_file_ids: list[str] = Field(default_factory=list, max_length=MAX_ATTACHED_FILES)
 
 
 class TaskUpdate(BaseModel):
@@ -51,7 +60,7 @@ class TaskUpdate(BaseModel):
     mode: Optional[Literal["single", "multi"]] = None
     deep_research: Optional[bool] = None
     skill_ids: Optional[list[str]] = Field(default=None, max_length=32)
-    trigger_kind: Optional[Literal["cron", "once"]] = None
+    trigger_kind: Optional[TriggerKind] = None
     cron_expr: Optional[str] = None
     run_at: Optional[float] = None
     timezone: Optional[str] = None
@@ -59,10 +68,15 @@ class TaskUpdate(BaseModel):
     watch: Optional[WatchPayload] = None
     include_previous_summary: Optional[bool] = None
     enabled: Optional[bool] = None
+    upstream_task_id: Optional[str] = None
+    condition: Optional[Condition] = None
+    pass_upstream_result: Optional[bool] = None
+    pass_upstream_files: Optional[bool] = None
+    attached_file_ids: Optional[list[str]] = Field(default=None, max_length=MAX_ATTACHED_FILES)
 
 
 class PreviewRequest(BaseModel):
-    trigger_kind: Literal["cron", "once"] = "cron"
+    trigger_kind: TriggerKind = "cron"
     cron_expr: Optional[str] = None
     run_at: Optional[float] = None
     timezone: Optional[str] = None
@@ -118,6 +132,15 @@ def _schedule_fields(record: dict[str, Any], now: float) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     kind = record.get("trigger_kind") or "cron"
+    if kind == "after_task":
+        # No clock of its own: the upstream task's runs start it.
+        return {
+            "trigger_kind": "after_task",
+            "cron_expr": None,
+            "run_at": None,
+            "timezone": timezone,
+            "next_run_at": None,
+        }
     if kind == "cron":
         expression = " ".join(str(record.get("cron_expr") or "").split())
         try:
@@ -177,11 +200,52 @@ def _describe_next(task: dict[str, Any], now: float) -> list[float]:
     return [task["next_run_at"]] if task.get("next_run_at") else []
 
 
-def _public_task(task: dict[str, Any], now: float) -> dict[str, Any]:
+def _public_task(
+    task: dict[str, Any], now: float, all_tasks: Optional[list[dict[str, Any]]] = None
+) -> dict[str, Any]:
     public = dict(task)
     public.pop("watch_state", None)
     public["upcoming_runs"] = _describe_next(task, now)
+    public["condition"] = chains.condition_of(task) if task.get("trigger_kind") == "after_task" else None
+    if all_tasks is None:
+        all_tasks = [task, *store.downstream_tasks(task["task_id"])]
+        if task.get("upstream_task_id"):
+            upstream = store.get_task(task["upstream_task_id"])
+            if upstream:
+                all_tasks.append(upstream)
+    by_id = {item["task_id"]: item for item in all_tasks}
+    upstream = by_id.get(task.get("upstream_task_id") or "")
+    public["upstream_name"] = upstream["name"] if upstream else None
+    public["downstream_task_ids"] = [
+        item["task_id"] for item in all_tasks if item.get("upstream_task_id") == task["task_id"]
+    ]
     return public
+
+
+def _attached_files(
+    file_ids: list[str], describe_upload: Callable[[str], Optional[dict[str, Any]]]
+) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    for file_id in dict.fromkeys(file_ids):
+        described = describe_upload(file_id)
+        if not described:
+            raise HTTPException(status_code=404, detail=f"Attached file not found: {file_id}")
+        files.append({"file_id": file_id, "filename": str(described.get("filename") or file_id)})
+    return files
+
+
+def _chain_fields(
+    task_id: Optional[str], kind: str, upstream_id: Optional[str], condition: str, workspace_id: str
+) -> dict[str, Any]:
+    if kind != "after_task":
+        return {"upstream_task_id": None, "condition": None}
+    if not upstream_id:
+        raise HTTPException(status_code=422, detail="Choose the task this one runs after.")
+    try:
+        chains.validate_upstream(task_id, upstream_id, workspace_id)
+    except chains.ChainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"upstream_task_id": upstream_id, "condition": {"on": condition or chains.DEFAULT_CONDITION}}
 
 
 def build_router(
@@ -189,6 +253,7 @@ def build_router(
     *,
     clock: Callable[[], float] = time.time,
     complete: Optional[Callable[..., Any]] = None,
+    describe_upload: Callable[[str], Optional[dict[str, Any]]] = lambda file_id: None,
 ) -> APIRouter:
     router = APIRouter(prefix="/scheduled-tasks", tags=["scheduled-tasks"])
 
@@ -205,7 +270,7 @@ def build_router(
         return {
             "scheduling_enabled": config.enabled(),
             "variables": list(prompts.VARIABLES),
-            "tasks": [_public_task(task, now) for task in tasks],
+            "tasks": [_public_task(task, now, tasks) for task in tasks],
             "unseen_runs": sum(task["unseen_runs"] for task in tasks),
         }
 
@@ -222,6 +287,12 @@ def build_router(
             )
         record = req.model_dump()
         record.update(_schedule_fields(record, now))
+        record.update(
+            await asyncio.to_thread(
+                _chain_fields, None, record["trigger_kind"], req.upstream_task_id, req.condition, req.workspace_id
+            )
+        )
+        record["attached_files"] = _attached_files(req.attached_file_ids, describe_upload)
         record["watch"] = _watch_value(req.watch)
         record["skill_ids"] = skills_catalog.skill_ids(skills_catalog.resolve_skills(req.skill_ids))
         record["name"] = req.name.strip()
@@ -231,13 +302,15 @@ def build_router(
         record["updated_at"] = now
         await asyncio.to_thread(store.create_task, record)
         task = await asyncio.to_thread(store.get_task, record["task_id"])
-        return _public_task(task, now)
+        return await asyncio.to_thread(_public_task, task, now)
 
     @router.post("/preview")
     async def preview_schedule(req: PreviewRequest):
         now = clock()
         fields = _schedule_fields({**req.model_dump(), "enabled": True}, now)
-        if fields["trigger_kind"] == "cron":
+        if fields["trigger_kind"] == "after_task":
+            runs = []
+        elif fields["trigger_kind"] == "cron":
             runs = cron.next_fires(fields["cron_expr"], now, fields["timezone"], PREVIEW_COUNT)
         else:
             runs = [fields["run_at"]]
@@ -306,7 +379,7 @@ def build_router(
 
     @router.get("/{task_id}")
     async def get_scheduled_task(task_id: str):
-        return _public_task(await _require_task(task_id), clock())
+        return await asyncio.to_thread(_public_task, await _require_task(task_id), clock())
 
     @router.patch("/{task_id}")
     async def update_scheduled_task(task_id: str, req: TaskUpdate):
@@ -335,13 +408,31 @@ def build_router(
         if schedule_keys & set(changes):
             schedule = _schedule_fields(merged, now)
             fields.update(schedule)
+        if {"trigger_kind", "upstream_task_id", "condition"} & set(changes):
+            chain = await asyncio.to_thread(
+                _chain_fields,
+                task_id,
+                merged.get("trigger_kind") or "cron",
+                merged.get("upstream_task_id"),
+                changes.get("condition") or chains.condition_of(task),
+                task["workspace_id"],
+            )
+            fields["upstream_task_id"] = chain["upstream_task_id"]
+            fields["condition_json"] = _json_dump(chain["condition"]) if chain["condition"] else None
+        for key in ("pass_upstream_result", "pass_upstream_files"):
+            if key in changes and changes[key] is not None:
+                fields[key] = int(bool(changes[key]))
+        if changes.get("attached_file_ids") is not None:
+            fields["attached_files_json"] = _json_dump(
+                _attached_files(changes["attached_file_ids"], describe_upload)
+            )
         if "enabled" in changes:
             fields["enabled"] = int(bool(changes["enabled"]))
             if changes["enabled"]:
                 fields["paused_reason"] = None
                 fields["consecutive_failures"] = 0
         await asyncio.to_thread(store.update_task, task_id, fields)
-        return _public_task(await _require_task(task_id), now)
+        return await asyncio.to_thread(_public_task, await _require_task(task_id), now)
 
     @router.delete("/{task_id}")
     async def delete_scheduled_task(task_id: str):
@@ -357,12 +448,17 @@ def build_router(
             task_id,
             {"enabled": 0, "next_run_at": None, "paused_reason": None, "updated_at": clock()},
         )
-        return _public_task(await _require_task(task_id), clock())
+        return await asyncio.to_thread(_public_task, await _require_task(task_id), clock())
 
     @router.post("/{task_id}/resume")
     async def resume_scheduled_task(task_id: str):
         now = clock()
         task = await _require_task(task_id)
+        if task.get("trigger_kind") == "after_task" and not task.get("upstream_task_id"):
+            raise HTTPException(
+                status_code=422,
+                detail="The task this one ran after was deleted. Edit it to choose another.",
+            )
         schedule = _schedule_fields({**task, "enabled": True}, now)
         await asyncio.to_thread(
             store.update_task,
@@ -375,7 +471,7 @@ def build_router(
                 "updated_at": now,
             },
         )
-        return _public_task(await _require_task(task_id), now)
+        return await asyncio.to_thread(_public_task, await _require_task(task_id), now)
 
     @router.post("/{task_id}/run-now")
     async def run_scheduled_task_now(task_id: str):

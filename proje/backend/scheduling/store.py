@@ -15,8 +15,17 @@ TASK_JSON_FIELDS = {
     "skill_ids_json": "skill_ids",
     "watch_json": "watch",
     "watch_state_json": "watch_state",
+    "condition_json": "condition",
+    "attached_files_json": "attached_files",
 }
-TASK_BOOL_FIELDS = ("deep_research", "include_previous_summary", "enabled")
+_JSON_DEFAULTS = {"skill_ids": list, "watch_state": dict, "attached_files": list}
+TASK_BOOL_FIELDS = (
+    "deep_research",
+    "include_previous_summary",
+    "enabled",
+    "pass_upstream_result",
+    "pass_upstream_files",
+)
 UPDATABLE_TASK_COLUMNS = frozenset(
     {
         "name",
@@ -40,6 +49,11 @@ UPDATABLE_TASK_COLUMNS = frozenset(
         "last_result_summary",
         "consecutive_failures",
         "updated_at",
+        "upstream_task_id",
+        "condition_json",
+        "pass_upstream_result",
+        "pass_upstream_files",
+        "attached_files_json",
     }
 )
 UPDATABLE_RUN_COLUMNS = frozenset(
@@ -53,6 +67,7 @@ UPDATABLE_RUN_COLUMNS = frozenset(
         "change_summary",
         "error",
         "seen_at",
+        "input_json",
     }
 )
 TERMINAL_RUN_STATUSES = frozenset(
@@ -66,6 +81,7 @@ TERMINAL_RUN_STATUSES = frozenset(
         "skipped_overlap",
         "missed",
         "no_change",
+        "skipped_condition",
     }
 )
 
@@ -74,8 +90,8 @@ def _task_from_row(row: Any) -> dict[str, Any]:
     task = dict(row)
     for column, key in TASK_JSON_FIELDS.items():
         raw = task.pop(column, None)
-        default: Any = [] if key == "skill_ids" else ({} if key == "watch_state" else None)
-        task[key] = json.loads(raw) if raw else default
+        factory = _JSON_DEFAULTS.get(key)
+        task[key] = json.loads(raw) if raw else (factory() if factory else None)
     for key in TASK_BOOL_FIELDS:
         task[key] = bool(task.get(key))
     return task
@@ -85,6 +101,8 @@ def _run_from_row(row: Any) -> dict[str, Any]:
     run = dict(row)
     if run.get("change_detected") is not None:
         run["change_detected"] = bool(run["change_detected"])
+    raw_input = run.pop("input_json", None)
+    run["input"] = json.loads(raw_input) if raw_input else None
     return run
 
 
@@ -107,6 +125,11 @@ def create_task(record: dict[str, Any]) -> None:
         "next_run_at",
         "created_at",
         "updated_at",
+        "upstream_task_id",
+        "condition_json",
+        "pass_upstream_result",
+        "pass_upstream_files",
+        "attached_files_json",
     ]
     values = [
         record["task_id"],
@@ -126,6 +149,11 @@ def create_task(record: dict[str, Any]) -> None:
         record.get("next_run_at"),
         record["created_at"],
         record["updated_at"],
+        record.get("upstream_task_id"),
+        json.dumps(record["condition"]) if record.get("condition") else None,
+        int(bool(record.get("pass_upstream_result", True))),
+        int(bool(record.get("pass_upstream_files", True))),
+        json.dumps(record.get("attached_files") or [], ensure_ascii=False),
     ]
     placeholders = ", ".join("?" for _ in columns)
     with db._write_lock, db._connect() as conn:
@@ -273,7 +301,13 @@ def insert_run(record: dict[str, Any]) -> None:
         "change_summary",
         "retry_of",
         "error",
+        "parent_run_id",
+        "input_json",
     ]
+    record = {
+        **record,
+        "input_json": json.dumps(record["input"], ensure_ascii=False) if record.get("input") else None,
+    }
     values = [record.get(column) for column in columns]
     if values[columns.index("change_detected")] is not None:
         values[columns.index("change_detected")] = int(bool(record["change_detected"]))
@@ -291,10 +325,16 @@ def update_run(run_id: str, fields: dict[str, Any]) -> None:
         raise ValueError(f"not updatable: {sorted(unknown)}")
     if not fields:
         return
-    values = [
-        int(bool(value)) if column == "change_detected" and value is not None else value
-        for column, value in fields.items()
-    ]
+    def encode(column: str, value: Any) -> Any:
+        if value is None:
+            return None
+        if column == "change_detected":
+            return int(bool(value))
+        if column == "input_json" and not isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+
+    values = [encode(column, value) for column, value in fields.items()]
     assignments = ", ".join(f"{column} = ?" for column in fields)
     with db._write_lock, db._connect() as conn:
         conn.execute(
@@ -374,5 +414,97 @@ def run_for_job(job_id: str) -> Optional[dict[str, Any]]:
             "SELECT * FROM scheduled_runs WHERE job_id = ? LIMIT 1", (job_id,)
         ).fetchone()
         return _run_from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def downstream_tasks(task_id: str) -> list[dict[str, Any]]:
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_tasks WHERE upstream_task_id = ? ORDER BY created_at",
+            (task_id,),
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def orphaned_chain_tasks() -> list[dict[str, Any]]:
+    """Enabled after_task tasks whose upstream was deleted (the FK nulled it)."""
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM scheduled_tasks
+            WHERE enabled = 1 AND trigger_kind = 'after_task' AND upstream_task_id IS NULL
+            """
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def queued_runs(limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_runs WHERE status = 'queued' ORDER BY scheduled_for LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [_run_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def latest_successful_run(task_id: str) -> Optional[dict[str, Any]]:
+    conn = db._connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT * FROM scheduled_runs
+            WHERE task_id = ? AND status IN ('done', 'partial') AND job_id IS NOT NULL
+            ORDER BY COALESCE(finished_at, scheduled_for) DESC LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        return _run_from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def chained_runs_since(task_ids: Iterable[str], since: float) -> int:
+    ids = list(task_ids)
+    if not ids:
+        return 0
+    placeholders = ", ".join("?" for _ in ids)
+    conn = db._connect()
+    try:
+        return int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) FROM scheduled_runs
+                WHERE trigger = 'chained' AND scheduled_for >= ?
+                  AND status != 'skipped_condition' AND task_id IN ({placeholders})
+                """,
+                [since, *ids],
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+
+def has_chained_run(task_id: str, parent_run_id: str) -> bool:
+    conn = db._connect()
+    try:
+        return (
+            conn.execute(
+                "SELECT 1 FROM scheduled_runs WHERE task_id = ? AND parent_run_id = ? LIMIT 1",
+                (task_id, parent_run_id),
+            ).fetchone()
+            is not None
+        )
     finally:
         conn.close()

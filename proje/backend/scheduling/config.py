@@ -63,3 +63,13 @@ def default_timezone() -> str:
 
 def summary_max_chars() -> int:
     return int(_number("SCHEDULE_SUMMARY_MAX_CHARS", 2000, 200))
+
+
+def max_chain_depth() -> int:
+    """How many after_task links may follow a chain's root task."""
+    return int(_number("SCHEDULE_MAX_CHAIN_DEPTH", 3, 1))
+
+
+def max_chained_runs_per_day() -> int:
+    """Chained runs started per chain (root and all descendants) in 24 hours."""
+    return int(_number("SCHEDULE_MAX_CHAINED_RUNS_PER_DAY", 10, 1))

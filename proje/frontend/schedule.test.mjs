@@ -1,6 +1,8 @@
 // Preset <-> cron mapping, schedule text and draft validation for scheduled
 // tasks. Imports the real module so it cannot drift from the editor.
 import {
+  buildTaskTree,
+  chainDescendantIds,
   describeSchedule,
   draftToPayload,
   localDateTimeToEpoch,
@@ -64,6 +66,40 @@ eq('deep research only on workforce', draftToPayload(single).payload.deep_resear
 const now = Date.UTC(2026, 8, 17, 12, 0)
 eq('relative future', formatRelative(now / 1000 + 3 * 3600, now), 'in 3 hours')
 eq('relative past', formatRelative(now / 1000 - 86400, now), '1 day ago')
+
+// --- chains ------------------------------------------------------------
+const afterTrigger = scheduleToTrigger({ kind: 'after_task', upstreamTaskId: 't-1', condition: 'change' })
+eq('after_task trigger', afterTrigger, {
+  trigger_kind: 'after_task', cron_expr: null, run_at: null, timezone: IST, upstream_task_id: 't-1', condition: 'change',
+})
+check('after_task needs an upstream', Boolean(scheduleToTrigger({ kind: 'after_task', upstreamTaskId: '' }).error))
+eq('after_task round trip', triggerToSchedule({ trigger_kind: 'after_task', upstream_task_id: 't-1', condition: 'change' }), {
+  kind: 'after_task', upstreamTaskId: 't-1', condition: 'change',
+})
+eq('describe follower', describeSchedule({ trigger_kind: 'after_task', upstream_name: 'Watch', condition: 'change' }), 'After Watch · on change')
+eq('describe orphan', describeSchedule({ trigger_kind: 'after_task', upstream_name: null, condition: 'success' }), 'After a deleted task')
+
+const followerDraft = newTaskDraft({
+  name: 'F', prompt: 'P',
+  schedule: { kind: 'after_task', upstreamTaskId: 't-1', condition: 'always' },
+  passUpstreamFiles: false,
+  attachedFiles: [{ file_id: 'f-1', filename: 'a.docx' }],
+})
+const followerPayload = draftToPayload(followerDraft).payload
+eq('follower payload chain fields', [followerPayload.upstream_task_id, followerPayload.condition, followerPayload.pass_upstream_result, followerPayload.pass_upstream_files], ['t-1', 'always', true, false])
+eq('attached file ids', followerPayload.attached_file_ids, ['f-1'])
+eq('cron payload clears upstream', draftToPayload(newTaskDraft({ name: 'N', prompt: 'P' })).payload.upstream_task_id, null)
+
+const tasks = [
+  { task_id: 'c', upstream_task_id: 'b', created_at: 3 },
+  { task_id: 'x', upstream_task_id: null, created_at: 5 },
+  { task_id: 'b', upstream_task_id: 'a', created_at: 2 },
+  { task_id: 'a', upstream_task_id: null, created_at: 1 },
+  { task_id: 'b2', upstream_task_id: 'a', created_at: 4 },
+  { task_id: 'o', upstream_task_id: 'gone', created_at: 6 },
+]
+eq('task tree order and depth', buildTaskTree(tasks).map(({ task, depth }) => `${task.task_id}:${depth}`), ['x:0', 'a:0', 'b:1', 'c:2', 'b2:1', 'o:0'])
+eq('descendants', [...chainDescendantIds(tasks, 'a')].sort(), ['b', 'b2', 'c'])
 
 if (failures > 0) {
   console.error(`${failures} schedule check(s) failed`)
