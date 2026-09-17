@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,10 +30,16 @@ DOCLING_EXTENSIONS = (
 )
 # Formats whose parse result depends on the OCR configuration.
 OCR_EXTENSIONS = frozenset({".pdf"}) | IMAGE_EXTENSIONS
-_OCR_ENGINES = ("tesseract", "easyocr", "rapidocr")
+# paddleocr_vl is a separate document-parsing service (paddleocr_vl.py), not
+# a Docling OCR stage; the other three run inside Docling's PDF pipeline.
+PADDLEOCR_VL_ENGINE = "paddleocr_vl"
+_DOCLING_OCR_ENGINES = ("tesseract", "easyocr", "rapidocr")
+_OCR_ENGINES = (PADDLEOCR_VL_ENGINE,) + _DOCLING_OCR_ENGINES
 # Each engine names languages differently (Tesseract: ISO 639-2 "tur",
 # EasyOCR: ISO 639-1 "tr", RapidOCR: model names). Defaults target the
-# Turkish + English documents this app is used with.
+# Turkish + English documents this app is used with. PaddleOCR-VL needs no
+# language setting (Turkish is among its 109 languages); with it, OCR_LANGS
+# configures the Docling fallback engine.
 _DEFAULT_OCR_LANGS = {
     "tesseract": ["tur", "eng"],
     "easyocr": ["tr", "en"],
@@ -46,6 +53,10 @@ MAX_CANONICAL_BYTES = int(
 MAX_STORED_TABLES = max(1, min(int(os.getenv("DOCLING_MAX_TABLES", "100")), 2_000))
 MAX_STORED_CHUNKS = max(1, min(int(os.getenv("DOCLING_MAX_CHUNKS", "10000")), 50_000))
 MAX_MANIFEST_HEADINGS = 500
+# With OCR_ENGINE=paddleocr_vl, a PDF page with at least this many
+# non-whitespace characters in its text layer keeps Docling's native text;
+# below it (a scan, or only a stray page number) it goes to PaddleOCR-VL.
+PDF_TEXT_LAYER_MIN_CHARS = max(1, int(os.getenv("PDF_TEXT_LAYER_MIN_CHARS", "20")))
 
 
 class DocumentParseError(RuntimeError):
@@ -123,19 +134,36 @@ def _env_flag(name: str) -> bool:
 
 
 def ocr_settings() -> dict[str, Any]:
-    """OCR configuration from the environment; also recorded in manifests."""
-    engine = os.getenv("OCR_ENGINE", "").strip().lower() or "tesseract"
+    """OCR configuration from the environment; also recorded in manifests.
+
+    ``engine`` is the preferred engine. ``fallback_engine`` is the Docling
+    OCR engine used when PaddleOCR-VL is preferred but unavailable; it is
+    None for the Docling engines, which have no fallback.
+    """
+    engine = os.getenv("OCR_ENGINE", "").strip().lower() or PADDLEOCR_VL_ENGINE
     if engine not in _OCR_ENGINES:
-        _logger.warning("Unknown OCR_ENGINE=%r; using tesseract.", engine)
-        engine = "tesseract"
+        _logger.warning("Unknown OCR_ENGINE=%r; using %s.", engine, PADDLEOCR_VL_ENGINE)
+        engine = PADDLEOCR_VL_ENGINE
+    fallback_engine: Optional[str] = None
+    if engine == PADDLEOCR_VL_ENGINE:
+        fallback_engine = (
+            os.getenv("OCR_FALLBACK_ENGINE", "").strip().lower() or "tesseract"
+        )
+        if fallback_engine not in _DOCLING_OCR_ENGINES:
+            _logger.warning(
+                "Unknown OCR_FALLBACK_ENGINE=%r; using tesseract.", fallback_engine
+            )
+            fallback_engine = "tesseract"
+    docling_engine = fallback_engine or engine
     langs = [
         token.strip()
         for token in re.split(r"[,+]", os.getenv("OCR_LANGS", ""))
         if token.strip()
-    ] or list(_DEFAULT_OCR_LANGS[engine])
+    ] or list(_DEFAULT_OCR_LANGS[docling_engine])
     return {
         "enabled": _env_flag("DOCLING_ENABLE_OCR"),
         "engine": engine,
+        "fallback_engine": fallback_engine,
         "langs": langs,
         "force_full_page": _env_flag("OCR_FORCE_FULL_PAGE"),
     }
@@ -152,7 +180,7 @@ def _build_ocr_options(settings: dict[str, Any]) -> Any:
         "tesseract": TesseractCliOcrOptions,
         "easyocr": EasyOcrOptions,
         "rapidocr": RapidOcrOptions,
-    }[settings["engine"]]
+    }[settings.get("fallback_engine") or settings["engine"]]
     return option_class(
         lang=list(settings["langs"]),
         force_full_page_ocr=bool(settings["force_full_page"]),
@@ -172,7 +200,8 @@ def build_converter(settings: Optional[dict[str, Any]] = None) -> Any:
     # OCR is opt-in (DOCLING_ENABLE_OCR). Unless force_full_page is set,
     # Docling only OCRs bitmap regions, so text-bearing PDFs keep their
     # native text and stay fast. Tesseract needs no model download; EasyOCR
-    # and RapidOCR fetch weights on first use.
+    # and RapidOCR fetch weights on first use. With OCR_ENGINE=paddleocr_vl
+    # this converter is the fallback path and uses OCR_FALLBACK_ENGINE.
     pdf_options = PdfPipelineOptions(
         do_ocr=bool(settings["enabled"]),
         ocr_options=_build_ocr_options(settings),
@@ -312,14 +341,160 @@ def _write_tables(document: Any, output_dir: Path) -> list[dict[str, Any]]:
     return references
 
 
+def _pdf_text_layer_pages(source: Path) -> Optional[list[bool]]:
+    """Per page: does it carry a real text layer? None if unreadable."""
+    try:
+        import pypdfium2
+
+        document = pypdfium2.PdfDocument(str(source))
+        try:
+            flags: list[bool] = []
+            for index in range(len(document)):
+                page = document[index]
+                textpage = page.get_textpage()
+                try:
+                    text = textpage.get_text_range()
+                finally:
+                    textpage.close()
+                    page.close()
+                flags.append(len("".join(text.split())) >= PDF_TEXT_LAYER_MIN_CHARS)
+            return flags
+        finally:
+            document.close()
+    except Exception:  # noqa: BLE001 - Docling reports unreadable PDFs itself
+        return None
+
+
+def _page_runs(flags: list[bool]) -> list[tuple[bool, list[int]]]:
+    """Consecutive pages of the same kind: [(has_text_layer, 0-based indices)]."""
+    runs: list[tuple[bool, list[int]]] = []
+    for index, has_text in enumerate(flags):
+        if runs and runs[-1][0] == has_text:
+            runs[-1][1].append(index)
+        else:
+            runs.append((has_text, [index]))
+    return runs
+
+
+def _write_pdf_pages(source: Path, indices: list[int], target: Path) -> None:
+    import pypdfium2
+
+    original = pypdfium2.PdfDocument(str(source))
+    subset = pypdfium2.PdfDocument.new()
+    try:
+        subset.import_pages(original, indices)
+        subset.save(str(target))
+    finally:
+        subset.close()
+        original.close()
+
+
+def _convert_with_docling(source: Path, converter: Any) -> tuple[Any, int]:
+    active_converter = converter or _get_converter()
+    result = active_converter.convert(
+        source,
+        raises_on_error=True,
+        max_num_pages=MAX_DOCUMENT_PAGES,
+        max_file_size=MAX_DOCUMENT_BYTES,
+    )
+    document = getattr(result, "document", None)
+    if document is None:
+        raise DocumentParseError(
+            "docling_conversion_failed", "Docling returned no document."
+        )
+    input_document = getattr(result, "input", None)
+    return document, int(getattr(input_document, "page_count", 0) or 0)
+
+
+def _parse_with_paddleocr_vl(
+    source: Path, extension: str, *, converter: Any, client: Any
+) -> tuple[Any, int, dict[str, Any]]:
+    """Route an upload between PaddleOCR-VL and Docling's native PDF text.
+
+    Images always go to PaddleOCR-VL. PDF pages with a real text layer stay
+    on Docling: measured on Turkish documents, the text layer was exact while
+    PaddleOCR-VL-1.6 lost ~6% of words to dotless-ı/ğ errors (Sonrası ->
+    Sonrasi), so re-reading text that is already in the file only makes it
+    worse. Pages without one (scans) go to PaddleOCR-VL, whose layout and
+    table recognition beat Tesseract clearly. A mixed PDF is split into runs
+    of consecutive pages and put back together in page order.
+
+    Raises PaddleOcrVlError when the whole upload should fall back to Docling.
+    """
+    from paddleocr_vl import PaddleOcrVlError, parse_with_paddleocr_vl
+
+    if extension != ".pdf":
+        document, pages = parse_with_paddleocr_vl(source, is_pdf=False, client=client)
+        return document, pages, {"engine": PADDLEOCR_VL_ENGINE, "paddleocr_vl_pages": [1]}
+
+    flags = _pdf_text_layer_pages(source)
+    if flags is None:
+        raise PaddleOcrVlError("unreadable_pdf", "Could not read PDF pages.")
+    if len(flags) > MAX_DOCUMENT_PAGES:
+        # Docling enforces the page limit with its own error; sending an
+        # oversized scan to the GPU first would only delay that.
+        raise PaddleOcrVlError(
+            "too_many_pages",
+            f"{len(flags)} pages exceeds DOCLING_MAX_PAGES={MAX_DOCUMENT_PAGES}.",
+        )
+    scanned_pages = [number for number, has_text in enumerate(flags, 1) if not has_text]
+    if not scanned_pages:
+        document, pages = _convert_with_docling(source, converter)
+        return document, pages, {"engine": "docling", "paddleocr_vl_pages": []}
+    if len(scanned_pages) == len(flags):
+        document, pages = parse_with_paddleocr_vl(
+            source, is_pdf=True, expected_pages=len(flags), client=client
+        )
+        return document, pages, {
+            "engine": PADDLEOCR_VL_ENGINE,
+            "paddleocr_vl_pages": scanned_pages,
+        }
+
+    from docling_core.types.doc import DoclingDocument
+
+    parts: list[Any] = []
+    with tempfile.TemporaryDirectory(prefix="pdf-pages-") as workdir:
+        for run_index, (has_text, indices) in enumerate(_page_runs(flags)):
+            part = Path(workdir) / f"run-{run_index}.pdf"
+            _write_pdf_pages(source, indices, part)
+            if has_text:
+                document, _ = _convert_with_docling(part, converter)
+            else:
+                document, _ = parse_with_paddleocr_vl(
+                    part, is_pdf=True, expected_pages=len(indices), client=client
+                )
+            # concatenate() numbers pages by position, so every part must
+            # contribute exactly its own pages or later page numbers shift.
+            if len(document.pages) != len(indices):
+                raise PaddleOcrVlError(
+                    "page_mismatch",
+                    f"Pages {indices[0] + 1}-{indices[-1] + 1} produced "
+                    f"{len(document.pages)} pages instead of {len(indices)}.",
+                )
+            parts.append(document)
+    return DoclingDocument.concatenate(parts), len(flags), {
+        "engine": "hybrid",
+        "paddleocr_vl_pages": scanned_pages,
+    }
+
+
 def parse_document(
     source: Path,
     output_dir: Path,
     *,
     display_name: Optional[str] = None,
     converter: Any = None,
+    paddle_client: Any = None,
 ) -> ParsedDocument:
-    """Convert one local upload once and persist reusable Docling references."""
+    """Convert one local upload once and persist reusable Docling references.
+
+    With OCR enabled and OCR_ENGINE=paddleocr_vl, images and PDF pages
+    without a text layer are parsed by the PaddleOCR-VL service, and PDF
+    pages with one keep Docling's native text (_parse_with_paddleocr_vl). If
+    the service is unavailable or fails, the whole upload is parsed by
+    Docling with OCR_FALLBACK_ENGINE instead.
+    ``paddle_client`` is an optional httpx.Client for that service (tests).
+    """
     source = Path(source)
     output_dir = Path(output_dir)
     extension = source.suffix.lower()
@@ -353,9 +528,12 @@ def parse_document(
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             # A PDF parsed with OCR off (or another engine) must be reparsed
             # once the OCR configuration changes, not served from cache.
+            # A fallback parse is not reused either: it exists only because
+            # PaddleOCR-VL was down at the time, so the next parse retries it.
             if (
                 manifest.get("source", {}).get("sha256") == source_hash
                 and manifest.get("ocr") == ocr
+                and not (manifest.get("parser") or {}).get("fallback_reason")
             ):
                 return ParsedDocument(
                     output_dir=output_dir,
@@ -371,18 +549,28 @@ def parse_document(
         shutil.rmtree(temporary)
     temporary.mkdir(mode=0o700, parents=True)
     try:
-        active_converter = converter or _get_converter()
-        result = active_converter.convert(
-            source,
-            raises_on_error=True,
-            max_num_pages=MAX_DOCUMENT_PAGES,
-            max_file_size=MAX_DOCUMENT_BYTES,
-        )
-        document = getattr(result, "document", None)
+        document: Any = None
+        page_count = 0
+        parser_info: dict[str, Any] = {"engine": "docling", "fallback_reason": None}
+        if ocr and ocr["enabled"] and ocr["engine"] == PADDLEOCR_VL_ENGINE:
+            from paddleocr_vl import PaddleOcrVlError
+
+            try:
+                document, page_count, routed = _parse_with_paddleocr_vl(
+                    source, extension, converter=converter, client=paddle_client
+                )
+                parser_info = {**routed, "fallback_reason": None}
+            except PaddleOcrVlError as exc:
+                _logger.warning(
+                    "PaddleOCR-VL failed for %s (%s); falling back to Docling + %s",
+                    display_name or source.name,
+                    exc,
+                    ocr["fallback_engine"],
+                )
+                parser_info = {"engine": "docling", "fallback_reason": exc.reason}
+
         if document is None:
-            raise DocumentParseError(
-                "docling_conversion_failed", "Docling returned no document."
-            )
+            document, page_count = _convert_with_docling(source, converter)
 
         document_dict = document.export_to_dict()
         canonical = {
@@ -408,8 +596,6 @@ def parse_document(
         (temporary / "content.md").write_text(markdown, encoding="utf-8")
         table_refs = _write_tables(document, temporary)
         chunk_count = _write_chunks(document, temporary / "chunks.jsonl")
-        input_document = getattr(result, "input", None)
-        page_count = int(getattr(input_document, "page_count", 0) or 0)
         manifest = {
             "schema_version": 1,
             "engine": "docling",
@@ -423,6 +609,9 @@ def parse_document(
             "tables": table_refs,
             "table_count": len(table_refs),
             "ocr": ocr,
+            # Which parser actually produced this document. "engine" above
+            # stays "docling": the stored format is a DoclingDocument either way.
+            "parser": parser_info,
             "text_empty": not _has_visible_text(markdown),
         }
         (temporary / "manifest.json").write_text(
@@ -448,6 +637,7 @@ __all__ = [
     "MAX_DOCUMENT_BYTES",
     "MAX_DOCUMENT_PAGES",
     "OCR_EXTENSIONS",
+    "PADDLEOCR_VL_ENGINE",
     "ParsedDocument",
     "build_converter",
     "ocr_settings",

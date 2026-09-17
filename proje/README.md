@@ -57,7 +57,7 @@ kalanı `camel_service`'i doğrudan çağırmaz, hep adapter üzerinden geçer.
 | Ajan çalıştırıcı | **LangGraph** (kod default'u: CAMEL 0.2.80) — `AGENT_EXECUTOR` ile seçilir |
 | Model | OpenAI uyumlu `/v1/chat/completions` (OpenRouter, Ollama, vLLM, şirket gateway'i…) |
 | Web araştırma | SearXNG + AgentSearch sidecar + Crawl4AI/Playwright Chromium |
-| Belge okuma | Docling (PDF, DOCX, PPTX, XLSX, HTML, görsel) + Tesseract OCR (taranmış PDF / görsel, Türkçe + İngilizce) + CSV / TXT / ZIP |
+| Belge okuma | Docling (PDF, DOCX, PPTX, XLSX, HTML, görsel) + PaddleOCR-VL-1.6 OCR (taranmış PDF sayfası / görsel, GPU; yoksa Tesseract yedeği) + CSV / TXT / ZIP |
 | Belge üretme | Tipli bloklar → Chromium HTML/CSS (PDF), python-docx (DOCX), python-pptx (PPTX), openpyxl (XLSX), HTML deck; reportlab yedek |
 | Canlı durum | Server-Sent Events |
 | Kalıcılık | SQLite + dosya sistemi |
@@ -141,7 +141,8 @@ Sık kullanılanlar:
 AGENT_EXECUTOR=langgraph        # boşsa camel'e düşer
 AGENT_SEARCH_ENABLED=true
 LOCAL_COMPUTER_ENABLED=false    # "bilgisayarımda aç" köprüsü
-DOCLING_ENABLE_OCR=true         # taranmış PDF + görsel okuma (Tesseract)
+DOCLING_ENABLE_OCR=true         # PDF + görsel okuma (PaddleOCR-VL, yoksa Tesseract)
+COMPOSE_PROFILES=paddleocr      # PaddleOCR-VL servisleri (NVIDIA GPU ister)
 ```
 
 Tam liste ve açıklamalar: [`.env.example`](.env.example) ve

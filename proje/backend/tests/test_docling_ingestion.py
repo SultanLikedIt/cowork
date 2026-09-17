@@ -261,8 +261,12 @@ class DoclingArtifactsFallbackTests(unittest.TestCase):
 _OCR_ENV_KEYS = (
     "DOCLING_ENABLE_OCR",
     "OCR_ENGINE",
+    "OCR_FALLBACK_ENGINE",
     "OCR_LANGS",
     "OCR_FORCE_FULL_PAGE",
+    # Cleared too: inside the compose container it points at the live
+    # service, and these tests must never depend on (or wait for) it.
+    "PADDLEOCR_VL_URL",
 )
 
 
@@ -308,7 +312,7 @@ def _tesseract_has_turkish() -> bool:
 class OcrSettingsTests(unittest.TestCase):
     """OCR configuration and caching rules; no OCR engine required."""
 
-    def test_defaults_are_disabled_tesseract_turkish_english(self) -> None:
+    def test_defaults_are_disabled_paddleocr_vl_with_tesseract_fallback(self) -> None:
         import document_ingestion
 
         with _ocr_env():
@@ -317,7 +321,10 @@ class OcrSettingsTests(unittest.TestCase):
             settings,
             {
                 "enabled": False,
-                "engine": "tesseract",
+                "engine": "paddleocr_vl",
+                "fallback_engine": "tesseract",
+                # PaddleOCR-VL takes no language list; these configure the
+                # Tesseract fallback.
                 "langs": ["tur", "eng"],
                 "force_full_page": False,
             },
@@ -341,6 +348,7 @@ class OcrSettingsTests(unittest.TestCase):
             settings = document_ingestion.ocr_settings()
         self.assertTrue(settings["enabled"])
         self.assertEqual(settings["engine"], "easyocr")
+        self.assertIsNone(settings["fallback_engine"])
         # Each engine has its own language codes; the default follows the engine.
         self.assertEqual(settings["langs"], ["tr", "en"])
         options = document_ingestion._build_ocr_options(settings)
@@ -352,11 +360,22 @@ class OcrSettingsTests(unittest.TestCase):
                 document_ingestion.ocr_settings()["langs"], ["deu", "eng", "fra"]
             )
 
-    def test_unknown_engine_falls_back_to_tesseract(self) -> None:
+        # The fallback engine decides the Docling options and default langs.
+        with _ocr_env(OCR_FALLBACK_ENGINE="easyocr"):
+            settings = document_ingestion.ocr_settings()
+        self.assertEqual(settings["engine"], "paddleocr_vl")
+        self.assertEqual(settings["langs"], ["tr", "en"])
+        self.assertIsInstance(
+            document_ingestion._build_ocr_options(settings), EasyOcrOptions
+        )
+
+    def test_unknown_engines_fall_back_to_the_defaults(self) -> None:
         import document_ingestion
 
-        with _ocr_env(OCR_ENGINE="no-such-engine"):
-            self.assertEqual(document_ingestion.ocr_settings()["engine"], "tesseract")
+        with _ocr_env(OCR_ENGINE="no-such-engine", OCR_FALLBACK_ENGINE="nope"):
+            settings = document_ingestion.ocr_settings()
+        self.assertEqual(settings["engine"], "paddleocr_vl")
+        self.assertEqual(settings["fallback_engine"], "tesseract")
 
     def test_image_upload_with_ocr_disabled_is_rejected_before_parsing(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="ocr-disabled-"))

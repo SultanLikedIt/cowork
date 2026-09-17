@@ -363,9 +363,13 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `LOCAL_COMPUTER_ENABLED` | — | "Bilgisayarımda aç" köprüsü |
 | `LOCAL_COMPUTER_URL` | — | Varsayılan `http://host.docker.internal:8765` |
 | `DOCLING_ENABLE_OCR` | — | Compose'ta `true`; taranmış PDF ve görsel yüklemelerini okur. `false` → taranmış PDF boş, görsel reddedilir |
-| `OCR_ENGINE` | — | `tesseract` (varsayılan, imajda kurulu) \| `easyocr` \| `rapidocr` |
-| `OCR_LANGS` | — | Varsayılan `tur,eng` (motorun kendi dil kodları) |
-| `OCR_FORCE_FULL_PAGE` | — | `true` = her sayfa OCR'lanır (yavaş); varsayılan yalnız görsel bölgeler |
+| `COMPOSE_PROFILES` | — | `paddleocr` → PaddleOCR-VL servislerini de başlatır (NVIDIA GPU ister) |
+| `OCR_ENGINE` | — | `paddleocr_vl` (varsayılan) \| `tesseract` \| `easyocr` \| `rapidocr` |
+| `OCR_FALLBACK_ENGINE` | — | PaddleOCR-VL çalışmazsa kullanılan Docling motoru; varsayılan `tesseract` (imajda kurulu) |
+| `PADDLEOCR_VL_URL` | — | Compose'ta `http://paddleocr-vl-api:8080`; boşsa her zaman yedeğe düşer |
+| `PADDLEOCR_VL_TIMEOUT_SECONDS` | — | Varsayılan 240; `DOCLING_PARSE_TIMEOUT_SECONDS`'tan küçük tut ki yedeğe zaman kalsın |
+| `OCR_LANGS` | — | Varsayılan `tur,eng` (Docling/yedek motorun kendi dil kodları; PaddleOCR-VL dil ayarı almaz) |
+| `OCR_FORCE_FULL_PAGE` | — | Docling motorları: `true` = her sayfa OCR'lanır (yavaş); varsayılan yalnız görsel bölgeler |
 | `DOCLING_PARSE_TIMEOUT_SECONDS` | — | Upload parse zaman aşımı; compose'ta 300 (OCR sayfa başına saniyeler sürer) |
 | `WEB_REQUEST_TIMEOUT_SECONDS` | — | Sayfa açma zaman aşımı |
 | `DOCUMENT_BLOCKS` | — | Varsayılan `true`; PDF/DOCX raporları tipli bloklarla yazılır |
@@ -568,7 +572,7 @@ o satırı atar.
 
 **Giriş (upload):** PDF, DOCX, XLSX, CSV, TXT, ZIP, görsel. Docling PDF/DOCX/PPTX/XLSX/HTML'i
 ve görselleri kanonik JSON + markdown + tablo CSV'ye çevirir. Taranmış sayfalar ve görseller
-Tesseract OCR ile okunur (Türkçe + İngilizce; [`docs/document-ingestion.md`](docs/document-ingestion.md)). Büyük belge model context'ine
+PaddleOCR-VL-1.6 ile okunur (GPU'da; tablo/düzen çok iyi, ama `ı`→`i`, `ğ`→`g` hatası yapar); metin katmanı olan PDF sayfaları Docling'in birebir metniyle okunur; servis yoksa Tesseract'a düşer (Türkçe + İngilizce; ölçümler ve WSL ayarları: [`docs/document-ingestion.md`](docs/document-ingestion.md)). Büyük belge model context'ine
 gömülmez; önizleme + yol gider. Yüklenenler `sources/`, üretilenler `artifacts/` —
 birbirini ezmez.
 
@@ -1037,6 +1041,13 @@ Kodda duruyor, **henüz bitmedi**:
 - 422 `docling_conversion_failed` → modeller yok; ilk indirme ağ ister
   ([`docs/document-ingestion.md`](docs/document-ingestion.md))
 - 422 `ocr_disabled` → görsel yüklendi ama `DOCLING_ENABLE_OCR=false`
+- OCR kalitesi Tesseract seviyesinde → PaddleOCR-VL yerine yedek çalışmış
+  olabilir. Upload'un `manifest.json` → `parser.fallback_reason` alanına bak
+  (`unavailable` = servis kapalı, `timeout`, `incomplete_result` = eksik sayfa).
+  `docker compose --profile paddleocr ps` ve
+  `docker compose logs paddleocr-vlm-server paddleocr-vl-api`
+- `paddleocr-vlm-server` açılmıyor → GPU compute capability ≥ 8.0 mı, NVIDIA
+  sürücüsü vLLM imajının CUDA sürümünü destekliyor mu (`nvidia-smi` sağ üst)
 - Taranmış PDF / görsel boş geliyor → `DOCLING_ENABLE_OCR=true` mi,
   `docker compose exec backend tesseract --list-langs` içinde `tur` var mı;
   manifest'te `text_empty: true` ise görüntü okunamayacak kadar kötü
