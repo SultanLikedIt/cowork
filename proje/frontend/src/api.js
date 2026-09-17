@@ -248,3 +248,59 @@ export function uploadFiles(files, options = {}) {
   files.forEach((file) => form.append('files', file))
   return request('/uploads', { ...options, method: 'POST', body: form })
 }
+
+// --- Scheduled tasks (backend/scheduling/api.py) ---------------------------
+
+function jsonRequest(path, method, body, options = {}) {
+  return request(path, {
+    ...options,
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+}
+
+export function getScheduledTasks(workspaceId, options = {}) {
+  const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+  return request(`/scheduled-tasks${query}`, options)
+}
+
+export function createScheduledTask(task, options = {}) {
+  return jsonRequest('/scheduled-tasks', 'POST', task, options)
+}
+
+export function updateScheduledTask(taskId, changes, options = {}) {
+  return jsonRequest(`/scheduled-tasks/${encodeURIComponent(taskId)}`, 'PATCH', changes, options)
+}
+
+export function deleteScheduledTask(taskId, options = {}) {
+  return request(`/scheduled-tasks/${encodeURIComponent(taskId)}`, { ...options, method: 'DELETE' })
+}
+
+export function pauseScheduledTask(taskId, options = {}) {
+  return jsonRequest(`/scheduled-tasks/${encodeURIComponent(taskId)}/pause`, 'POST', undefined, options)
+}
+
+export function resumeScheduledTask(taskId, options = {}) {
+  return jsonRequest(`/scheduled-tasks/${encodeURIComponent(taskId)}/resume`, 'POST', undefined, options)
+}
+
+export function runScheduledTaskNow(taskId, options = {}) {
+  return jsonRequest(`/scheduled-tasks/${encodeURIComponent(taskId)}/run-now`, 'POST', undefined, options)
+}
+
+export function getScheduledRuns(taskId, options = {}) {
+  return request(`/scheduled-tasks/${encodeURIComponent(taskId)}/runs`, options)
+}
+
+export function markScheduledRunsSeen(taskId, options = {}) {
+  return jsonRequest(`/scheduled-tasks/${encodeURIComponent(taskId)}/runs/seen`, 'POST', undefined, options)
+}
+
+export function previewSchedule(schedule, options = {}) {
+  return jsonRequest('/scheduled-tasks/preview', 'POST', schedule, options)
+}
+
+export function parseSchedule({ text, timezone }, options = {}) {
+  return jsonRequest('/scheduled-tasks/parse-schedule', 'POST', { text, timezone: timezone ?? null }, options)
+}

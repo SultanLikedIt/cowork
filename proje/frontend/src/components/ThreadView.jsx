@@ -7,7 +7,7 @@ import { ScrollArea } from './ui/scroll-area.jsx'
 // One selected conversation rendered as a running chat log: each persisted
 // job is an exchange (user message + response) in chronological order, with
 // a single composer pinned below the last one for follow-ups.
-export default function ThreadView({ jobs, composerProps, onSwitchToWorkforce }) {
+export default function ThreadView({ jobs, composerProps, onSwitchToWorkforce, onRepeat }) {
   const logEndRef = useRef(null)
   const lastJobId = jobs.length > 0 ? jobs[jobs.length - 1].job_id : null
   const lastJobStatus = jobs.length > 0 ? jobs[jobs.length - 1].status : null
@@ -29,6 +29,7 @@ export default function ThreadView({ jobs, composerProps, onSwitchToWorkforce })
               <ChatExchange
                 key={job.job_id}
                 job={job}
+                onRepeat={onRepeat}
                 {...(index === jobs.length - 1
                   ? { onSwitchToWorkforce }
                   : {})}

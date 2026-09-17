@@ -15,6 +15,7 @@ import dockerfile from 'highlight.js/lib/languages/dockerfile'
 import markdown from 'highlight.js/lib/languages/markdown'
 import {
   AlertCircle,
+  CalendarClock,
   Check,
   ChevronDown,
   Copy,
@@ -1020,7 +1021,7 @@ function SwitchToWorkforce({ onSwitch }) {
   )
 }
 
-export default function ChatExchange({ job, onSwitchToWorkforce }) {
+export default function ChatExchange({ job, onSwitchToWorkforce, onRepeat }) {
   const [copyState, setCopyState] = useState('idle')
   const [exporting, setExporting] = useState(null)
   const [exportError, setExportError] = useState(null)
@@ -1232,6 +1233,21 @@ export default function ChatExchange({ job, onSwitchToWorkforce }) {
             tasks={tasks}
             actions={
               <div className="flex items-center gap-0.5">
+                {/* Turns a result the user was happy with into a recurring
+                    task, prefilled with the request exactly as it ran. */}
+                {onRepeat && hasFinalAnswer && !isError && (
+                  <SimpleTooltip label="Repeat on a schedule">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => onRepeat(job)}
+                      aria-label="Repeat on a schedule"
+                    >
+                      <CalendarClock className="h-4 w-4" aria-hidden="true" />
+                    </Button>
+                  </SimpleTooltip>
+                )}
                 {copyState === 'error' && (
                   <span className="mr-1 text-xs text-destructive" role="alert">
                     Copy failed

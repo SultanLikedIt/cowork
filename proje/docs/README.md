@@ -15,6 +15,7 @@ bazlı derinleştirmesidir.
 | [web-execution.md](web-execution.md) | SearXNG + AgentSearch + Crawl4AI web path |
 | [agent-search.md](agent-search.md) | brcrusoe72/agent-search sidecar |
 | [langgraph-migration.md](langgraph-migration.md) | CAMEL ↔ LangGraph geçişi, `AGENT_EXECUTOR` |
+| [scheduling.md](scheduling.md) | Zamanlanmış ve izleme görevleri |
 | [local-computer.md](local-computer.md) | "Bilgisayarımda aç" host köprüsü |
 | [openbot-integration.md](openbot-integration.md) | OpenBot / AG-UI entegrasyonu |
 | [backend-reliability-harness.md](backend-reliability-harness.md) | Deterministic reliability harness |

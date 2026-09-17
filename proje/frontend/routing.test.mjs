@@ -20,6 +20,13 @@ const eq = (name, actual, expected) =>
   )
 
 // --- readRoute ---------------------------------------------------------
+eq('scheduled view URL', readRoute('/w/ws-1/scheduled'), {
+  workspaceId: 'ws-1',
+  conversationId: null,
+  view: 'scheduled',
+})
+eq('scheduled view path', routePath('ws-1', null, 'scheduled'), '/w/ws-1/scheduled')
+eq('scheduled view path ignores conversation', routePath('ws-1', 'c-1', 'scheduled'), '/w/ws-1/scheduled')
 eq('bare / is the picker', readRoute('/'), {
   workspaceId: null,
   conversationId: null,

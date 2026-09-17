@@ -13,6 +13,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import logging.handlers
@@ -65,6 +66,9 @@ from execution.adapter import (
 from execution.executor_config import agent_executor
 from model_config import UsageTracker
 import skills as skills_catalog
+from scheduling import config as scheduling_config
+from scheduling.api import build_router as build_scheduling_router
+from scheduling.runner import Scheduler, SubmittedJob
 from tool_call_log import ToolCallRecorder
 import turn_resolution
 from workforce_callback import QueueWorkforceCallback
@@ -2301,6 +2305,22 @@ async def _routing_for_workforce(
 @app.post("/run-pipeline", response_model=RunPipelineResponse)
 async def run_pipeline(req: RunPipelineRequest):
     """Start a background job with an optional isolated upload workspace."""
+    return await submit_job(req)
+
+
+async def submit_job(
+    req: RunPipelineRequest,
+    *,
+    conversation_title: Optional[str] = None,
+    origin: Literal["user", "schedule"] = "user",
+) -> RunPipelineResponse:
+    """Everything /run-pipeline does, callable in-process.
+
+    Scheduled tasks start their runs here (scheduling/runner.py) so they get
+    exactly the turn resolution, intent classification and routing a message
+    typed by a user gets. ``origin="schedule"`` only removes what cannot
+    work without a person present: opening a file on their computer.
+    """
     this_turn_ids = _requested_file_ids(req)
     this_turn_records = [_load_upload_record(file_id) for file_id in this_turn_ids]
     this_turn_bytes = sum(
@@ -2324,7 +2344,7 @@ async def run_pipeline(req: RunPipelineRequest):
         _resolve_conversation_id,
         workspace_id,
         req.conversation_id,
-        req.topic,
+        conversation_title or req.topic,
     )
     # Fetched BEFORE this job's own user message is inserted below, so a job
     # never sees its own topic reflected back as "prior" context.
@@ -2404,6 +2424,7 @@ async def run_pipeline(req: RunPipelineRequest):
     # shape as is_reformat_followup above, for the same reason.
     if (
         req.mode == "multi"
+        and origin == "user"
         and wants_local_open is not None
         and wants_local_open(resolved_ask)
     ):
@@ -2461,6 +2482,16 @@ async def run_pipeline(req: RunPipelineRequest):
                 needs_code_execution=False,
                 reuses_uploaded_document=False,
             )
+    # Nobody is at the computer when a scheduled run finishes, and the local
+    # bridge would open the file on whichever machine hosts it.
+    if (
+        origin == "schedule"
+        and artifact_intent_result is not None
+        and artifact_intent_result.opens_on_user_computer
+    ):
+        artifact_intent_result = dataclasses.replace(
+            artifact_intent_result, opens_on_user_computer=False
+        )
     # A workspace used to exist only when there were uploads. A job that must
     # WRITE a file (or run code) needs the same isolated, 0o700 directory
     # even with nothing attached -- otherwise the artifact capability binds
@@ -3111,3 +3142,47 @@ async def job_events(job_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --------------------------------------------------------------------------
+# Scheduled tasks (backend/scheduling/)
+# --------------------------------------------------------------------------
+
+
+async def _submit_scheduled_run(
+    *,
+    task: dict[str, Any],
+    prompt: str,
+    context_text: Optional[str],
+    conversation_title: str,
+) -> SubmittedJob:
+    response = await submit_job(
+        RunPipelineRequest(
+            topic=prompt,
+            mode=task.get("mode") or "multi",
+            deep_research=bool(task.get("deep_research")),
+            workspace_id=task["workspace_id"],
+            skill_ids=list(task.get("skill_ids") or []),
+            context_text=context_text,
+        ),
+        conversation_title=conversation_title,
+        origin="schedule",
+    )
+    return SubmittedJob(job_id=response.job_id, conversation_id=response.conversation_id)
+
+
+_SCHEDULER = Scheduler(submit=_submit_scheduled_run, job_state=_JOBS.get)
+app.include_router(build_scheduling_router(lambda: _SCHEDULER))
+
+
+@app.on_event("startup")
+async def _start_scheduler() -> None:
+    # Registered after _rehydrate_from_db, so migrations have run and
+    # interrupted jobs are already loaded when the first tick settles runs.
+    if scheduling_config.enabled() and scheduling_config.autostart():
+        _SCHEDULER.start()
+
+
+@app.on_event("shutdown")
+async def _stop_scheduler() -> None:
+    await _SCHEDULER.stop()
