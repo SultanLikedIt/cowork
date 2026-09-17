@@ -24,6 +24,18 @@ Two endpoints:
   file that merely happens to share the same generic name (e.g. every
   Word report defaulting to "rapor.docx").
 
+Outlook (Windows, classic Outlook desktop only):
+- POST /outlook/send {"to", "cc", "subject", "html_body", "text_body",
+  "attachments": [{"filename", "content_base64"}], "action": "send" |
+  "display"}: builds a mail item in the Outlook profile open on this
+  machine and either sends it or opens it for the user to review.
+  Needs `pip install pywin32` and a shared token (--token or
+  LOCAL_COMPUTER_TOKEN) sent as the X-Bridge-Token header. The token is
+  what stops any web page open in the browser from POSTing to this port
+  and sending mail as the user: a custom header forces a CORS preflight
+  that this server never approves. Without a token the Outlook endpoints
+  are refused. See docs/outlook.md.
+
 Deliberately NOT a full MCP (Model Context Protocol) server -- hand-rolling
 MCP's JSON-RPC/session-handshake wire protocol for a synchronous client
 inside this backend's existing synchronous tool-binding code
@@ -37,21 +49,29 @@ Usage:
     python3 scripts/local_computer_bridge.py
     # or, to allow a different/additional directory beyond ~/Downloads:
     python3 scripts/local_computer_bridge.py --allow ~/Desktop/reports
+    # with Outlook (Windows):
+    python scripts/local_computer_bridge.py --token <same value as LOCAL_COMPUTER_TOKEN in .env>
 
-No third-party dependencies -- stdlib only, so there is nothing to
-`pip install` before running this.
+No third-party dependencies for opening files -- stdlib only. Outlook
+additionally needs pywin32, imported only when an Outlook endpoint is used.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import hmac
 import json
+import os
 import platform
+import re
 import subprocess
 import sys
+import tempfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, Optional
 
 DEFAULT_PORT = 8765
 # Base64-encoded body; ~33% larger than the raw file. 30MB raw is already a
@@ -59,6 +79,147 @@ DEFAULT_PORT = 8765
 # presentations, spreadsheets), and keeps one request from tying up the
 # bridge's single-threaded-per-connection handling for too long.
 MAX_SAVE_AND_OPEN_BYTES = 40 * 1024 * 1024
+# Exchange Online rejects messages over ~25-35MB after encoding; the backend
+# keeps attachments well under this, so hitting it means a bad request.
+MAX_OUTLOOK_REQUEST_BYTES = 40 * 1024 * 1024
+MAX_OUTLOOK_RECIPIENTS = 50
+_ADDRESS = re.compile(r"^[^@\s;,<>\"]+@[^@\s;,<>\"]+\.[^@\s;,<>\"]+$")
+_OL_MAIL_ITEM = 0
+
+
+class OutlookError(Exception):
+    def __init__(self, code: str, detail: str, status: int = 500) -> None:
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+        self.status = status
+
+
+def outlook_available() -> bool:
+    """pywin32 importable on Windows. Does not start Outlook."""
+    if platform.system() != "Windows":
+        return False
+    try:
+        import win32com.client  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+class OutlookMailer:
+    """Classic Outlook through COM. Outlook's object model is single-threaded,
+    so calls are serialized and each one initializes COM on its own thread
+    (ThreadingHTTPServer runs every request on a new thread)."""
+
+    _lock = threading.Lock()
+
+    def send(
+        self,
+        *,
+        to: list[str],
+        cc: list[str],
+        subject: str,
+        html_body: str,
+        text_body: str,
+        attachments: list[tuple[str, bytes]],
+        action: str,
+    ) -> dict[str, Any]:
+        if not outlook_available():
+            raise OutlookError(
+                "outlook_unavailable",
+                "Outlook automation needs Windows, classic Outlook and `pip install pywin32`.",
+                501,
+            )
+        import pythoncom
+        import pywintypes
+        import win32com.client
+
+        with self._lock, tempfile.TemporaryDirectory(prefix="bridge-outlook-") as tmp:
+            pythoncom.CoInitialize()
+            try:
+                try:
+                    app = win32com.client.Dispatch("Outlook.Application")
+                    mail = app.CreateItem(_OL_MAIL_ITEM)
+                except pywintypes.com_error as exc:
+                    raise OutlookError(
+                        "outlook_not_running",
+                        f"Could not start Outlook ({exc}). The new Outlook app has no "
+                        "automation support; classic Outlook must be installed and set up.",
+                        503,
+                    ) from exc
+                mail.To = "; ".join(to)
+                if cc:
+                    mail.CC = "; ".join(cc)
+                mail.Subject = subject
+                if html_body:
+                    mail.HTMLBody = html_body
+                else:
+                    mail.Body = text_body
+                for index, (filename, content) in enumerate(attachments):
+                    # Own folder per file: two attachments may share a name.
+                    folder = Path(tmp) / str(index)
+                    folder.mkdir()
+                    path = folder / filename
+                    path.write_bytes(content)
+                    mail.Attachments.Add(str(path))
+                try:
+                    if action == "display":
+                        mail.Display(False)
+                        return {"ok": True, "action": "display"}
+                    mail.Send()
+                    return {"ok": True, "action": "send"}
+                except pywintypes.com_error as exc:
+                    raise OutlookError("outlook_send_failed", f"Outlook refused the message: {exc}") from exc
+            finally:
+                pythoncom.CoUninitialize()
+
+
+def _addresses(value: Any, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise OutlookError("invalid_request", f"{field} must be a list of addresses.", 400)
+    cleaned = [item.strip() for item in value if item.strip()]
+    bad = [item for item in cleaned if not _ADDRESS.match(item)]
+    if bad:
+        raise OutlookError("invalid_address", f"Invalid address in {field}: {bad[0]}", 400)
+    return cleaned
+
+
+def parse_outlook_request(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise OutlookError("invalid_request", "Expected a JSON object.", 400)
+    to = _addresses(data.get("to"), "to")
+    cc = _addresses(data.get("cc"), "cc")
+    if not to:
+        raise OutlookError("invalid_request", "At least one recipient is required.", 400)
+    if len(to) + len(cc) > MAX_OUTLOOK_RECIPIENTS:
+        raise OutlookError("invalid_request", f"At most {MAX_OUTLOOK_RECIPIENTS} recipients.", 400)
+    action = data.get("action") or "send"
+    if action not in {"send", "display"}:
+        raise OutlookError("invalid_request", "action must be send or display.", 400)
+    attachments: list[tuple[str, bytes]] = []
+    for item in data.get("attachments") or []:
+        if not isinstance(item, dict):
+            raise OutlookError("invalid_request", "Each attachment must be an object.", 400)
+        name = Path(str(item.get("filename") or "")).name
+        if not name:
+            raise OutlookError("invalid_request", "An attachment has no filename.", 400)
+        try:
+            content = base64.b64decode(str(item.get("content_base64") or ""), validate=True)
+        except (base64.binascii.Error, ValueError) as exc:
+            raise OutlookError("invalid_base64", f"Attachment {name} is not valid base64.", 400) from exc
+        attachments.append((name, content))
+    subject = str(data.get("subject") or "").replace("\r", " ").replace("\n", " ").strip()
+    return {
+        "to": to,
+        "cc": cc,
+        "subject": subject[:255],
+        "html_body": str(data.get("html_body") or ""),
+        "text_body": str(data.get("text_body") or ""),
+        "attachments": attachments,
+        "action": action,
+    }
 
 
 def _resolve_allowed_dirs(extra: list[str]) -> list[Path]:
@@ -84,6 +245,8 @@ def _open_with_default_app(path: Path) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     allowed_dirs: list[Path] = []
+    token: Optional[str] = None
+    mailer: Any = OutlookMailer()
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         # Default logs to stderr with no timestamp context worth keeping;
@@ -105,12 +268,19 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "allowed_dirs": [str(d) for d in self.allowed_dirs],
+                    "outlook": {
+                        "available": outlook_available(),
+                        "token_configured": bool(self.token),
+                    },
                 },
             )
             return
         self._send_json(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/outlook/send":
+            self._handle_outlook_send()
+            return
         if self.path == "/save-and-open":
             self._handle_save_and_open()
             return
@@ -254,6 +424,47 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(200, {"ok": True, "opened": str(target), "saved": True})
 
+    def _handle_outlook_send(self) -> None:
+        if not self.token:
+            self._send_json(
+                403,
+                {
+                    "ok": False,
+                    "error": "outlook_requires_token",
+                    "detail": "Start the bridge with --token (or LOCAL_COMPUTER_TOKEN) to use Outlook.",
+                },
+            )
+            return
+        sent = self.headers.get("X-Bridge-Token") or ""
+        if not hmac.compare_digest(sent.encode("utf-8"), self.token.encode("utf-8")):
+            self._send_json(401, {"ok": False, "error": "invalid_token"})
+            return
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+            self._send_json(415, {"ok": False, "error": "json_required"})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            self._send_json(400, {"ok": False, "error": "missing_body"})
+            return
+        if length > MAX_OUTLOOK_REQUEST_BYTES:
+            self._send_json(413, {"ok": False, "error": "payload_too_large"})
+            return
+        try:
+            data = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "invalid_json"})
+            return
+        try:
+            message = parse_outlook_request(data)
+            result = self.mailer.send(**message)
+        except OutlookError as exc:
+            self._send_json(exc.status, {"ok": False, "error": exc.code, "detail": exc.detail})
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._send_json(500, {"ok": False, "error": "outlook_failed", "detail": str(exc)})
+            return
+        self._send_json(200, result)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -266,8 +477,14 @@ def main() -> None:
         default=[],
         help="additional directory to allow opening files from (repeatable)",
     )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("LOCAL_COMPUTER_TOKEN") or None,
+        help="shared secret required by the Outlook endpoints (default: $LOCAL_COMPUTER_TOKEN)",
+    )
     args = parser.parse_args()
 
+    Handler.token = args.token
     Handler.allowed_dirs = _resolve_allowed_dirs(args.allow)
     if not Handler.allowed_dirs:
         print(
@@ -280,6 +497,12 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"local-computer-bridge listening on http://127.0.0.1:{args.port}")
     print(f"Allowed directories: {[str(d) for d in Handler.allowed_dirs]}")
+    if not Handler.token:
+        print("Outlook: off (no --token / LOCAL_COMPUTER_TOKEN)")
+    elif not outlook_available():
+        print("Outlook: token set, but pywin32 / Windows is missing")
+    else:
+        print("Outlook: on")
     print("From inside Docker, the backend reaches this via host.docker.internal.")
     try:
         server.serve_forever()

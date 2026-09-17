@@ -304,3 +304,30 @@ def test_preview_after_task(client: TestClient) -> None:
     body = client.post("/scheduled-tasks/preview", json={"trigger_kind": "after_task"}).json()
     assert body["upcoming_runs"] == []
 
+
+
+def test_delivery_setting(client: TestClient) -> None:
+    task = _create(
+        client,
+        delivery={"to": ["ali@example.com", "ALI@example.com"], "cc": ["ekip@example.com"], "on": "change"},
+    ).json()
+    assert task["delivery"] == {
+        "to": ["ali@example.com"],
+        "cc": ["ekip@example.com"],
+        "on": "change",
+        "attach_files": True,
+    }
+
+    renamed = client.patch(f"/scheduled-tasks/{task['task_id']}", json={"name": "Yeni ad"}).json()
+    assert renamed["delivery"]["to"] == ["ali@example.com"]
+
+    cleared = client.patch(f"/scheduled-tasks/{task['task_id']}", json={"delivery": None}).json()
+    assert cleared["delivery"] is None
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [{"to": []}, {"to": ["bozuk-adres"]}, {"to": ["a@example.com"], "cc": ["x"]}],
+)
+def test_delivery_validation(client: TestClient, delivery: dict[str, Any]) -> None:
+    assert _create(client, delivery=delivery).status_code == 422

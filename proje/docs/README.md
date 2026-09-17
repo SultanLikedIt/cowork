@@ -17,6 +17,7 @@ bazlı derinleştirmesidir.
 | [langgraph-migration.md](langgraph-migration.md) | CAMEL ↔ LangGraph geçişi, `AGENT_EXECUTOR` |
 | [scheduling.md](scheduling.md) | Zamanlanmış ve izleme görevleri |
 | [local-computer.md](local-computer.md) | "Bilgisayarımda aç" host köprüsü |
+| [outlook.md](outlook.md) | Outlook ile e-posta: zamanlanmış görev sonuçları |
 | [openbot-integration.md](openbot-integration.md) | OpenBot / AG-UI entegrasyonu |
 | [backend-reliability-harness.md](backend-reliability-harness.md) | Deterministic reliability harness |
 

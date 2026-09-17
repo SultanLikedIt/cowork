@@ -130,6 +130,10 @@ services:
       SCHEDULE_MAX_CHAINED_RUNS_PER_DAY: ${SCHEDULE_MAX_CHAINED_RUNS_PER_DAY:-10}
       LOCAL_COMPUTER_ENABLED: ${LOCAL_COMPUTER_ENABLED:-false}
       LOCAL_COMPUTER_URL: ${LOCAL_COMPUTER_URL:-http://host.docker.internal:8765}
+      # Outlook email through the same bridge (backend/outlook.py, docs/outlook.md).
+      OUTLOOK_ENABLED: ${OUTLOOK_ENABLED:-false}
+      LOCAL_COMPUTER_TOKEN: ${LOCAL_COMPUTER_TOKEN:-}
+      SCHEDULE_DELIVERY_MAX_ATTEMPTS: ${SCHEDULE_DELIVERY_MAX_ATTEMPTS:-10}
     volumes:
       - backend-data:/data
     # Host ports differ from the Camel stack (8000/8080) so both can run

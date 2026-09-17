@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 import db
 import skills as skills_catalog
-from scheduling import chains, config, cron, prompts, store, watch
+from scheduling import chains, config, cron, delivery, prompts, store, watch
 from scheduling.runner import Scheduler, compute_next_run
 
 MAX_PROMPT_CHARS = 4000
@@ -31,6 +31,15 @@ class WatchPayload(BaseModel):
     )
     urls: list[str] = Field(default_factory=list, max_length=watch.MAX_WATCH_URLS)
     criteria: str = Field(default="", max_length=1000)
+
+
+class DeliveryPayload(BaseModel):
+    """Email each run's result to fixed recipients through Outlook."""
+
+    to: list[str] = Field(default_factory=list, max_length=50)
+    cc: list[str] = Field(default_factory=list, max_length=50)
+    on: Condition = "success"
+    attach_files: bool = True
 
 
 class TaskCreate(BaseModel):
@@ -52,6 +61,7 @@ class TaskCreate(BaseModel):
     pass_upstream_result: bool = True
     pass_upstream_files: bool = True
     attached_file_ids: list[str] = Field(default_factory=list, max_length=MAX_ATTACHED_FILES)
+    delivery: Optional[DeliveryPayload] = None
 
 
 class TaskUpdate(BaseModel):
@@ -73,6 +83,8 @@ class TaskUpdate(BaseModel):
     pass_upstream_result: Optional[bool] = None
     pass_upstream_files: Optional[bool] = None
     attached_file_ids: Optional[list[str]] = Field(default=None, max_length=MAX_ATTACHED_FILES)
+    # Explicit null turns email off; omitted leaves it unchanged.
+    delivery: Optional[DeliveryPayload] = None
 
 
 class PreviewRequest(BaseModel):
@@ -192,6 +204,13 @@ def _watch_value(payload: Optional[WatchPayload]) -> Optional[dict[str, Any]]:
     return normalized.model_dump() if normalized else None
 
 
+def _delivery_value(payload: Optional[DeliveryPayload]) -> Optional[dict[str, Any]]:
+    try:
+        return delivery.normalize(payload.model_dump() if payload else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _describe_next(task: dict[str, Any], now: float) -> list[float]:
     if not task.get("enabled"):
         return []
@@ -294,6 +313,7 @@ def build_router(
         )
         record["attached_files"] = _attached_files(req.attached_file_ids, describe_upload)
         record["watch"] = _watch_value(req.watch)
+        record["delivery"] = _delivery_value(req.delivery)
         record["skill_ids"] = skills_catalog.skill_ids(skills_catalog.resolve_skills(req.skill_ids))
         record["name"] = req.name.strip()
         record["prompt"] = req.prompt.strip()
@@ -404,6 +424,9 @@ def build_router(
             value = _watch_value(req.watch)
             fields["watch_json"] = _json_dump(value) if value else None
             fields["watch_state_json"] = "{}"
+        if "delivery" in changes:
+            value = _delivery_value(req.delivery)
+            fields["delivery_json"] = _json_dump(value) if value else None
         schedule_keys = {"trigger_kind", "cron_expr", "run_at", "timezone", "deep_research", "enabled"}
         if schedule_keys & set(changes):
             schedule = _schedule_fields(merged, now)
