@@ -81,3 +81,6 @@ backend/vendor/bge-reranker-v2-m3/
 
 # --- OpenBot upstream clone (optional local sidecar; not product source) ---
 openbot-upstream/
+
+# Latency benchmark output (backend/scripts/latency_bench.py)
+backend/latency-results/

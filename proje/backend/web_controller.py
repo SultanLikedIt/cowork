@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -70,6 +71,16 @@ MIN_PROSE_EVIDENCE_CHARS = 400
 # the engine's own limit plus its one SPA re-read, so this only fires when
 # that machinery has genuinely stopped answering.
 FETCH_WALL_CLOCK_SECONDS = 90.0
+# A fetch round stops waiting on slow pages once others have loaded (see
+# _gather_until_enough): FETCH_STRAGGLER_GRACE_SECONDS after the first
+# usable page, FETCH_SETTLE_GRACE_SECONDS once FETCH_ENOUGH_SUCCESSES are in.
+FETCH_ENOUGH_SUCCESSES = max(1, int(os.environ.get("WEB_FETCH_ENOUGH_SUCCESSES") or 2))
+FETCH_STRAGGLER_GRACE_SECONDS = float(
+    os.environ.get("WEB_FETCH_STRAGGLER_GRACE_SECONDS") or 6.0
+)
+FETCH_SETTLE_GRACE_SECONDS = float(
+    os.environ.get("WEB_FETCH_SETTLE_GRACE_SECONDS") or 1.5
+)
 MAX_CANDIDATE_SNIPPET = 400
 
 CompleteFn = Callable[[str, str, str, Optional[type]], Awaitable[Any]]
@@ -2554,7 +2565,7 @@ async def _fetch_urls(
         return url, page if isinstance(page, dict) else {"ok": False, "error": str(page)}
 
     # Parallel open: 2–3 pages at ~30s each used to serialize into minutes.
-    fetched = await asyncio.gather(*[_one(url) for url in to_open])
+    fetched = await _gather_until_enough([_one(url) for url in to_open], to_open)
     for url, page in fetched:
         result.fetch_count += 1
         item = _evidence_item(page, url)
@@ -2562,6 +2573,68 @@ async def _fetch_urls(
         opened.add(_normalize_url(str(item.get("url") or url)))
         if is_successful_fetch(page):
             result.successful_fetches += 1
+
+
+async def _gather_until_enough(
+    coros: list[Awaitable[tuple[str, dict[str, Any]]]],
+    urls: list[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Like gather, but stop waiting on stragglers once pages have landed.
+
+    A plain gather held the whole round until its slowest page finished --
+    one site stalling to the engine's timeout kept two pages that had
+    already loaded waiting with it. After the first usable page the rest get
+    FETCH_STRAGGLER_GRACE_SECONDS; once FETCH_ENOUGH_SUCCESSES pages are in,
+    only FETCH_SETTLE_GRACE_SECONDS. A page still loading after that is
+    recorded as skipped (not ok), so it counts against the fetch budget,
+    is never re-selected, and is never cited. Results keep ``urls`` order.
+    """
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    done_pages: dict[int, tuple[str, dict[str, Any]]] = {}
+    pending = set(tasks)
+    successes = 0
+    deadline: Optional[float] = None
+    while pending:
+        timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        finished, pending = await asyncio.wait(
+            pending, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        if not finished:
+            break
+        for task in finished:
+            index = tasks.index(task)
+            done_pages[index] = task.result()
+            if is_successful_fetch(done_pages[index][1]):
+                successes += 1
+        now = time.monotonic()
+        if successes >= FETCH_ENOUGH_SUCCESSES:
+            settle = now + FETCH_SETTLE_GRACE_SECONDS
+            deadline = settle if deadline is None else min(deadline, settle)
+        elif successes and deadline is None:
+            deadline = now + FETCH_STRAGGLER_GRACE_SECONDS
+    for task in pending:
+        # The page open itself runs on a worker thread and ends on its own
+        # engine timeout; this only stops the round from waiting on it.
+        task.cancel()
+    ordered: list[tuple[str, dict[str, Any]]] = []
+    for index, url in enumerate(urls):
+        if index in done_pages:
+            ordered.append(done_pages[index])
+        else:
+            ordered.append(
+                (
+                    url,
+                    {
+                        "ok": False,
+                        "error_reason": "fetch_abandoned",
+                        "error": (
+                            "Page was still loading after enough other pages "
+                            "had loaded, and was skipped."
+                        ),
+                    },
+                )
+            )
+    return ordered
 
 
 _HTML_PAGE_RE = re.compile(r"(?i)<!doctype\s+html|<html[\s>]")

@@ -11,6 +11,10 @@ When ``AGENT_SEARCH_ENABLED=true``, AgentSearch is blended with SearXNG
 adds strategy/news packs on top. If the sidecar is down, SearXNG alone
 still runs — discovery never depends on AgentSearch being up.
 
+All requests of one search start together. SearXNG is waited for; the
+AgentSearch requests only get ``AGENT_SEARCH_GRACE_SECONDS`` past that, and
+whatever has not answered by then is left out of this result.
+
 Return shape preserves useful discovery fields: ``score``, ``content``
 (snippet), ``engines``, ``positions``, and ``publishedDate``.  The older
 ``description`` alias for ``content`` is kept so callers that predate the rich
@@ -19,9 +23,11 @@ fields continue to work unchanged.
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import re
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -36,6 +42,32 @@ SEARXNG_BASE_URL = (
 ).rstrip("/")
 
 SEARXNG_TIMEOUT_SECONDS = 15
+
+# How long AgentSearch may keep answering after SearXNG already has. It is
+# additive, so a slow sidecar costs this much at most instead of its full
+# 20s HTTP timeout. Measured: the sidecar normally answers in 0.2-0.5s.
+AGENT_SEARCH_GRACE_SECONDS = max(
+    0.0, float(os.environ.get("AGENT_SEARCH_GRACE_SECONDS") or "1.5")
+)
+
+# AgentSearch strategy for general-category searches, or "off" to skip the
+# sidecar there (news searches still use it). Its own "general" mode asks
+# Bing, DuckDuckGo and Brave through the very same SearXNG instance
+# search_web already queried. Measured on six Turkish/English queries: 0-3
+# of its 10 URLs were not already in SearXNG's results, and those were
+# mostly off-topic (a Steam game for a Rust tokio query, forum spam for a
+# history query). "reference" (Wikipedia + Wikidata) returned 0-1 hits and
+# took 0.6-0.9s cold. Hence off by default; "general" = old behavior.
+AGENT_SEARCH_GENERAL_MODE = (
+    os.environ.get("AGENT_SEARCH_GENERAL_MODE") or "off"
+).strip().lower()
+_AGENT_SEARCH_MODE_OFF = frozenset({"off", "none", "false", "0"})
+
+# Shared across calls: a search is at most four requests, and concurrent
+# research workers each run their own.
+_SEARCH_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=16, thread_name_prefix="web-search"
+)
 
 
 def _normalize_result_url(url: str) -> str:
@@ -224,44 +256,53 @@ def search_web(
     # Always keep SearXNG in the mix (old quality path). AgentSearch is an
     # additive layer (strategies/news packs), not a hard replace — that was
     # what made discovery regress after the sidecar landed.
-    primary = _searx_raw(
-        query,
-        categories=cats,
-        language=language,
-        time_range=time_range,
-        limit=limit,
-    )
-    news = (
-        _searx_raw(
+    #
+    # These used to run one after another, so a newsy search waited for the
+    # sum of up to five requests. They are independent, so they now start
+    # together: SearXNG (the baseline) is always waited for, AgentSearch
+    # only for a short grace period after it.
+    required: Dict[str, concurrent.futures.Future] = {
+        "primary": _SEARCH_POOL.submit(
+            _searx_raw,
+            query,
+            categories=cats,
+            language=language,
+            time_range=time_range,
+            limit=limit,
+        )
+    }
+    if do_merge:
+        required["news"] = _SEARCH_POOL.submit(
+            _searx_raw,
             query,
             categories="news",
             language=language,
             time_range=time_range,
             limit=limit,
         )
-        if do_merge
-        else []
-    )
-
-    agent_hits: List[Dict[str, Any]] = []
-    agent_news: List[Dict[str, Any]] = []
+    optional: Dict[str, concurrent.futures.Future] = {}
     if agent_search_client.is_enabled():
-        agent_hits = _agent_search_raw(query, categories=cats, limit=limit)
-        if not _usable_hits(agent_hits):
-            agent_hits = []
+        if not (cats == "general" and AGENT_SEARCH_GENERAL_MODE in _AGENT_SEARCH_MODE_OFF):
+            optional["agent_hits"] = _SEARCH_POOL.submit(
+                _agent_search_raw, query, categories=cats, limit=limit
+            )
         # Agent news pack only when the ask is actually newsy — otherwise
         # AgentSearch general already fills strategy gaps without a second
         # round-trip that often times out on news engines.
         if do_merge:
-            agent_news = _agent_search_raw(query, categories="news", limit=limit)
-            if not _usable_hits(agent_news):
-                compact = _compact_news_query(query)
-                if compact and compact != query:
-                    agent_news = _agent_search_raw(
-                        compact, categories="news", limit=limit
-                    )
-            if not _usable_hits(agent_news):
-                agent_news = []
+            optional["agent_news"] = _SEARCH_POOL.submit(
+                _agent_news_with_compact_retry, query, limit
+            )
+
+    primary = _future_hits(required["primary"])
+    news = _future_hits(required["news"]) if "news" in required else []
+    deadline = time.monotonic() + AGENT_SEARCH_GRACE_SECONDS
+    agent_hits = _future_hits(optional["agent_hits"], deadline=deadline) if "agent_hits" in optional else []
+    agent_news = _future_hits(optional["agent_news"], deadline=deadline) if "agent_news" in optional else []
+    if not _usable_hits(agent_hits):
+        agent_hits = []
+    if not _usable_hits(agent_news):
+        agent_news = []
 
     if not do_merge:
         if agent_hits:
@@ -279,16 +320,49 @@ def _usable_hits(hits: List[Dict[str, Any]]) -> bool:
     return bool(hits) and not any("error" in h for h in hits)
 
 
+def _future_hits(
+    future: concurrent.futures.Future,
+    *,
+    deadline: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """Result of one search request, or [] if it failed or missed ``deadline``.
+
+    A request that misses the deadline keeps running on its pool thread
+    until its own HTTP timeout; only this search stops waiting for it.
+    """
+    timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+    try:
+        value = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return []
+    except Exception as exc:  # noqa: BLE001 - one engine never fails the search
+        return [{"error": f"web search request failed: {exc}"}]
+    return value if isinstance(value, list) else []
+
+
+def _agent_news_with_compact_retry(query: str, limit: int) -> List[Dict[str, Any]]:
+    hits = _agent_search_raw(query, categories="news", limit=limit)
+    if not _usable_hits(hits):
+        compact = _compact_news_query(query)
+        if compact and compact != query:
+            hits = _agent_search_raw(compact, categories="news", limit=limit)
+    return hits
+
+
 def _agent_search_raw(
     query: str,
     *,
     categories: str,
     limit: int,
 ) -> List[Dict[str, Any]]:
+    mode: Optional[str] = None
+    if (categories or "general").strip().lower() == "general":
+        mode = AGENT_SEARCH_GENERAL_MODE
     return agent_search_client.search(
         query,
         limit=limit,
         categories=categories,
+        mode=mode,
     )
 
 

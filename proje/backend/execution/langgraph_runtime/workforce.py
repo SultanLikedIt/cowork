@@ -1481,9 +1481,28 @@ def _sanitize_document_payload(
 def _trim_evidence_for_answer(
     evidence: list[dict[str, Any]], *, max_items: int = 6, max_text: int = 2000
 ) -> list[dict[str, Any]]:
-    """Keep ANSWER prompt small when many recovery pages accumulated."""
+    """Keep ANSWER prompt small when many recovery pages accumulated.
+
+    Pages that returned content come first. This used to keep the LAST
+    ``max_items`` entries regardless of outcome, so a refine or recovery
+    round whose fetches failed pushed the first round's good pages out of
+    the prompt: the model then said the facts were missing, which fired
+    another recovery round -- slower and worse. Failed entries still fill
+    any room left, so the model can say which pages did not load.
+    """
+    items = list(evidence or [])
+    usable = [item for item in items if item.get("ok")]
+    if len(usable) > max_items:
+        # Newest usable pages win, as before -- recovery rounds are the
+        # more targeted searches.
+        keep = {id(item) for item in usable[-max_items:]}
+    else:
+        failed = [item for item in items if not item.get("ok")]
+        room = max_items - len(usable)
+        keep = {id(item) for item in usable}
+        keep.update(id(item) for item in (failed[-room:] if room else []))
     trimmed: list[dict[str, Any]] = []
-    for item in (evidence or [])[-max_items:]:
+    for item in (item for item in items if id(item) in keep):
         copy = dict(item)
         text = str(copy.get("text") or "")
         if len(text) > max_text:

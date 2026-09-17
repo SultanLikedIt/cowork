@@ -91,6 +91,9 @@ def test_search_web_blends_agent_search_with_searxng() -> None:
         patch.object(agent_search_client, "is_enabled", return_value=True),
         patch.object(web_search, "_agent_search_raw", side_effect=fake_agent),
         patch.object(web_search, "_searx_raw", side_effect=fake_searx) as searx,
+        # The blend order across all four sources is what this test checks,
+        # so the general AgentSearch request must be on.
+        patch.object(web_search, "AGENT_SEARCH_GENERAL_MODE", "general"),
     ):
         # Ask for the news pack explicitly: an evergreen query like "q" now
         # skips it by design, so keyword detection must not decide the

@@ -12,13 +12,25 @@ Vendored as git submodule: `vendor/agent-search`
 ## Architecture
 
 ```
-web_search (model tool)
-    → AgentSearch :3939   (preferred when AGENT_SEARCH_ENABLED=true)
-        → SearXNG :8080   (shared compose service)
-    → SearXNG direct      (fallback if sidecar fails / disabled)
+web_search (model tool / controller search_raw)
+    → SearXNG :8080 general (+ news for newsy asks)   always, waited for
+    → AgentSearch :3939 news (newsy asks)              started at the same time,
+      AgentSearch :3939 general (only if                waited AGENT_SEARCH_GRACE_SECONDS
+        AGENT_SEARCH_GENERAL_MODE != off)               past SearXNG, then left out
 web_read
     → Crawl4AI            (unchanged page open)
 ```
+
+All requests of one search start concurrently (`web_search._SEARCH_POOL`).
+AgentSearch is additive: a slow or failing sidecar costs at most the grace
+period, never the search.
+
+`AGENT_SEARCH_GENERAL_MODE` defaults to `off`. AgentSearch's own `general`
+strategy queries Bing/DuckDuckGo/Brave through the same SearXNG instance,
+so it duplicated work: on six measured Turkish/English queries 0–3 of its 10
+URLs were new, mostly off-topic. `reference` (Wikipedia + Wikidata) returned
+0–1 hits. Measure with `backend/scripts/latency_bench.py search` before
+turning either back on.
 
 We reuse **our** SearXNG container (`SEARXNG_URL=http://searxng:8080`). We do
 **not** start AgentSearch’s bundled SearXNG, so engine config stays in
@@ -52,6 +64,8 @@ AGENT_SEARCH_ENABLED=false docker compose up -d backend
 | `AGENT_SEARCH_BASE_URL` | `http://agent-search:3939` | In-network; host: `http://localhost:3939` |
 | `AGENT_SEARCH_TOKEN` | empty | Optional bearer; set on both api + backend |
 | `AGENT_SEARCH_TIMEOUT_SECONDS` | `20` | HTTP timeout for discovery |
+| `AGENT_SEARCH_GRACE_SECONDS` | `1.5` | How long past SearXNG the sidecar is waited for |
+| `AGENT_SEARCH_GENERAL_MODE` | `off` | `off` \| `reference` \| `general` for general-category searches |
 
 ## Cursor MCP (optional)
 
@@ -82,4 +96,4 @@ See `vendor/agent-search/mcp-server/README.md` for the full tool list.
   stays on Crawl4AI via `web_read`.
 - Category → strategy: `general`→`general`, `news`→`news`,
   `science`/`academic`→`academic`, `it`/`code`→`code`.
-- Empty or error responses from the sidecar fall back to direct SearXNG.
+- Empty, late or error responses from the sidecar are simply left out; SearXNG results always come through.

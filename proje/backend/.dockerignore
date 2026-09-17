@@ -26,3 +26,4 @@ __pycache__/
 # context (1-2GB).
 venv/
 .venv/
+latency-results/

@@ -23,11 +23,18 @@ services:
       # publishing needed. See searxng/settings.yml for the JSON API config.
       SEARXNG_BASE_URL: http://searxng:8080
       # Optional AgentSearch sidecar (brcrusoe72/agent-search). When enabled,
-      # web_search prefers this API and falls back to SearXNG on failure.
+      # web_search blends it into SearXNG's results (docs/agent-search.md).
       AGENT_SEARCH_ENABLED: ${AGENT_SEARCH_ENABLED:-true}
       AGENT_SEARCH_BASE_URL: ${AGENT_SEARCH_BASE_URL:-http://agent-search:3939}
       AGENT_SEARCH_TOKEN: ${AGENT_SEARCH_TOKEN:-}
       AGENT_SEARCH_TIMEOUT_SECONDS: ${AGENT_SEARCH_TIMEOUT_SECONDS:-20}
+      # SearXNG and AgentSearch requests start together; AgentSearch only
+      # gets this long past SearXNG before its results are left out.
+      AGENT_SEARCH_GRACE_SECONDS: ${AGENT_SEARCH_GRACE_SECONDS:-1.5}
+      # AgentSearch for general searches: off (default; its general mode
+      # re-asks SearXNG's own engines) | reference | general (old behavior).
+      # News searches use AgentSearch either way.
+      AGENT_SEARCH_GENERAL_MODE: ${AGENT_SEARCH_GENERAL_MODE:-off}
       # Crawl4AI (self-hosted Playwright/Chromium) is the only active web
       # engine. SearXNG / AgentSearch remain discovery-only; page open is
       # still web_read → Crawl4AI.
@@ -40,6 +47,11 @@ services:
       WEB_MAX_CONCURRENT_REQUESTS: ${WEB_MAX_CONCURRENT_REQUESTS:-8}
       WEB_MAX_CONCURRENT_ACQUISITIONS: ${WEB_MAX_CONCURRENT_ACQUISITIONS:-4}
       WEB_MAX_RETRIES: ${WEB_MAX_RETRIES:-1}
+      # A fetch round stops waiting on slow pages once others loaded
+      # (web_controller._gather_until_enough).
+      WEB_FETCH_ENOUGH_SUCCESSES: ${WEB_FETCH_ENOUGH_SUCCESSES:-2}
+      WEB_FETCH_STRAGGLER_GRACE_SECONDS: ${WEB_FETCH_STRAGGLER_GRACE_SECONDS:-6}
+      WEB_FETCH_SETTLE_GRACE_SECONDS: ${WEB_FETCH_SETTLE_GRACE_SECONDS:-1.5}
       # Uploaded documents are parsed internally by Docling. With OCR on and
       # OCR_ENGINE=paddleocr_vl (default), images and PDF pages without a
       # text layer go to the PaddleOCR-VL service below (layout + tables by
