@@ -9,7 +9,7 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 | Alan | Değer |
 |---|---|
 | Repo | `omeryavuzarslan/agent-webapp-langgraph` (güncel). Köken: `bsaltalii/agent-webapp`, 19.08.2026 |
-| Branch | **`main`** — varsayılan ve güncel dal. `claudefix/pptx-chat-reformat` aynı commit'te; `dev/omer-experiment` 63 commit geride |
+| Branch | **`outlook`** — Outlook e-posta entegrasyonu (üzerinde çalışılıyor). Öncesi: `schedule` (zamanlanmış görevler + zincirler), onun öncesi `main` |
 | Executor | `AGENT_EXECUTOR=langgraph` (kod default'u `camel` — env'de yazılmalı) |
 | Portlar | Arayüz 8081, API 8001, AgentSearch 3939 (container içi backend 8000) |
 | Modlar | Single = tools-free chat; Workforce = artifact intent + web phase controller |
@@ -20,6 +20,14 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 
 ## Son tamamlanan işler
 
+- **Outlook e-posta (faz 1, 18.09.2026):** zamanlanmış görev sonuçları klasik
+  Outlook masaüstünden e-postayla gider. Köprüde (`scripts/local_computer_bridge.py`)
+  token korumalı `/outlook/send`, backend'de `outlook.py` + `scheduling/delivery.py`,
+  migration `0010`, görev editöründe **Email** bölümü. Gerçek gönderim bu makinede
+  uçtan uca doğrulandı. Ayrıntı: [outlook.md](outlook.md)
+- **Zamanlanmış görev zincirleri:** bir görev başka bir görevin çalışmasından
+  sonra, koşullu olarak (başarı / değişiklik / her zaman) çalışır; üst görevin
+  raporu ve dosyaları aktarılır
 - LangGraph executor'a geçiş (`execution/adapter.py` anahtarı, `langgraph_runtime/`)
 - Web fazı sertleştirme: `unwrap_document_source` (sohbete yazılan HTML sayfası
   düz yazıya çevrilir, Document yine dosyayı üretir), `drop_echoed_request`
@@ -33,6 +41,12 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 
 ## Bilinen açıklar
 
+- **Outlook:** yalnız aynı makine ve yalnız **klasik** Outlook (yeni Outlook
+  uygulamasında COM yok). Köprü kapalıysa / PC uykudaysa e-posta bekler, ~6 saat
+  denenir, sonra `failed`. Gönderim sırasında backend çökerse aynı e-posta tekrar
+  gidebilir (en az bir kez teslim)
+- Ajanın kendi yazdığı e-posta (taslak olarak Outlook'ta açma), gelen kutusu
+  okuma ve takvim **henüz yok** — sonraki fazlar
 - Kaynak başlığında site navigasyonu kalabiliyor (`_TITLE_CHROME_RE` yalnız
   consent/cookie metnini keser)
 - `_looks_like_web_access_refusal` kelime listesine bakıyor; "Maalesef bu isteğin

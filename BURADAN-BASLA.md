@@ -11,6 +11,7 @@ kalkar. GitHub'a, hesaba veya özel bir erişime **ihtiyacın yok**.
 | Klasör / dosya | Ne |
 | --- | --- |
 | `proje/` | Projenin tamamı — kod, belgeler, Docker ayarları |
+| `proje/BASLANGIC.md` | **Başlangıç rehberi.** Kurulum, günlük kullanım, açılabilir özellikler, sorun giderme |
 | `proje/HANDOVER.md` | **Asıl rehber.** 13 bölüm; mimari, kullanım, test, bilinen açıklar |
 | `proje/README.md` | Kısa tanıtım |
 | `proje/.env.example` | Ayar şablonu — bundan kendi `.env` dosyanı yapacaksın |
@@ -148,7 +149,10 @@ Verilerin (sohbetler, ürettiğin dosyalar) durur.
 
 ## Sonra ne okumalı
 
-`proje/HANDOVER.md` — asıl rehber. Sırasıyla:
+Önce `proje/BASLANGIC.md` — kurulumun tamamı, her gün neyin başlatılacağı,
+zamanlanmış görev / Outlook e-postası / OCR gibi özelliklerin nasıl açıldığı.
+
+Sonra `proje/HANDOVER.md` — asıl rehber. Sırasıyla:
 
 | Bölüm | Ne anlatır |
 | --- | --- |

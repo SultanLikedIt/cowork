@@ -43,6 +43,59 @@ export const CONDITIONS = [
   },
 ]
 
+// When a run's result is emailed (backend scheduling/delivery.py). Same
+// conditions as a chain, read against the task's own run.
+export const DELIVERY_CONDITIONS = [
+  { value: 'success', label: 'Every result', description: 'Each run that produced a report.' },
+  {
+    value: 'change',
+    label: 'Only when something changed',
+    description: 'For tasks that flag changes: runs without a material change send nothing.',
+  },
+  { value: 'always', label: 'Always', description: 'Every run, including a notice when one fails.' },
+]
+
+const ADDRESS = /^[^@\s;,<>"]+@[^@\s;,<>"]+\.[^@\s;,<>"]+$/
+
+// "a@x.com, b@x.com; c@x.com" -> { addresses } or { error }.
+export function parseAddresses(text) {
+  const addresses = []
+  for (const part of String(text || '').split(/[\s,;]+/)) {
+    const address = part.trim()
+    if (!address) continue
+    if (!ADDRESS.test(address)) return { error: `Not an email address: ${address}` }
+    if (!addresses.some((existing) => existing.toLowerCase() === address.toLowerCase())) {
+      addresses.push(address)
+    }
+  }
+  return { addresses }
+}
+
+const DELIVERY_STATUS = {
+  pending: { label: 'Email pending', variant: 'running' },
+  sent: { label: 'Emailed', variant: 'success' },
+  failed: { label: 'Email failed', variant: 'destructive' },
+}
+
+// Why email may not go out, from GET /integrations/outlook/status; null when ready.
+export function outlookProblem(status) {
+  if (!status) return null
+  if (!status.enabled) return 'Outlook is turned off on the server (OUTLOOK_ENABLED).'
+  if (!status.token_configured) return 'LOCAL_COMPUTER_TOKEN is not set on the server.'
+  if (!status.bridge_reachable) {
+    return 'The local computer bridge is not running; emails wait and are retried for a few hours.'
+  }
+  if (!status.bridge_token_configured) return 'The bridge was started without --token.'
+  if (!status.outlook_available) {
+    return 'The bridge cannot use Outlook (needs Windows, classic Outlook and pywin32).'
+  }
+  return null
+}
+
+export function deliveryStatusMeta(status) {
+  return status ? DELIVERY_STATUS[status] || { label: status, variant: 'outline' } : null
+}
+
 // Variables the backend resolves at run time (scheduling/prompts.py).
 export const PROMPT_VARIABLES = [
   { token: '{tarih}', hint: "the run's date" },
@@ -387,6 +440,13 @@ export function newTaskDraft(seed = {}) {
     passUpstreamFiles: seed.passUpstreamFiles ?? true,
     // [{ file_id, filename }]
     attachedFiles: seed.attachedFiles || [],
+    emailEnabled: Boolean(seed.delivery?.to?.length),
+    email: {
+      to: (seed.delivery?.to || []).join(', '),
+      cc: (seed.delivery?.cc || []).join(', '),
+      on: seed.delivery?.on || (seed.watch ? 'change' : 'success'),
+      attachFiles: seed.delivery?.attach_files ?? true,
+    },
   }
 }
 
@@ -403,6 +463,7 @@ export function draftFromTask(task) {
     passUpstreamResult: task.pass_upstream_result,
     passUpstreamFiles: task.pass_upstream_files,
     attachedFiles: task.attached_files,
+    delivery: task.delivery,
   })
 }
 
@@ -428,6 +489,20 @@ export function draftToPayload(draft, timezone = DEFAULT_TIMEZONE) {
     }
     watch = { strategies, urls, criteria: draft.watch.criteria.trim() }
   }
+  let delivery = null
+  if (draft.emailEnabled) {
+    const to = parseAddresses(draft.email.to)
+    if (to.error) return to
+    if (to.addresses.length === 0) return { error: 'Add at least one email recipient.' }
+    const cc = parseAddresses(draft.email.cc)
+    if (cc.error) return cc
+    delivery = {
+      to: to.addresses,
+      cc: cc.addresses,
+      on: draft.email.on,
+      attach_files: draft.email.attachFiles,
+    }
+  }
   return {
     payload: {
       name: draft.name.trim(),
@@ -443,6 +518,7 @@ export function draftToPayload(draft, timezone = DEFAULT_TIMEZONE) {
       pass_upstream_result: draft.passUpstreamResult,
       pass_upstream_files: draft.passUpstreamFiles,
       attached_file_ids: draft.attachedFiles.map((file) => file.file_id),
+      delivery,
     },
   }
 }

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Paperclip, Sparkles, X } from 'lucide-react'
+import { Mail, Paperclip, Sparkles, X } from 'lucide-react'
 
 import {
   createScheduledTask,
+  getOutlookStatus,
   parseSchedule,
   previewSchedule,
+  sendOutlookTest,
   updateScheduledTask,
   uploadFiles,
 } from '../api.js'
@@ -12,6 +14,7 @@ import { cn } from '../lib/utils.js'
 import {
   CONDITIONS,
   DEFAULT_TIMEZONE,
+  DELIVERY_CONDITIONS,
   PROMPT_VARIABLES,
   SCHEDULE_KINDS,
   WEEKDAYS,
@@ -19,6 +22,8 @@ import {
   draftToPayload,
   formatDateTime,
   newTaskDraft,
+  outlookProblem,
+  parseAddresses,
   scheduleToTrigger,
   triggerToSchedule,
 } from '../schedule.js'
@@ -123,6 +128,9 @@ export default function ScheduleEditorDialog({
   const [parseNote, setParseNote] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
+  const [outlookStatus, setOutlookStatus] = useState(null)
+  const [testNote, setTestNote] = useState(null)
+  const [testing, setTesting] = useState(false)
   const fileInputRef = useRef(null)
   const promptRef = useRef(null)
   const nameRef = useRef(null)
@@ -135,7 +143,19 @@ export default function ScheduleEditorDialog({
     setScheduleText('')
     setParseNote(null)
     setUploadError(null)
+    setTestNote(null)
   }, [open, initialDraft])
+
+  useEffect(() => {
+    if (!open || !draft.emailEnabled) return undefined
+    const controller = new AbortController()
+    getOutlookStatus({ signal: controller.signal })
+      .then(setOutlookStatus)
+      .catch((err) => {
+        if (err?.name !== 'AbortError') setOutlookStatus(null)
+      })
+    return () => controller.abort()
+  }, [open, draft.emailEnabled])
 
   // A task may follow any task in the workspace except itself and the tasks
   // that already follow it (that link would loop).
@@ -150,6 +170,26 @@ export default function ScheduleEditorDialog({
     setDraft((previous) => ({ ...previous, schedule: { ...previous.schedule, ...changes } }))
   const updateWatch = (changes) =>
     setDraft((previous) => ({ ...previous, watch: { ...previous.watch, ...changes } }))
+  const updateEmail = (changes) =>
+    setDraft((previous) => ({ ...previous, email: { ...previous.email, ...changes } }))
+
+  const sendTest = async () => {
+    const parsed = parseAddresses(draft.email.to)
+    if (parsed.error || parsed.addresses.length === 0) {
+      setTestNote({ ok: false, text: parsed.error || 'Add a recipient first.' })
+      return
+    }
+    setTesting(true)
+    setTestNote(null)
+    try {
+      await sendOutlookTest(parsed.addresses[0])
+      setTestNote({ ok: true, text: `Test email sent to ${parsed.addresses[0]}.` })
+    } catch (err) {
+      setTestNote({ ok: false, text: err.message || 'The test email could not be sent.' })
+    } finally {
+      setTesting(false)
+    }
+  }
 
   // Upcoming runs, straight from the server's own cron evaluation so the
   // preview can never disagree with when the task actually fires.
@@ -729,6 +769,100 @@ export default function ScheduleEditorDialog({
                     onChange={(event) => updateWatch({ criteria: event.target.value })}
                     placeholder="e.g. new regulations affecting the construction sector"
                   />
+                </div>
+              </div>
+            )}
+          </Section>
+
+          <Section
+            title="Email"
+            description="Sent from the Outlook account on the computer running the app."
+          >
+            <CheckRow
+              id="schedule-email"
+              checked={draft.emailEnabled}
+              onChange={(emailEnabled) => update({ emailEnabled })}
+              title="Email results"
+              description="Each result also goes to these people, with the files the run created attached."
+            />
+            {draft.emailEnabled && (
+              <div className="ml-7 flex flex-col gap-4 border-l border-border/70 pl-4">
+                {outlookProblem(outlookStatus) && (
+                  <p className="text-xs leading-relaxed text-destructive" role="status">
+                    {outlookProblem(outlookStatus)} See docs/outlook.md.
+                  </p>
+                )}
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="email-to">To</Label>
+                  <Input
+                    id="email-to"
+                    value={draft.email.to}
+                    onChange={(event) => updateEmail({ to: event.target.value })}
+                    placeholder="ali@sirket.com, ekip@sirket.com"
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="email-cc">
+                    Cc <span className="font-normal text-muted-foreground">optional</span>
+                  </Label>
+                  <Input
+                    id="email-cc"
+                    value={draft.email.cc}
+                    onChange={(event) => updateEmail({ cc: event.target.value })}
+                  />
+                </div>
+                <div className="flex flex-col gap-3" role="radiogroup" aria-label="When to email">
+                  {DELIVERY_CONDITIONS.map((option) => {
+                    const disabled = option.value === 'change' && !draft.watchEnabled
+                    return (
+                      <label
+                        key={option.value}
+                        className={cn(
+                          'flex items-start gap-3',
+                          disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="email-condition"
+                          value={option.value}
+                          checked={draft.email.on === option.value}
+                          disabled={disabled}
+                          onChange={() => updateEmail({ on: option.value })}
+                          className="mt-0.5 h-4 w-4 shrink-0 accent-[hsl(var(--primary))]"
+                        />
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-[13px] font-medium leading-5">{option.label}</span>
+                          <span className="text-xs leading-relaxed text-muted-foreground">
+                            {disabled
+                              ? 'Available when this task flags changes (Results above).'
+                              : option.description}
+                          </span>
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+                <CheckRow
+                  id="email-attach"
+                  checked={draft.email.attachFiles}
+                  onChange={(attachFiles) => updateEmail({ attachFiles })}
+                  title="Attach created files"
+                  description="Up to 15 MB in total; larger files are listed in the email instead."
+                />
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button type="button" variant="outline" size="sm" onClick={sendTest} disabled={testing}>
+                    <Mail className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                    {testing ? 'Sending…' : 'Send test email'}
+                  </Button>
+                  {testNote && (
+                    <span
+                      className={cn('text-xs', testNote.ok ? 'text-muted-foreground' : 'text-destructive')}
+                      role={testNote.ok ? 'status' : 'alert'}
+                    >
+                      {testNote.text}
+                    </span>
+                  )}
                 </div>
               </div>
             )}

@@ -4,8 +4,9 @@ Kaydedilmiş bir isteği backend'in kendi başına çalıştırması: cron zaman
 tek seferlik bir saatte, başka bir görevden sonra, ya da yalnız bir şey
 değiştiğinde öne çıkan bir izleme olarak. Arayüzde sol menüde **Scheduled** (`/w/:workspaceId/scheduled`).
 
-Dış servis entegrasyonu (e-posta, Teams, Slack) yok: her sonuç görevin
-workspace'inde yeni bir sohbet olarak açılır ve Scheduled ekranında görünür.
+Her sonuç görevin workspace'inde yeni bir sohbet olarak açılır ve Scheduled
+ekranında görünür. İstenirse sonuç ayrıca Outlook'tan e-postayla gönderilir
+(aşağıda **E-posta**, kurulum: [outlook.md](outlook.md)). Teams / Slack yok.
 
 ## Nasıl çalışır
 
@@ -127,6 +128,24 @@ dosyalar her çalıştırmada `file_ids`'e eklenir. Örnek: "Her ay bu Excel
 şablonunu güncel kurlarla doldur." Takipçide üst görevden gelen dosyalar bunlara
 eklenir (toplam en fazla 10). Silinmiş bir upload çalıştırmayı düşürmez, atlanır.
 
+## E-posta
+
+`delivery`: `{"to": [...], "cc": [...], "on": "success" | "change" | "always", "attach_files": true}`.
+Alıcıları görevi oluşturan kişi yazar; model alıcı seçemez.
+
+- `on` zincir koşullarıyla aynı anlamdadır, görevin **kendi** çalıştırmasına
+  uygulanır: `success` her rapor, `change` izleme görevinde yalnız değişiklik
+  bulunduğunda, `always` başarısız çalıştırmada da (hata bildirimi). `cancelled`
+  çalıştırma için hiç e-posta gitmez.
+- Run bitince `delivery_status = pending` olur; gönderimi bir sonraki tick yapar
+  (`deliver_pending`). Köprü kapalıysa / Outlook açılamıyorsa 1, 5, 15, 30, 60, 60…
+  dakika arayla `SCHEDULE_DELIVERY_MAX_ATTEMPTS` (10, ~6 saat) kez denenir, sonra
+  `failed`. Yanlış token, geçersiz adres, `OUTLOOK_ENABLED=false` tekrar denenmez.
+- En az bir kez gönderim: gönderim sırasında backend çökerse aynı e-posta tekrar
+  gidebilir.
+- Konu `<görev adı> — <tarih>`; gövde cevabın markdown'ından HTML; oluşturulan
+  dosyalar toplam 15 MB'a kadar eklenir, sığmayanlar gövdede listelenir.
+
 ## Run durumları
 
 `queued`, `running`, `done`, `partial`, `failed`, `error`, `cancelled`,
@@ -147,13 +166,17 @@ ekranda seçilince okunmuş sayılır.
 | POST | `/scheduled-tasks/{id}/runs/seen` | Okundu işaretle |
 | POST | `/scheduled-tasks/preview` | Zamanlama → sonraki 5 çalışma |
 | POST | `/scheduled-tasks/parse-schedule` | "her pazartesi 9" → cron (model çağrısı) |
+| GET | `/integrations/outlook/status` | E-posta hazır mı (köprü, token, Outlook) |
+| POST | `/integrations/outlook/test` | Test e-postası |
 
 ## Kod
 
 | Dosya | Görev |
 | --- | --- |
 | `backend/scheduling/cron.py` | 5 alanlı cron, saat dilimiyle (croniter yerine: imaj offline wheel'den kuruluyor) |
-| `backend/scheduling/store.py` | `scheduled_tasks`, `scheduled_runs` (migration `0008`, `0009`) |
+| `backend/scheduling/store.py` | `scheduled_tasks`, `scheduled_runs` (migration `0008`, `0009`, `0010`) |
+| `backend/scheduling/delivery.py` | E-posta ayarı doğrulama, ne zaman gönderilir, yeniden deneme |
+| `backend/outlook.py` | Köprü istemcisi, e-posta gövdesi, `/integrations/outlook` |
 | `backend/scheduling/runner.py` | Scheduler döngüsü, zincir tetikleme ve sıra |
 | `backend/scheduling/chains.py` | Koşullar, döngü/derinlik doğrulaması |
 | `backend/scheduling/watch.py` | `url_hash`, `research_diff` |

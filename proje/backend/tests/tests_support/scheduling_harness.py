@@ -14,7 +14,7 @@ from typing import Any, Optional
 import pytest
 
 import db
-from scheduling import runner, store, watch
+from scheduling import delivery, runner, store, watch
 
 IST = "Europe/Istanbul"
 NOW = 1_790_000_000.0  # a fixed moment; only relative times matter
@@ -46,6 +46,9 @@ class Harness:
         # job_id -> (file_ids, notes) returned when a chain collects its files
         self.job_files: dict[str, tuple[list[str], list[str]]] = {}
         self.collected: list[str] = []
+        # Outcomes handed out by the fake mailer, in order; then success.
+        self.delivery_outcomes: list[delivery.DeliveryOutcome] = []
+        self.delivered: list[tuple[str, str]] = []  # (task_id, run_id)
 
         async def submit(**kwargs: Any) -> runner.SubmittedJob:
             if self.fail_submit is not None:
@@ -66,6 +69,12 @@ class Harness:
             self.collected.append(job_id)
             return self.job_files.get(job_id, ([], []))
 
+        async def deliver(task: dict[str, Any], run: dict[str, Any]) -> delivery.DeliveryOutcome:
+            self.delivered.append((task["task_id"], run["run_id"]))
+            if self.delivery_outcomes:
+                return self.delivery_outcomes.pop(0)
+            return delivery.DeliveryOutcome(True)
+
         self.scheduler = runner.Scheduler(
             submit=submit,
             job_state=self.jobs.get,
@@ -73,6 +82,7 @@ class Harness:
             fetch_text=fetch,
             diff=diff,
             collect_files=collect_files,
+            deliver=deliver,
         )
 
     def tick(self) -> None:

@@ -17,6 +17,7 @@ TASK_JSON_FIELDS = {
     "watch_state_json": "watch_state",
     "condition_json": "condition",
     "attached_files_json": "attached_files",
+    "delivery_json": "delivery",
 }
 _JSON_DEFAULTS = {"skill_ids": list, "watch_state": dict, "attached_files": list}
 TASK_BOOL_FIELDS = (
@@ -54,6 +55,7 @@ UPDATABLE_TASK_COLUMNS = frozenset(
         "pass_upstream_result",
         "pass_upstream_files",
         "attached_files_json",
+        "delivery_json",
     }
 )
 UPDATABLE_RUN_COLUMNS = frozenset(
@@ -68,6 +70,11 @@ UPDATABLE_RUN_COLUMNS = frozenset(
         "error",
         "seen_at",
         "input_json",
+        "delivery_status",
+        "delivery_attempts",
+        "delivery_next_at",
+        "delivery_error",
+        "delivered_at",
     }
 )
 TERMINAL_RUN_STATUSES = frozenset(
@@ -130,6 +137,7 @@ def create_task(record: dict[str, Any]) -> None:
         "pass_upstream_result",
         "pass_upstream_files",
         "attached_files_json",
+        "delivery_json",
     ]
     values = [
         record["task_id"],
@@ -154,6 +162,7 @@ def create_task(record: dict[str, Any]) -> None:
         int(bool(record.get("pass_upstream_result", True))),
         int(bool(record.get("pass_upstream_files", True))),
         json.dumps(record.get("attached_files") or [], ensure_ascii=False),
+        json.dumps(record["delivery"], ensure_ascii=False) if record.get("delivery") else None,
     ]
     placeholders = ", ".join("?" for _ in columns)
     with db._write_lock, db._connect() as conn:
@@ -506,5 +515,23 @@ def has_chained_run(task_id: str, parent_run_id: str) -> bool:
             ).fetchone()
             is not None
         )
+    finally:
+        conn.close()
+
+
+def due_deliveries(now: float, limit: int = 10) -> list[dict[str, Any]]:
+    """Runs whose email delivery is pending and due for an attempt."""
+    conn = db._connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM scheduled_runs
+            WHERE delivery_status = 'pending'
+              AND (delivery_next_at IS NULL OR delivery_next_at <= ?)
+            ORDER BY COALESCE(delivery_next_at, 0) LIMIT ?
+            """,
+            (now, limit),
+        ).fetchall()
+        return [_run_from_row(row) for row in rows]
     finally:
         conn.close()

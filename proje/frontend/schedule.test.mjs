@@ -3,11 +3,15 @@
 import {
   buildTaskTree,
   chainDescendantIds,
+  deliveryStatusMeta,
   describeSchedule,
+  draftFromTask,
   draftToPayload,
   localDateTimeToEpoch,
   epochToLocalParts,
   newTaskDraft,
+  outlookProblem,
+  parseAddresses,
   scheduleToTrigger,
   triggerToSchedule,
   formatRelative,
@@ -100,6 +104,22 @@ const tasks = [
 ]
 eq('task tree order and depth', buildTaskTree(tasks).map(({ task, depth }) => `${task.task_id}:${depth}`), ['x:0', 'a:0', 'b:1', 'c:2', 'b2:1', 'o:0'])
 eq('descendants', [...chainDescendantIds(tasks, 'a')].sort(), ['b', 'b2', 'c'])
+
+// --- email delivery ---
+eq('addresses split and dedupe', parseAddresses('a@x.com, A@x.com; b@x.com\nc@x.com'), { addresses: ['a@x.com', 'b@x.com', 'c@x.com'] })
+eq('bad address', parseAddresses('a@x.com, ali@'), { error: 'Not an email address: ali@' })
+const emailBase = { ...newTaskDraft({ name: 'Bülten', prompt: 'Araştır' }), emailEnabled: true }
+eq('email payload', draftToPayload({ ...emailBase, email: { to: 'a@x.com', cc: '', on: 'success', attachFiles: false } }).payload.delivery, { to: ['a@x.com'], cc: [], on: 'success', attach_files: false })
+eq('email needs a recipient', draftToPayload({ ...emailBase, email: { to: ' ', cc: '', on: 'success', attachFiles: true } }).error, 'Add at least one email recipient.')
+eq('email off sends null', draftToPayload(newTaskDraft({ name: 'x', prompt: 'y' })).payload.delivery, null)
+const savedWithEmail = { name: 'n', prompt: 'p', mode: 'multi', skill_ids: [], trigger_kind: 'cron', cron_expr: '0 9 * * 1', delivery: { to: ['a@x.com', 'b@x.com'], cc: ['c@x.com'], on: 'change', attach_files: true }, watch: { strategies: ['research_diff'], urls: [], criteria: '' } }
+eq('draft from saved delivery', draftFromTask(savedWithEmail).email, { to: 'a@x.com, b@x.com', cc: 'c@x.com', on: 'change', attachFiles: true })
+check('draft from saved delivery enables email', draftFromTask(savedWithEmail).emailEnabled === true)
+eq('watch task defaults to change', newTaskDraft({ watch: { strategies: ['research_diff'] } }).email.on, 'change')
+eq('delivery status label', deliveryStatusMeta('failed').label, 'Email failed')
+eq('no delivery status', deliveryStatusMeta(null), null)
+eq('outlook ready', outlookProblem({ enabled: true, token_configured: true, bridge_reachable: true, bridge_token_configured: true, outlook_available: true }), null)
+check('outlook bridge down explained', /bridge is not running/.test(outlookProblem({ enabled: true, token_configured: true, bridge_reachable: false })))
 
 if (failures > 0) {
   console.error(`${failures} schedule check(s) failed`)

@@ -304,3 +304,13 @@ export function previewSchedule(schedule, options = {}) {
 export function parseSchedule({ text, timezone }, options = {}) {
   return jsonRequest('/scheduled-tasks/parse-schedule', 'POST', { text, timezone: timezone ?? null }, options)
 }
+
+// --- Outlook (backend/outlook.py) --------------------------------------------
+
+export function getOutlookStatus(options = {}) {
+  return request('/integrations/outlook/status', options)
+}
+
+export function sendOutlookTest(to, options = {}) {
+  return jsonRequest('/integrations/outlook/test', 'POST', { to }, options)
+}

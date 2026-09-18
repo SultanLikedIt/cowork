@@ -58,6 +58,7 @@ import capability_routing
 import db
 from document_ingestion import DOCLING_EXTENSIONS, DocumentParseError, parse_document
 import document_export
+import outlook
 import reranker
 from execution.adapter import (
     run_single_agent as run_single_agent_executor,
@@ -67,6 +68,9 @@ from execution.executor_config import agent_executor
 from model_config import UsageTracker
 import skills as skills_catalog
 from scheduling import config as scheduling_config
+from scheduling import cron as scheduling_cron
+from scheduling import prompts as scheduling_prompts
+from scheduling.delivery import DeliveryOutcome
 from scheduling.api import build_router as build_scheduling_router
 from scheduling.runner import Scheduler, SubmittedJob
 from tool_call_log import ToolCallRecorder
@@ -3237,14 +3241,94 @@ async def _collect_job_files(job_id: str) -> tuple[list[str], list[str]]:
     return file_ids, notes
 
 
+_RUN_FAILURE_TEXT = {
+    "failed": "Görev bu çalıştırmada başarısız oldu.",
+    "error": "Görev bu çalıştırmada hata verdi.",
+    "interrupted": "Görev yarıda kesildi.",
+    "no_change": "İzlenen sayfalarda değişiklik bulunmadı; rapor üretilmedi.",
+}
+
+
+async def _deliver_scheduled_run(task: dict[str, Any], run: dict[str, Any]) -> DeliveryOutcome:
+    """Email one settled run's result to the task's fixed recipients.
+
+    The recipients come from the task's delivery setting, entered by a person
+    in the task editor -- nothing the model wrote decides who gets mail.
+    """
+    setting = task.get("delivery") or {}
+    job = _JOBS.get(run["job_id"]) if run.get("job_id") else None
+    if run.get("job_id") and job is None:
+        return DeliveryOutcome(False, "The run's job is no longer available.", retryable=False)
+
+    timezone = task.get("timezone") or scheduling_config.default_timezone()
+    when = datetime.fromtimestamp(float(run["scheduled_for"]), scheduling_cron.zone(timezone))
+    title = f"{task['name']} — {scheduling_prompts.format_date(when)}"
+    status = str(run.get("status") or "")
+    result = str((job or {}).get("result") or "").strip()
+
+    notes: list[str] = []
+    attachments: list[tuple[str, bytes]] = []
+    attached_bytes = 0
+    intro: Optional[str] = None
+    if result and status in {"done", "partial", "no_change"}:
+        body = result
+        if run.get("change_detected") and run.get("change_summary"):
+            intro = f"Değişiklik: {run['change_summary']}"
+        if status == "partial":
+            notes.append("Bu çalıştırma kısmen tamamlandı; sonuç eksik olabilir.")
+        if setting.get("attach_files", True) and job is not None:
+            root = _resolve_workspace_root(job)
+            for entry in _job_artifacts(job):
+                name = str(entry.get("filename") or "")
+                if entry.get("bundle") or not name or not root:
+                    continue
+                # Checked here, not only in send_mail, so the note reaches the body.
+                if attached_bytes + int(entry.get("size_bytes") or 0) > outlook.MAX_ATTACHMENT_BYTES:
+                    limit_mb = outlook.MAX_ATTACHMENT_BYTES // (1024 * 1024)
+                    notes.append(f"{name} eklenmedi: ekler toplam {limit_mb} MB ile sınırlı; dosya uygulamada duruyor.")
+                    continue
+                try:
+                    source = _safe_child(Path(root), str(entry["path"]), must_exist=True)
+                    content = await asyncio.to_thread(source.read_bytes)
+                except Exception as exc:  # noqa: BLE001 - send the rest without this file
+                    notes.append(f"{name} eklenemedi: {exc}")
+                    continue
+                attachments.append((name, content))
+                attached_bytes += len(content)
+    else:
+        detail = run.get("error") or (job or {}).get("error")
+        body = _RUN_FAILURE_TEXT.get(status, f"Görev tamamlanmadı ({status}).")
+        if detail:
+            body += f"\n\n{detail}"
+    notes.append(f"Bu e-posta \"{task['name']}\" zamanlanmış görevi tarafından otomatik gönderildi.")
+
+    html_body = outlook.render_email_html(title, body, intro=intro, notes=notes)
+    result_send = await asyncio.to_thread(
+        outlook.send_mail,
+        to=setting.get("to") or [],
+        cc=setting.get("cc") or [],
+        subject=title,
+        html_body=html_body,
+        attachments=attachments,
+    )
+    return DeliveryOutcome(
+        ok=result_send.ok,
+        error=None if result_send.ok else result_send.message,
+        retryable=result_send.retryable,
+        notes=result_send.notes,
+    )
+
+
 _SCHEDULER = Scheduler(
     submit=_submit_scheduled_run,
     job_state=_JOBS.get,
     collect_files=_collect_job_files,
+    deliver=_deliver_scheduled_run,
 )
 app.include_router(
     build_scheduling_router(lambda: _SCHEDULER, describe_upload=_describe_upload)
 )
+app.include_router(outlook.build_router())
 
 
 @app.on_event("startup")

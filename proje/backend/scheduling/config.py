@@ -70,6 +70,12 @@ def max_chain_depth() -> int:
     return int(_number("SCHEDULE_MAX_CHAIN_DEPTH", 3, 1))
 
 
+def max_delivery_attempts() -> int:
+    """Email attempts per run before its delivery is marked failed. With the
+    backoff in scheduling/delivery.py the default spans about 6 hours."""
+    return int(_number("SCHEDULE_DELIVERY_MAX_ATTEMPTS", 10, 1))
+
+
 def max_chained_runs_per_day() -> int:
     """Chained runs started per chain (root and all descendants) in 24 hours."""
     return int(_number("SCHEDULE_MAX_CHAINED_RUNS_PER_DAY", 10, 1))

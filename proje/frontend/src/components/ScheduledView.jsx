@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CornerDownRight,
   Link2,
+  Mail,
   PanelLeft,
   Paperclip,
   Pause,
@@ -32,6 +33,7 @@ import {
   RUN_TRIGGER_LABELS,
   TASK_TEMPLATES,
   buildTaskTree,
+  deliveryStatusMeta,
   describeSchedule,
   draftFromTask,
   formatDateTime,
@@ -111,8 +113,17 @@ function TaskRow({ task, depth = 0, selected, onSelect }) {
   )
 }
 
+function deliveryTitle(run, timezone) {
+  if (run.delivery_status === 'pending' && run.delivery_next_at) {
+    return `Next attempt ${formatRelative(run.delivery_next_at)}`
+  }
+  if (run.delivered_at) return `Sent ${formatDateTime(run.delivered_at, timezone)}`
+  return undefined
+}
+
 function RunRow({ run, timezone, onOpen }) {
   const meta = runStatusMeta(run.status)
+  const email = deliveryStatusMeta(run.delivery_status)
   const openable = Boolean(run.job_id)
   const when = run.started_at || run.scheduled_for
   return (
@@ -123,6 +134,12 @@ function RunRow({ run, timezone, onOpen }) {
           {meta.label}
         </Badge>
         {run.change_detected === true && <Badge variant="default">Changed</Badge>}
+        {email && (
+          <Badge variant={email.variant} title={deliveryTitle(run, timezone)}>
+            <Mail className="h-3 w-3" aria-hidden="true" />
+            {email.label}
+          </Badge>
+        )}
         <span className="text-[13px] tabular-nums">{formatDateTime(when, timezone)}</span>
         <span className="text-xs text-muted-foreground">{RUN_TRIGGER_LABELS[run.trigger] || run.trigger}</span>
         {run.status === 'queued' && <StatusDot pulse className="text-link" />}
@@ -155,6 +172,16 @@ function RunRow({ run, timezone, onOpen }) {
           )}
         >
           {run.error}
+        </p>
+      )}
+      {run.delivery_error && run.delivery_status !== 'sent' && (
+        <p
+          className={cn(
+            'text-xs leading-relaxed',
+            run.delivery_status === 'failed' ? 'text-destructive' : 'text-muted-foreground',
+          )}
+        >
+          Email: {run.delivery_error}
         </p>
       )}
       {run.input?.upstream_name && (
@@ -426,6 +453,12 @@ function TaskDetail({
             </Badge>
           )}
           {task.include_previous_summary && <Badge variant="outline">Focuses on what is new</Badge>}
+          {task.delivery?.to?.length > 0 && (
+            <Badge variant="outline" title={[...task.delivery.to, ...(task.delivery.cc || [])].join(', ')}>
+              <Mail className="h-3 w-3" aria-hidden="true" />
+              Emails {task.delivery.to.length === 1 ? task.delivery.to[0] : `${task.delivery.to.length} people`}
+            </Badge>
+          )}
           {task.attached_files?.map((file) => (
             <Badge key={file.file_id} variant="outline" title="Attached to every run">
               <Paperclip className="h-3 w-3" aria-hidden="true" />

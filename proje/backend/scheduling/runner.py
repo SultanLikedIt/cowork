@@ -14,6 +14,10 @@ Chains (scheduling/chains.py): when a run settles, tasks that follow its task
 get a "queued" run carrying that run's report and files. Queued runs are
 started by the next tick, ahead of due cron tasks, within the same
 concurrency limit.
+
+Email (scheduling/delivery.py): when a settled run meets its task's delivery
+condition it is marked pending, and each tick sends pending deliveries through
+``deliver`` (main._deliver_scheduled_run), retrying with backoff on failure.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 
-from scheduling import chains, config, cron, prompts, store, watch
+from scheduling import chains, config, cron, delivery, prompts, store, watch
 
 logger = logging.getLogger("agent_webapp.scheduling")
 
@@ -35,6 +39,7 @@ JOB_TERMINAL = frozenset({"done", "partial", "failed", "error", "cancelled", "in
 FAILURE_STATUSES = frozenset({"failed", "error"})
 SUCCESS_STATUSES = frozenset({"done", "partial", "no_change"})
 MAX_RUN_FILES = 10
+MAX_DELIVERIES_PER_TICK = 3
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,8 @@ JobStateFn = Callable[[str], Optional[dict[str, Any]]]
 DiffFn = Callable[[str, str, str], Awaitable[Optional[watch.DiffResult]]]
 # job_id -> (file_ids registered as uploads, notes about files left out)
 CollectFilesFn = Callable[[str], Awaitable[tuple[list[str], list[str]]]]
+# (task, run) -> outcome of one email attempt
+DeliverFn = Callable[[dict[str, Any], dict[str, Any]], Awaitable[delivery.DeliveryOutcome]]
 
 
 def compute_next_run(task: dict[str, Any], after: float) -> Optional[float]:
@@ -64,6 +71,10 @@ async def _no_files(job_id: str) -> tuple[list[str], list[str]]:
     return [], []
 
 
+async def _no_delivery(task: dict[str, Any], run: dict[str, Any]) -> delivery.DeliveryOutcome:
+    return delivery.DeliveryOutcome(False, "Email delivery is not available.", retryable=False)
+
+
 class Scheduler:
     def __init__(
         self,
@@ -74,6 +85,7 @@ class Scheduler:
         fetch_text: Callable[[str], str] = watch.fetch_page_text,
         diff: Optional[DiffFn] = None,
         collect_files: CollectFilesFn = _no_files,
+        deliver: DeliverFn = _no_delivery,
     ) -> None:
         self._submit = submit
         self._job_state = job_state
@@ -81,6 +93,7 @@ class Scheduler:
         self._fetch_text = fetch_text
         self._diff = diff or (lambda prev, new, criteria: watch.diff_results(prev, new, criteria))
         self._collect_files = collect_files
+        self._deliver = deliver
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
 
@@ -116,6 +129,7 @@ class Scheduler:
         now = self._clock()
         await self.reconcile()
         await self._pause_orphans()
+        await self.deliver_pending()
 
         free = await self._free_slots()
         if free <= 0:
@@ -408,6 +422,10 @@ class Scheduler:
     ) -> None:
         await self._apply_outcome(task, run, status, summary=summary)
         try:
+            await self._queue_delivery(task, run, status)
+        except Exception:  # noqa: BLE001 - an email problem must not undo this run's outcome
+            logger.exception("queueing email for run %s failed", run.get("run_id"))
+        try:
             await self._trigger_downstream(task, run, status, result)
         except Exception:  # noqa: BLE001 - a chain problem must not undo this run's outcome
             logger.exception("triggering tasks after %s failed", task["task_id"])
@@ -434,6 +452,67 @@ class Scheduler:
                     "scheduled task %s paused after %d failures", task["task_id"], failures
                 )
         await asyncio.to_thread(store.update_task, task["task_id"], fields)
+
+    # -- email delivery ----------------------------------------------------
+
+    async def _queue_delivery(self, task: dict[str, Any], run: dict[str, Any], status: str) -> None:
+        has_result = bool(run.get("job_id")) and status in SUCCESS_STATUSES
+        if not delivery.should_deliver(
+            task,
+            status,
+            run.get("change_detected"),
+            is_watch=_watch_config(task) is not None,
+            has_result=has_result,
+        ):
+            return
+        await asyncio.to_thread(
+            store.update_run,
+            run["run_id"],
+            {"delivery_status": "pending", "delivery_next_at": self._clock(), "delivery_error": None},
+        )
+
+    async def deliver_pending(self) -> None:
+        now = self._clock()
+        for run in await asyncio.to_thread(store.due_deliveries, now, MAX_DELIVERIES_PER_TICK):
+            task = await asyncio.to_thread(store.get_task, run["task_id"])
+            if task is None or not (task.get("delivery") or {}).get("to"):
+                await asyncio.to_thread(
+                    store.update_run,
+                    run["run_id"],
+                    {"delivery_status": "failed", "delivery_error": "Email delivery was turned off for this task."},
+                )
+                continue
+            try:
+                outcome = await self._deliver(task, run)
+            except Exception as exc:  # noqa: BLE001 - treat as a failed attempt, retried later
+                logger.exception("email delivery for run %s raised", run["run_id"])
+                outcome = delivery.DeliveryOutcome(False, f"{type(exc).__name__}: {exc}")
+            attempts = int(run.get("delivery_attempts") or 0) + 1
+            now = self._clock()
+            if outcome.ok:
+                fields: dict[str, Any] = {
+                    "delivery_status": "sent",
+                    "delivery_attempts": attempts,
+                    "delivery_next_at": None,
+                    "delivered_at": now,
+                    "delivery_error": "; ".join(outcome.notes) or None,
+                }
+                logger.info("emailed run %s of task %s", run["run_id"], task["task_id"])
+            elif not outcome.retryable or delivery.gives_up(attempts):
+                fields = {
+                    "delivery_status": "failed",
+                    "delivery_attempts": attempts,
+                    "delivery_next_at": None,
+                    "delivery_error": outcome.error,
+                }
+                logger.warning("email for run %s failed: %s", run["run_id"], outcome.error)
+            else:
+                fields = {
+                    "delivery_attempts": attempts,
+                    "delivery_next_at": now + delivery.retry_delay(attempts),
+                    "delivery_error": outcome.error,
+                }
+            await asyncio.to_thread(store.update_run, run["run_id"], fields)
 
     # -- chains ------------------------------------------------------------
 
