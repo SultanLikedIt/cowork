@@ -5,8 +5,11 @@ sohbet eder, ya web'den araştırır, ya yüklediğin belgeyi okur, ya da
 **Word / PDF / PowerPoint / Excel / HTML** dosyası üretip (istersen) bilgisayarında
 açar.
 
-> 📘 **Projeyi ilk kez devralıyorsan → [HANDOVER.md](HANDOVER.md).**
-> Kurulum, mimari, kullanım, test ve bilinen açıkların tamamı orada.
+> 🚀 **Hemen çalıştırmak istiyorsan → [BASLANGIC.md](BASLANGIC.md).**
+> Sıfırdan kurulum, günlük kullanım, açılabilir özellikler, sorun giderme.
+>
+> 📘 **Projeyi devralıyor ve koda gireceksen → [HANDOVER.md](HANDOVER.md).**
+> Mimari, kod haritası, test ve bilinen açıkların tamamı orada.
 
 > ### Hangi dal güncel
 >
@@ -59,6 +62,8 @@ kalanı `camel_service`'i doğrudan çağırmaz, hep adapter üzerinden geçer.
 | Web araştırma | SearXNG + AgentSearch sidecar + Crawl4AI/Playwright Chromium |
 | Belge okuma | Docling (PDF, DOCX, PPTX, XLSX, HTML, görsel) + PaddleOCR-VL-1.6 OCR (taranmış PDF sayfası / görsel, GPU; yoksa Tesseract yedeği) + CSV / TXT / ZIP |
 | Belge üretme | Tipli bloklar → Chromium HTML/CSS (PDF), python-docx (DOCX), python-pptx (PPTX), openpyxl (XLSX), HTML deck; reportlab yedek |
+| Zamanlama | Cron / tek seferlik / zincir görevler, değişiklik izleme |
+| E-posta | Zamanlanmış sonuçlar klasik Outlook masaüstünden (opsiyonel, Windows) |
 | Canlı durum | Server-Sent Events |
 | Kalıcılık | SQLite + dosya sistemi |
 
@@ -139,6 +144,7 @@ Sık kullanılanlar:
 
 ```env
 AGENT_EXECUTOR=langgraph        # boşsa camel'e düşer
+OUTLOOK_ENABLED=false           # zamanlanmış sonuçları Outlook'tan e-postala
 AGENT_SEARCH_ENABLED=true
 LOCAL_COMPUTER_ENABLED=false    # "bilgisayarımda aç" köprüsü
 DOCLING_ENABLE_OCR=true         # PDF + görsel okuma (PaddleOCR-VL, yoksa Tesseract)
@@ -273,11 +279,14 @@ Güncel açık listesi ve nerede düzeltileceği:
 
 | Dosya | Ne için |
 | --- | --- |
+| [BASLANGIC.md](BASLANGIC.md) | **Başlangıç** — kurulum, günlük kullanım, özellikleri açma, sorun giderme |
 | [HANDOVER.md](HANDOVER.md) | **Tam rehber** — kurulum, mimari, kullanım, test, açıklar |
 | [docs/langgraph-migration.md](docs/langgraph-migration.md) | CAMEL ↔ LangGraph geçişi |
 | [docs/web-execution.md](docs/web-execution.md) | Arama + sayfa açma |
 | [docs/document-ingestion.md](docs/document-ingestion.md) | Docling upload pipeline |
 | [docs/document-generation.md](docs/document-generation.md) | PDF/DOCX/PPTX üretimi |
 | [docs/local-computer.md](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
+| [docs/scheduling.md](docs/scheduling.md) | Zamanlanmış görevler, zincirler, e-posta |
+| [docs/outlook.md](docs/outlook.md) | Outlook ile e-posta: kurulum, güvenlik, sorun giderme |
 | [docs/agent-search.md](docs/agent-search.md) | AgentSearch sidecar |
 | [docs/README.md](docs/README.md) | `docs/` dizin indeksi |

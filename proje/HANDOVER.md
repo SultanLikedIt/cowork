@@ -12,6 +12,7 @@ derin referansıdır; bu dosya onların üstündeki tek giriş noktasıdır.
 
 ## İçindekiler
 
+0. [Hızlı başlangıç](BASLANGIC.md) — sıfırdan çalışır hale, günlük kullanım, açılabilir özellikler
 1. [Proje nedir](#1-proje-nedir)
 2. [Kurulum — Docker (önerilen)](#2-kurulum--docker-önerilen)
 3. [Ortam değişkenleri (.env)](#3-ortam-değişkenleri-env)
@@ -362,6 +363,10 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `SEARXNG_BASE_URL` | — | Host'ta backend çalıştırırken gerekir |
 | `LOCAL_COMPUTER_ENABLED` | — | "Bilgisayarımda aç" köprüsü |
 | `LOCAL_COMPUTER_URL` | — | Varsayılan `http://host.docker.internal:8765` |
+| `LOCAL_COMPUTER_TOKEN` | — | Köprünün Outlook uçları için paylaşılan sır; boşsa e-posta kapalı |
+| `OUTLOOK_ENABLED` | — | Zamanlanmış sonuçları Outlook'tan e-postayla gönder (Windows + klasik Outlook) |
+| `SCHEDULING_ENABLED` | — | Zamanlanmış görevler (varsayılan `true`); diğer `SCHEDULE_*` için `.env.example` |
+| `SCHEDULE_DELIVERY_MAX_ATTEMPTS` | — | Gönderilemeyen e-posta için deneme sayısı (varsayılan 10, ~6 saat) |
 | `DOCLING_ENABLE_OCR` | — | Compose'ta `true`; taranmış PDF ve görsel yüklemelerini okur. `false` → taranmış PDF boş, görsel reddedilir |
 | `COMPOSE_PROFILES` | — | `paddleocr` → PaddleOCR-VL servislerini de başlatır (NVIDIA GPU ister) |
 | `OCR_ENGINE` | — | `paddleocr_vl` (varsayılan) \| `tesseract` \| `easyocr` \| `rapidocr` |
@@ -689,6 +694,8 @@ agent-webapp-langgraph/
 | `workforce_callback.py` | CAMEL event → queue |
 | `tool_call_log.py` | Tool audit |
 | `stream_protocol.py` | SSE şekli |
+| `outlook.py` | Outlook köprü istemcisi, e-posta gövdesi, `/integrations/outlook` |
+| `scheduling/` | Zamanlanmış görevler: cron, runner, zincirler, izleme, e-posta (`delivery.py`) |
 | `runtime_context.py` | Job context |
 | `golden_prompts.py` | Gerçek kullanıcı cümleleriyle regresyon |
 
@@ -758,6 +765,9 @@ Backend kök path'lerini dinler; tarayıcı `/api` öneki ekler (nginx/Vite soya
 | GET/POST/PATCH/DELETE | `/workspaces` | Workspace |
 | DELETE | `/conversations/{id}` | Sohbet sil |
 | GET | `/skills` | Skill listesi |
+| GET/POST/PATCH/DELETE | `/scheduled-tasks` | Zamanlanmış görevler, çalıştırma geçmişi (`docs/scheduling.md`) |
+| GET | `/integrations/outlook/status` | E-posta hazır mı (köprü, token, Outlook) |
+| POST | `/integrations/outlook/test` | Test e-postası |
 
 OpenAPI/Swagger: http://127.0.0.1:8001/docs
 
@@ -790,6 +800,26 @@ curl http://127.0.0.1:8765/health
 Sadece **aynı makine** — uzak tarayıcıdan açılmaz. Dosya allow-list dizini
 (varsayılan Downloads) dışına yazılmaz. Ayrıntı:
 [`docs/local-computer.md`](docs/local-computer.md).
+
+### Aynı köprü: Outlook ile e-posta
+
+Köprüde bir de `/outlook/send` ucu var: zamanlanmış görev sonuçları klasik
+Outlook masaüstü uygulamasından e-postayla gönderilir (Microsoft Graph / Azure
+kaydı gerekmez). Gönderen hesap, köprünün çalıştığı makinede Outlook'ta açık olan
+profildir.
+
+1. `.env`: `OUTLOOK_ENABLED=true` ve `LOCAL_COMPUTER_TOKEN=<rastgele değer>`
+2. Host'ta: `pip install pywin32`, sonra köprüyü **aynı token ile** başlat:
+   `python scripts\local_computer_bridge.py --token <değer>`
+3. Arayüz: Scheduled → görev → **Email** → alıcı → **Send test email**
+
+Token yalnız Outlook uçları için zorunludur: köprü kimlik doğrulamasız dinlediği
+için, token olmasa tarayıcıda açık herhangi bir sayfa `127.0.0.1:8765`'e istek
+atıp kullanıcı adına e-posta gönderebilirdi. Kurulum, güvenlik modeli, otomatik
+başlatma ve sorun giderme: [`docs/outlook.md`](docs/outlook.md).
+
+Köprü container'ın içine konamaz: Linux container'ın Windows oturumuna, GUI'ye
+veya COM'a erişimi yoktur.
 
 ---
 

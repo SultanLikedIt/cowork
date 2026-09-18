@@ -62,6 +62,21 @@ Gerekenler: Windows, **klasik Outlook** (Microsoft 365 / Office 2016+ masaüstü
 5. Arayüz → Scheduled → görev düzenle → **Email** → alıcıları yaz →
    **Send test email**. Test gelirse kurulum tamam.
 
+## Köprüyü otomatik başlatma
+
+Köprü kapalıyken e-posta gitmez (bekler, ~6 saat yeniden denenir). Her açılışta
+elle çalıştırmamak için iki yol — ikisi de **senin oturumunda** ve **yönetici
+olmadan** çalışmalı; yükseltilmiş bir süreç, normal çalışan Outlook'a COM ile
+bağlanamaz. Adım adım komutlar: [BASLANGIC.md § 6](../BASLANGIC.md#6-köprü-local-computer-bridge).
+
+| Yol | Artı | Eksi |
+| --- | --- | --- |
+| Görev Zamanlayıcı, oturum açılışında | Çökerse yeniden başlatır, penceresiz | Token görev tanımında görünür |
+| `shell:startup` klasörüne .bat kısayolu | Kurması ve kaldırması en kolay | Çökerse yeniden başlamaz |
+
+Windows **servisi** olarak kurma: servis oturum 0'da çalışır, kullanıcının
+Outlook'unu göremez.
+
 ## Güvenlik
 
 - **Token neden zorunlu:** köprü `127.0.0.1:8765`'te kimlik doğrulamasız dinler.
