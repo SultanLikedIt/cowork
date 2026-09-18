@@ -55,6 +55,10 @@ DiffFn = Callable[[str, str, str], Awaitable[Optional[watch.DiffResult]]]
 CollectFilesFn = Callable[[str], Awaitable[tuple[list[str], list[str]]]]
 # (task, run) -> outcome of one email attempt
 DeliverFn = Callable[[dict[str, Any], dict[str, Any]], Awaitable[delivery.DeliveryOutcome]]
+# (task, run) -> the delivery setting in force for this run: the task's own,
+# or one read from the task prompt ("ve ali@x.com'a gonder"). Injected so the
+# runner does not need to know how a job's intent was classified.
+ResolveDeliveryFn = Callable[[dict[str, Any], dict[str, Any]], Optional[dict[str, Any]]]
 
 
 def compute_next_run(task: dict[str, Any], after: float) -> Optional[float]:
@@ -75,6 +79,10 @@ async def _no_delivery(task: dict[str, Any], run: dict[str, Any]) -> delivery.De
     return delivery.DeliveryOutcome(False, "Email delivery is not available.", retryable=False)
 
 
+def _task_delivery(task: dict[str, Any], run: dict[str, Any]) -> Optional[dict[str, Any]]:
+    return task.get("delivery")
+
+
 class Scheduler:
     def __init__(
         self,
@@ -86,6 +94,7 @@ class Scheduler:
         diff: Optional[DiffFn] = None,
         collect_files: CollectFilesFn = _no_files,
         deliver: DeliverFn = _no_delivery,
+        resolve_delivery: ResolveDeliveryFn = _task_delivery,
     ) -> None:
         self._submit = submit
         self._job_state = job_state
@@ -94,6 +103,7 @@ class Scheduler:
         self._diff = diff or (lambda prev, new, criteria: watch.diff_results(prev, new, criteria))
         self._collect_files = collect_files
         self._deliver = deliver
+        self._resolve_delivery = resolve_delivery
         self._lock = asyncio.Lock()
         self._task: Optional[asyncio.Task] = None
 
@@ -457,8 +467,9 @@ class Scheduler:
 
     async def _queue_delivery(self, task: dict[str, Any], run: dict[str, Any], status: str) -> None:
         has_result = bool(run.get("job_id")) and status in SUCCESS_STATUSES
+        setting = self._resolve_delivery(task, run)
         if not delivery.should_deliver(
-            task,
+            setting,
             status,
             run.get("change_detected"),
             is_watch=_watch_config(task) is not None,
@@ -468,14 +479,23 @@ class Scheduler:
         await asyncio.to_thread(
             store.update_run,
             run["run_id"],
-            {"delivery_status": "pending", "delivery_next_at": self._clock(), "delivery_error": None},
+            {
+                "delivery_status": "pending",
+                "delivery_next_at": self._clock(),
+                "delivery_error": None,
+                # Kept per run: the task's setting may change before the
+                # history is read, and a prompt-derived run should still show
+                # where its recipients came from.
+                "delivery_to": ", ".join(setting.get("to") or []),
+                "delivery_source": setting.get("source") or "task",
+            },
         )
 
     async def deliver_pending(self) -> None:
         now = self._clock()
         for run in await asyncio.to_thread(store.due_deliveries, now, MAX_DELIVERIES_PER_TICK):
             task = await asyncio.to_thread(store.get_task, run["task_id"])
-            if task is None or not (task.get("delivery") or {}).get("to"):
+            if task is None or not (self._resolve_delivery(task, run) or {}).get("to"):
                 await asyncio.to_thread(
                     store.update_run,
                     run["run_id"],

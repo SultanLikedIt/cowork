@@ -1,8 +1,10 @@
 // Preset <-> cron mapping, schedule text and draft validation for scheduled
 // tasks. Imports the real module so it cannot drift from the editor.
 import {
+  addressesInText,
   buildTaskTree,
   chainDescendantIds,
+  deliveryRecipientsLabel,
   deliveryStatusMeta,
   describeSchedule,
   draftFromTask,
@@ -120,6 +122,14 @@ eq('delivery status label', deliveryStatusMeta('failed').label, 'Email failed')
 eq('no delivery status', deliveryStatusMeta(null), null)
 eq('outlook ready', outlookProblem({ enabled: true, token_configured: true, bridge_reachable: true, bridge_token_configured: true, outlook_available: true }), null)
 check('outlook bridge down explained', /bridge is not running/.test(outlookProblem({ enabled: true, token_configured: true, bridge_reachable: false })))
+
+// --- addresses written in the prompt ---
+eq('addresses in prompt', addressesInText('Raporu hazirla ve ali@x.com ile b@y.com.tr adresine gonder.'), ['ali@x.com', 'b@y.com.tr'])
+eq('addresses deduped', addressesInText('a@x.com ve A@X.com'), ['a@x.com'])
+eq('no address', addressesInText('haftalik rapor hazirla'), [])
+eq('recipients from prompt labelled', deliveryRecipientsLabel({ delivery_to: 'a@x.com', delivery_source: 'prompt' }), 'a@x.com (from the task text)')
+eq('recipients from setting', deliveryRecipientsLabel({ delivery_to: 'a@x.com', delivery_source: 'task' }), 'a@x.com')
+eq('no recipients', deliveryRecipientsLabel({}), '')
 
 if (failures > 0) {
   console.error(`${failures} schedule check(s) failed`)

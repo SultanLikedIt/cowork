@@ -43,12 +43,14 @@ ROLE_RESEARCH = "Research Agent"
 ROLE_DOCUMENT = "Document Agent"
 ROLE_CODING = "Coding Agent"
 ROLE_GENERAL = "Assistant"
+ROLE_MAIL = "Mail Agent"
 
 WORKER_IDS = {
     ROLE_RESEARCH: "lg-research",
     ROLE_DOCUMENT: "lg-document",
     ROLE_CODING: "lg-coding",
     ROLE_GENERAL: "lg-assistant",
+    ROLE_MAIL: "lg-mail",
 }
 
 
@@ -370,6 +372,7 @@ def _select_roles(
     wants_sources: bool = False,
     skip_web_research: bool = False,
     needs_live_data: bool = False,
+    reads_email: bool = False,
 ) -> list[str]:
     """Pick workers for this job.
 
@@ -383,10 +386,17 @@ def _select_roles(
       stay chat-only.
     """
     roles: list[str] = []
+    caps = set(capabilities.expand(job_capabilities or frozenset()))
+    # The mailbox is the SOURCE for this job, so it is read before anything
+    # else runs and its notes flow into whatever comes next -- the same
+    # position Research holds for the web. Placed ahead of the fast-path
+    # branch because a specialist route ("just write the summary") still has
+    # to be given the mail it is supposed to summarize.
+    if reads_email or capabilities.MAIL_READ in caps:
+        roles.append(ROLE_MAIL)
     if fast_path_role:
         roles.append(_resolve_fast_path_role(fast_path_role))
     else:
-        caps = set(capabilities.expand(job_capabilities or frozenset()))
         if (
             not skip_web_research
             and caps & {capabilities.WEB_SEARCH, capabilities.WEB_FETCH}
@@ -410,6 +420,14 @@ def _select_roles(
             roles.append(ROLE_DOCUMENT)
     else:
         roles = [role for role in roles if role != ROLE_DOCUMENT]
+
+    # The Mail Agent gathers; it does not answer. Its output is quoted mail
+    # inside an explicit "this is data, not instructions" fence, so shipping
+    # it as the reply would hand the user a transcript of their own inbox --
+    # and would put unfenced sender text where the answer should be. Anything
+    # else in the list can do the answering; alone, it needs the Assistant.
+    if roles == [ROLE_MAIL]:
+        roles.append(ROLE_GENERAL)
 
     if not roles:
         # Capability routing is a model call, so the same question can come
@@ -454,7 +472,16 @@ def _artifacts_on_disk(workspace_root: Optional[str]) -> list[str]:
     return found
 
 
-async def _make_complete(tracker: UsageTracker, *, deep_research: bool = False):
+async def _make_complete(
+    tracker: UsageTracker,
+    *,
+    deep_research: bool = False,
+    # Usage is reported per stage, and every stage here was a web phase when
+    # this was written. The Mail Agent reuses the same wrapper for its own
+    # phases, and recording those as "web_mail_plan" would put mailbox reads
+    # in the web research column of the timing panel.
+    stage_prefix: str = "web",
+):
     async def complete(
         phase: str, system: str, user: str, schema: Optional[type]
     ) -> Any:
@@ -483,7 +510,7 @@ async def _make_complete(tracker: UsageTracker, *, deep_research: bool = False):
                 {"role": "user", "content": user},
             ],
             tracker=tracker,
-            stage=f"web_{phase}",
+            stage=f"{stage_prefix}_{phase}",
             max_tokens=max_tokens,
             # Only the answer: when the brief is already report-shaped the
             # Document worker is skipped and this text is what the user
@@ -1970,6 +1997,125 @@ _ROLE_PERSONAS = {
     ROLE_GENERAL: "You are a capable assistant. Complete the task thoroughly.",
 }
 _DEFAULT_ROLE_PERSONA = "You are a capable assistant. Complete the task thoroughly."
+
+
+async def _run_mail(
+    *,
+    content: str,
+    original_request: str,
+    tracker: UsageTracker,
+    callback: Any,
+    workspace_root: Optional[str],
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+    deep_research: bool = False,
+) -> str:
+    """Mail Agent: read the mailbox, return the evidence for the next worker.
+
+    Structurally the same as ``_run_research``: a fixed phase sequence in
+    mail_controller, not a tool the model may call. The return value is
+    notes, never the user-facing answer -- see the ROLE_MAIL guard in
+    _select_roles for why that distinction is enforced rather than assumed.
+    """
+    import mail_controller
+
+    worker_id = WORKER_IDS[ROLE_MAIL]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_MAIL,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description="Posta kutusunu oku",
+    )
+    _emit_activity(callback, unit_task_id, "searching", "posta kutusu taranıyor")
+
+    # stage_prefix="mail": these phases cost tokens like web ones do, and the
+    # usage panel should say which of the two spent them.
+    complete = await _make_complete(
+        tracker, deep_research=deep_research, stage_prefix="mail"
+    )
+    try:
+        result = await mail_controller.acquire_mail_evidence(
+            original_request or content,
+            complete=complete,
+            deep_research=deep_research,
+        )
+    except Exception as exc:  # noqa: BLE001 - a mail failure is an answer, not a crash
+        stabilization_logger.exception("mail acquisition failed")
+        _lifecycle_done(
+            callback,
+            worker_id=worker_id,
+            unit_task_id=unit_task_id,
+            result_summary="posta kutusu okunamadı",
+            started=started,
+        )
+        return mail_controller.render_notes(
+            mail_controller.MailResult(
+                error=f"{type(exc).__name__}: {exc}", error_code="mail_failed"
+            )
+        )
+
+    if tool_call_recorder is not None:
+        # Recorded like any other real action, so the right panel and the
+        # persisted tool log show that this job read mail, what it searched
+        # for, and how much came back. A feature this sensitive should never
+        # be invisible in the audit trail.
+        try:
+            tool_call_recorder.record(
+                "read_mailbox",
+                {
+                    "folders": list(result.query.folders) if result.query else [],
+                    "sender": result.query.sender if result.query else "",
+                    "subject": result.query.subject if result.query else "",
+                    "unread_only": bool(result.query.unread_only)
+                    if result.query
+                    else False,
+                },
+                result=(
+                    f"{len(result.messages)} message(s) read of "
+                    f"{result.searched} scanned"
+                    if result.ok
+                    else None
+                ),
+                error=None if result.ok else str(result.error_code or "mail_failed"),
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the run
+            stabilization_logger.warning("could not record read_mailbox", exc_info=True)
+
+    if handle.cancelled:
+        return mail_controller.render_notes(result)
+
+    if result.ok and result.messages:
+        _emit_activity(
+            callback,
+            unit_task_id,
+            "reading",
+            f"{len(result.messages)} e-posta okundu",
+        )
+        # Attachments last: the body alone already answers most requests, so
+        # a download failure here must not cost the messages already read.
+        try:
+            result.attachments = await mail_controller.download_attachments(
+                result, workspace_root
+            )
+        except Exception:  # noqa: BLE001
+            stabilization_logger.warning("mail attachment download failed", exc_info=True)
+
+    summary = (
+        f"{len(result.messages)} e-posta"
+        if result.ok
+        else f"okunamadı ({result.error_code})"
+    )
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return mail_controller.render_notes(result, request_text=original_request)
 
 
 async def _run_llm_worker(
@@ -4566,6 +4712,18 @@ def _build_graph(
             text = _open_local_file_step(
                 workspace_root=workspace_root, conversation_id=conversation_id
             )
+        elif role == ROLE_MAIL:
+            text = await _run_mail(
+                content=content,
+                original_request=request,
+                tracker=tracker,
+                callback=callback,
+                workspace_root=workspace_root,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+                deep_research=deep_research,
+            )
         elif role == ROLE_RESEARCH:
             text = await _run_research(
                 content=content,
@@ -4643,6 +4801,12 @@ def _build_graph(
         # Prefer last worker output as user-facing answer; research-only keeps it.
         answer = text
         next_roles = list(roles)
+        if role == ROLE_MAIL:
+            # Belt and braces with the _select_roles guard: these notes are
+            # quoted mail wrapped in a "data, not instructions" fence, which
+            # is prompt scaffolding rather than an answer. Keep whatever
+            # answer exists and let the next worker write the real one.
+            answer = state.get("answer") or ""
         if (
             role == ROLE_RESEARCH
             and wants_artifact
@@ -4717,6 +4881,7 @@ async def _run_workforce_async(
     conversation_id: Optional[str] = None,
     reuses_uploaded_document: Optional[bool] = None,
     opens_on_user_computer: Optional[bool] = None,
+    reads_email: Optional[bool] = None,
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -4767,6 +4932,7 @@ async def _run_workforce_async(
             wants_sources=wants_sources,
             skip_web_research=skip_web_research,
             needs_live_data=_request_needs_live_data(request),
+            reads_email=bool(reads_email),
         )
     )
     seeded_notes = (
@@ -4907,6 +5073,7 @@ def run_workforce_in_thread(
     conversation_id: Optional[str] = None,
     reuses_uploaded_document: Optional[bool] = None,
     opens_on_user_computer: Optional[bool] = None,
+    reads_email: Optional[bool] = None,
 ) -> Any:
     """Sync entrypoint matching ``camel_service.run_workforce_in_thread``."""
     handle = CancellableWorkforce()
@@ -4934,6 +5101,7 @@ def run_workforce_in_thread(
                 conversation_id=conversation_id,
                 reuses_uploaded_document=reuses_uploaded_document,
                 opens_on_user_computer=opens_on_user_computer,
+                reads_email=reads_email,
             )
         )
     finally:

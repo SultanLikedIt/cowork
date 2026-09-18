@@ -75,6 +75,8 @@ UPDATABLE_RUN_COLUMNS = frozenset(
         "delivery_next_at",
         "delivery_error",
         "delivered_at",
+        "delivery_to",
+        "delivery_source",
     }
 )
 TERMINAL_RUN_STATUSES = frozenset(

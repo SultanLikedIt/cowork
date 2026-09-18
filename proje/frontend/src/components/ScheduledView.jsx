@@ -33,6 +33,7 @@ import {
   RUN_TRIGGER_LABELS,
   TASK_TEMPLATES,
   buildTaskTree,
+  deliveryRecipientsLabel,
   deliveryStatusMeta,
   describeSchedule,
   draftFromTask,
@@ -114,11 +115,14 @@ function TaskRow({ task, depth = 0, selected, onSelect }) {
 }
 
 function deliveryTitle(run, timezone) {
-  if (run.delivery_status === 'pending' && run.delivery_next_at) {
-    return `Next attempt ${formatRelative(run.delivery_next_at)}`
-  }
-  if (run.delivered_at) return `Sent ${formatDateTime(run.delivered_at, timezone)}`
-  return undefined
+  const who = deliveryRecipientsLabel(run)
+  const when =
+    run.delivery_status === 'pending' && run.delivery_next_at
+      ? `Next attempt ${formatRelative(run.delivery_next_at)}`
+      : run.delivered_at
+        ? `Sent ${formatDateTime(run.delivered_at, timezone)}`
+        : ''
+  return [who, when].filter(Boolean).join(' · ') || undefined
 }
 
 function RunRow({ run, timezone, onOpen }) {

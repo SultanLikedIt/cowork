@@ -38,4 +38,8 @@ def run_workforce_in_thread(*args: Any, **kwargs: Any) -> Any:
     # TypeError the moment AGENT_EXECUTOR is anything else.
     kwargs.pop("reuses_uploaded_document", None)
     kwargs.pop("opens_on_user_computer", None)
+    # Same reason, and the same consequence worth knowing about: under
+    # AGENT_EXECUTOR=camel there is no Mail Agent, so "read my mailbox"
+    # quietly becomes an ordinary chat answer rather than an error.
+    kwargs.pop("reads_email", None)
     return camel_service.run_workforce_in_thread(*args, **kwargs)

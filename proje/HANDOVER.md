@@ -365,6 +365,8 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `LOCAL_COMPUTER_URL` | — | Varsayılan `http://host.docker.internal:8765` |
 | `LOCAL_COMPUTER_TOKEN` | — | Köprünün Outlook uçları için paylaşılan sır; boşsa e-posta kapalı |
 | `OUTLOOK_ENABLED` | — | Zamanlanmış sonuçları Outlook'tan e-postayla gönder (Windows + klasik Outlook) |
+| `OUTLOOK_AGENT_ACTION` | — | Sohbette istenen e-posta: `draft` (varsayılan, Outlook'ta taslak) \| `send` |
+| `OUTLOOK_READ_ENABLED` | — | Ajan posta kutusunu okuyabilsin (Gelen Kutusu + Gönderilmiş Öğeler, salt okunur). Varsayılan `false`; `OUTLOOK_ENABLED` de gerekir |
 | `SCHEDULING_ENABLED` | — | Zamanlanmış görevler (varsayılan `true`); diğer `SCHEDULE_*` için `.env.example` |
 | `SCHEDULE_DELIVERY_MAX_ATTEMPTS` | — | Gönderilemeyen e-posta için deneme sayısı (varsayılan 10, ~6 saat) |
 | `DOCLING_ENABLE_OCR` | — | Compose'ta `true`; taranmış PDF ve görsel yüklemelerini okur. `false` → taranmış PDF boş, görsel reddedilir |
@@ -528,6 +530,7 @@ FastAPI (backend/main.py)
 | Rol | İş |
 | --- | --- |
 | Research Agent | SearXNG/AgentSearch + sayfa açma + kanıt notları |
+| Mail Agent | Outlook posta kutusunu okur (opsiyonel); kanıt toplar, cevabı yazmaz |
 | Document Agent | Word/PDF/PPTX/HTML/Excel yazma, şablon doldurma |
 | Coding Agent | Kod; araştırma/belge işi buraya düşmemeli |
 | Assistant | Genel; "bilgisayarımda aç" dahil |
@@ -652,7 +655,7 @@ agent-webapp-langgraph/
 
 | Dosya | Görev |
 | --- | --- |
-| `artifact_intent.py` | Workforce: dosya / web / kod / şablon / aç |
+| `artifact_intent.py` | Workforce: dosya / web / kod / şablon / aç / **e-posta gönder** (`sends_email`, `email_to`) / **posta oku** (`reads_email`) |
 | `turn_resolution.py` | Takip cümlesini bağımsız istek yapar |
 | `capabilities.py` | web_search, web_fetch, files, code_exec, artifacts |
 | `capability_routing.py` | DIRECT / WORKFORCE + structural merge |
@@ -694,7 +697,8 @@ agent-webapp-langgraph/
 | `workforce_callback.py` | CAMEL event → queue |
 | `tool_call_log.py` | Tool audit |
 | `stream_protocol.py` | SSE şekli |
-| `outlook.py` | Outlook köprü istemcisi, e-posta gövdesi, `/integrations/outlook` |
+| `outlook.py` | Outlook köprü istemcisi, e-posta gövdesi, posta okuma istemcisi, `/integrations/outlook` |
+| `mail_controller.py` | Posta kutusu fazları: PLAN→SEARCH→SELECT→READ, alıntı çiti, ek indirme |
 | `scheduling/` | Zamanlanmış görevler: cron, runner, zincirler, izleme, e-posta (`delivery.py`) |
 | `runtime_context.py` | Job context |
 | `golden_prompts.py` | Gerçek kullanıcı cümleleriyle regresyon |

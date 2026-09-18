@@ -196,3 +196,34 @@ def test_normalize_dedupes_and_splits() -> None:
     value = delivery.normalize({"to": ["a@example.com; B@example.com", "b@example.com"], "cc": []})
     assert value == {"to": ["a@example.com", "B@example.com"], "cc": [], "on": "success", "attach_files": True}
     assert delivery.normalize(None) is None
+
+
+def test_prompt_derived_delivery_is_recorded(temp_db) -> None:
+    """A task with no Email setting, whose prompt names a recipient."""
+    h = Harness()
+    task_id = make_task(prompt="Haftalık özet hazırla ve ali@sirket.com adresine gönder")
+    h.scheduler._resolve_delivery = lambda task, run: {
+        "to": ["ali@sirket.com"],
+        "cc": [],
+        "on": "success",
+        "attach_files": True,
+        "source": "prompt",
+    }
+    h.tick()
+    h.finish("job-1", "done")
+    h.tick()
+
+    run = _only_run(task_id)
+    assert run["delivery_status"] == "sent"
+    assert run["delivery_to"] == "ali@sirket.com"
+    assert run["delivery_source"] == "prompt"
+
+
+def test_task_setting_is_recorded_as_such(temp_db) -> None:
+    h = Harness()
+    task_id = make_task(delivery=RECIPIENTS)
+    h.tick()
+    h.finish("job-1", "done")
+    h.tick()
+    run = _only_run(task_id)
+    assert (run["delivery_to"], run["delivery_source"]) == ("ali@example.com", "task")

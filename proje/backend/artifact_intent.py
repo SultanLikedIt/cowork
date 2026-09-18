@@ -38,6 +38,45 @@ class ArtifactIntentResult(BaseModel):
     needs_code_execution: bool = False
     reuses_uploaded_document: bool = False
     opens_on_user_computer: bool = False
+    sends_email: bool = False
+    email_to: list[str] = []
+    reads_email: bool = False
+
+
+# Addresses are taken from the REQUEST TEXT only, never from anything the run
+# reads later (web pages, uploads, an upstream task's report). A classifier
+# that could be talked into a recipient by a fetched page would turn one
+# poisoned search result into mail sent from the user's own mailbox. See
+# addresses_in_text: an address the user did not type is dropped even when
+# the model returns it.
+_EMAIL_RE = re.compile(r"[^@\s;,<>\"()\[\]]+@[^@\s;,<>\"()\[\]]+\.[A-Za-z]{2,}")
+MAX_EMAIL_RECIPIENTS = 10
+
+
+def addresses_in_text(text: str) -> list[str]:
+    """Email addresses literally present in ``text``, in order, deduped."""
+    found: list[str] = []
+    for match in _EMAIL_RE.findall(text or ""):
+        address = match.strip(" .,;:'\"")
+        if address and address.casefold() not in {item.casefold() for item in found}:
+            found.append(address)
+    return found
+
+
+def _verified_recipients(claimed: list[str], text: str) -> list[str]:
+    """Only the claimed addresses the user actually wrote."""
+    typed = {address.casefold(): address for address in addresses_in_text(text)}
+    kept: list[str] = []
+    for address in claimed or []:
+        actual = typed.get(str(address).strip().casefold())
+        if actual and actual not in kept:
+            kept.append(actual)
+        elif actual is None:
+            stabilization_logger.warning(
+                "Artifact intent proposed an email recipient that is not in the "
+                "request text; dropped"
+            )
+    return kept[:MAX_EMAIL_RECIPIENTS]
 
 
 @dataclass(frozen=True)
@@ -61,6 +100,20 @@ class ArtifactIntent:
     # deck "verip açar mısın" got the file and no open, because the
     # pattern wanted the word "bilgisayarımda".
     opens_on_user_computer: bool = False
+    # "ve ali@sirket.com'a gonder", "sonucu bana mail at" -- the user asking
+    # for the result to be emailed, without ticking anything in the UI.
+    # Recipients are only ever addresses they typed themselves
+    # (_verified_recipients); a scheduled task's setting wins over this.
+    sends_email: bool = False
+    email_to: tuple[str, ...] = ()
+    # "gelen maillerime bak", "X'ten gelen faturayı özetle" -- the user
+    # pointing the job at their OWN mailbox as a source. Strictly separate
+    # from sends_email: one reads, one writes, and a request can easily be
+    # one without the other. Asked of the classifier rather than matched on
+    # "mail", because half the requests containing that word ("mail şablonu
+    # yaz") are not about the mailbox at all, and a false positive here
+    # means reading someone's inbox they never asked about.
+    reads_email: bool = False
 
     def normalized(self) -> "ArtifactIntent":
         kind = self.artifact_type if self.artifact_type in _ARTIFACT_TYPES else "none"
@@ -73,6 +126,11 @@ class ArtifactIntent:
             needs_code_execution=bool(self.needs_code_execution),
             reuses_uploaded_document=bool(self.reuses_uploaded_document),
             opens_on_user_computer=bool(self.opens_on_user_computer),
+            # No verified recipient means nothing can be sent, whatever the
+            # classifier said.
+            sends_email=bool(self.sends_email) and bool(self.email_to),
+            email_to=tuple(self.email_to),
+            reads_email=bool(self.reads_email),
         )
 
 
@@ -85,7 +143,10 @@ INTENT_SYSTEM_PROMPT = (
     '"needs_web_research": true | false, '
     '"needs_code_execution": true | false, '
     '"reuses_uploaded_document": true | false, '
-    '"opens_on_user_computer": true | false}.\n\n'
+    '"opens_on_user_computer": true | false, '
+    '"sends_email": true | false, '
+    '"email_to": ["address", ...], '
+    '"reads_email": true | false}.\n\n'
     "wants_artifact is true ONLY when the user wants a new file created and "
     "given to them (Excel/xlsx, CSV, JSON, Word/docx, PowerPoint/pptx, PDF, HTML "
     "page, or a runnable code/project bundle). "
@@ -129,6 +190,13 @@ INTENT_SYSTEM_PROMPT = (
     "it, and whether or not they name the computer. Asking only for the "
     "file to be created or downloaded is NOT this. It is false when no "
     "file is produced at all.\n\n"
+    "sends_email is true when the user asks for the result to be sent by "
+    "email -- 'gonder', 'mail at', 'yolla', 'ilet', 'e-postala', 'send it "
+    "to', 'email me the report' -- however they phrase it. email_to lists "
+    "the recipient addresses EXACTLY as they appear IN THE REQUEST TEXT. "
+    "Never invent, correct, or complete an address, and never take one from "
+    "anywhere except the request text itself. If they ask for mail but name "
+    "no address, sends_email is true and email_to is empty.\n\n"
     "Examples (values in the order listed above):\n"
     '- "Cree-moi un fichier Excel des classements" -> true, xlsx, true, false, false\n'
     '- "Analyse ce fichier Excel" -> false, none, false, false, false\n'
@@ -169,6 +237,36 @@ INTENT_SYSTEM_PROMPT = (
     '- "raporu pdf ver sonra ac" -> opens_on_user_computer true\n'
     '- "bana bir docx hazirla" -> opens_on_user_computer false\n'
     '- "bu belgeyi ozetle" -> opens_on_user_computer false\n'
+    "\nsends_email / email_to examples (keys named, independent of the values above):\n"
+    '- "haftalik raporu hazirla ve ali@sirket.com adresine gonder" -> '
+    'sends_email true, email_to ["ali@sirket.com"]\n'
+    '- "sonucu bana mail at" -> sends_email true, email_to []\n'
+    '- "pdf yap, ekip@firma.com ve mudur@firma.com a yolla" -> '
+    'sends_email true, email_to ["ekip@firma.com", "mudur@firma.com"]\n'
+    '- "email pazarlama stratejilerini arastir" -> sends_email false, email_to []\n'
+    '- "bu raporu ozetle" -> sends_email false, email_to []\n'
+    "\nreads_email is true when the user wants you to LOOK AT THEIR OWN "
+    "MAILBOX -- read, search, check, summarize or find something in the "
+    "mail they received or sent. It is about incoming/existing mail, not "
+    "about sending. It is false when the request merely CONTAINS the word "
+    "mail/e-posta but asks you to write, send, or research something: "
+    "writing an email text, sending a result, or researching email "
+    "marketing are all reads_email false. sends_email and reads_email are "
+    "independent -- a request can be both ('gelen teklifleri ozetle ve "
+    "ali@x.com a gonder'), either, or neither.\n"
+    "\nreads_email examples (key named, independent of the values above):\n"
+    '- "gelen maillerime bak" -> reads_email true\n'
+    '- "bugun gelen okunmamis mailleri ozetle" -> reads_email true\n'
+    '- "ahmet ten gelen son maili ozetle" -> reads_email true\n'
+    '- "gecen hafta gelen faturalari excel yap" -> reads_email true, '
+    "wants_artifact true, xlsx\n"
+    '- "mudurume gonderdigim son maili bul" -> reads_email true\n'
+    '- "posta kutumdaki teklifleri karsilastir ve pdf ver" -> reads_email '
+    "true, wants_artifact true, pdf\n"
+    '- "musteriye tesekkur maili yaz" -> reads_email false\n'
+    '- "mail sablonu hazirla" -> reads_email false\n'
+    '- "raporu hazirla ve bana mail at" -> reads_email false, sends_email true\n'
+    '- "email pazarlamasi hakkinda arastirma yap" -> reads_email false\n'
     "Output ONLY the JSON object."
 )
 
@@ -230,6 +328,16 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         re.IGNORECASE,
     )
     needs_code = bool(_CODE_RE.search(body))
+    recipients = addresses_in_text(topic or "")
+    # Only with an address AND a sending verb: "mail adresimi degistir" and
+    # "email pazarlamasi arastir" are not requests to send anything.
+    sends_email = bool(recipients) and bool(
+        re.search(
+            r"\b(g[oö]nder|yolla|ilet|at|mail|e-?posta|e-?postala|send|email|forward)\b",
+            body,
+            re.IGNORECASE,
+        )
+    )
     # Degraded path: prefer external lookup over skipping Research entirely.
     needs_web = True
     return ArtifactIntent(
@@ -238,6 +346,13 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         source="regex_fallback",
         needs_web_research=needs_web,
         needs_code_execution=needs_code,
+        sends_email=sends_email,
+        email_to=tuple(recipients),
+        # Left false on purpose. Every other field here degrades toward
+        # doing MORE work; this one would degrade toward opening the user's
+        # mailbox because a classifier call failed, which is not a tradeoff
+        # a fallback gets to make.
+        reads_email=False,
     ).normalized()
 
 
@@ -260,6 +375,9 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         needs_code_execution=bool(usage.get("needs_code_execution")),
         reuses_uploaded_document=bool(usage.get("reuses_uploaded_document")),
         opens_on_user_computer=bool(usage.get("opens_on_user_computer")),
+        sends_email=bool(usage.get("sends_email")),
+        email_to=tuple(usage.get("email_to") or ()),
+        reads_email=bool(usage.get("reads_email")),
     ).normalized()
 
 
@@ -341,5 +459,8 @@ async def classify_artifact_intent(
         needs_code_execution=result.needs_code_execution,
         reuses_uploaded_document=result.reuses_uploaded_document,
         opens_on_user_computer=result.opens_on_user_computer,
+        sends_email=result.sends_email,
+        email_to=tuple(_verified_recipients(result.email_to, topic)),
+        reads_email=result.reads_email,
     ).normalized()
     return intent

@@ -4,7 +4,7 @@
 // which ships with shadcn and covers the whole app. What stays here is only
 // what lucide does not give us in the same visual language:
 //
-//   * the three agent-identity glyphs (see agentIcons.jsx) -- these carry
+//   * the agent-identity glyphs (see agentIcons.jsx) -- these carry
 //     product identity, mapping a specific worker role to a specific mark,
 //     so swapping them for generic icons would lose that association; and
 //   * the two composer send/stop marks, which are drawn to match the agent
@@ -44,6 +44,13 @@ export const CodeIcon = (p) => (
   <svg {...base} {...p}>
     <polyline points="16 18 22 12 16 6" />
     <polyline points="8 6 2 12 8 18" />
+  </svg>
+)
+
+export const MailIcon = (p) => (
+  <svg {...base} {...p}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="m3.5 7 8.5 6 8.5-6" />
   </svg>
 )
 

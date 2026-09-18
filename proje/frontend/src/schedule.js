@@ -71,6 +71,29 @@ export function parseAddresses(text) {
   return { addresses }
 }
 
+// Addresses written in the prompt itself. The backend classifies the intent
+// (artifact_intent.sends_email) and only ever accepts addresses the user
+// typed; this is the editor's heads-up that it will, not a second decision.
+const ADDRESS_IN_TEXT = /[^@\s;,<>"()[\]]+@[^@\s;,<>"()[\]]+\.[A-Za-z]{2,}/g
+
+export function addressesInText(text) {
+  const found = []
+  for (const raw of String(text || '').match(ADDRESS_IN_TEXT) || []) {
+    const address = raw.replace(/[.,;:'"]+$/, '')
+    if (address && !found.some((item) => item.toLowerCase() === address.toLowerCase())) {
+      found.push(address)
+    }
+  }
+  return found
+}
+
+// Where a run's recipients came from (scheduled_runs.delivery_source).
+export function deliveryRecipientsLabel(run) {
+  if (!run?.delivery_to) return ''
+  const from = run.delivery_source === 'prompt' ? ' (from the task text)' : ''
+  return `${run.delivery_to}${from}`
+}
+
 const DELIVERY_STATUS = {
   pending: { label: 'Email pending', variant: 'running' },
   sent: { label: 'Emailed', variant: 'success' },

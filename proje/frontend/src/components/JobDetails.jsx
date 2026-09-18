@@ -64,6 +64,8 @@ const STAGE_LABELS = {
   web_answer: 'Web · answer',
   web_plan: 'Web · research plan',
   web_coverage: 'Web · coverage check',
+  mail_plan: 'Mail · search plan',
+  mail_select: 'Mail · message selection',
   artifact_intent: 'Artifact intent',
 }
 

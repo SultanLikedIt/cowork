@@ -667,6 +667,15 @@ class UsageTelemetry(BaseModel):
     needs_web_research: Optional[bool] = None
     reuses_uploaded_document: Optional[bool] = None
     opens_on_user_computer: Optional[bool] = None
+    # "ve ali@sirket.com'a gonder" in the request itself; recipients are only
+    # addresses the user typed (artifact_intent._verified_recipients).
+    sends_email: Optional[bool] = None
+    email_to: list[str] = Field(default_factory=list)
+    # "gelen maillerime bak" -- this job read the user's own mailbox. Kept on
+    # the job record because it is the audit answer to "why did a job open my
+    # inbox": the classification that caused it is stored, not just its
+    # effect. The messages themselves are never persisted here.
+    reads_email: Optional[bool] = None
     # Classified once when a Single run finishes; see _suggests_workforce.
     suggests_workforce: Optional[bool] = None
     planning_ms: Optional[int] = None
@@ -847,6 +856,29 @@ def _worker_pool() -> WorkerPoolResponse:
         WorkerSummary(name=role_name, description=description, source="fixed")
         for description, role_name, _ in camel_service.WORKER_ROLES
     ]
+    # Shown only when this deployment can actually read mail. The roster is
+    # a promise to the user about who can work on their request, so listing
+    # a Mail Agent on an install with OUTLOOK_READ_ENABLED off would be
+    # advertising a worker that can never be scheduled (see
+    # _routing_for_workforce, which withholds MAIL_READ for the same reason).
+    #
+    # Appended here rather than added to camel_service.WORKER_ROLES on
+    # purpose: that list is CAMEL's *assignment* roster -- its coordinator
+    # reads those descriptions to route subtasks -- and there is no mail
+    # worker on the CAMEL path at all. Putting it there would let the
+    # coordinator hand tasks to an agent that does not exist.
+    if outlook.read_enabled():
+        fixed.append(
+            WorkerSummary(
+                name="Mail Agent",
+                description=(
+                    "Reads the Outlook mailbox on this computer (Inbox and "
+                    "Sent Items) and passes what it finds to the other "
+                    "workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
     manual = [
         WorkerSummary(
             name=record["name"], description=record["description"], source="manual"
@@ -1022,6 +1054,52 @@ def _job_artifacts(job: dict[str, Any]) -> list[dict[str, Any]]:
                 if expires <= now:
                     _ARTIFACT_CACHE.pop(stale_id, None)
     return found
+
+
+async def _email_answer_from_prompt(job: dict[str, Any]) -> Optional[str]:
+    """The user asked, in the request itself, for this answer to be mailed.
+
+    Chat runs open the finished message in Outlook instead of sending it
+    (OUTLOOK_AGENT_ACTION=send overrides): the person is at the computer, and
+    a draft they press Send on cannot become a way to mail something out on
+    the strength of text the run happened to read. Scheduled runs never come
+    here -- see _deliver_scheduled_run.
+
+    Returns one line to append to the answer, or None when no mail was asked
+    for.
+    """
+    setting = _prompt_delivery(job)
+    if setting is None:
+        return None
+    recipients = ", ".join(setting["to"])
+    if not outlook.is_enabled():
+        return (
+            f"📧 Not: sonucu {recipients} adresine göndermek istediniz, ama e-posta "
+            "gönderimi bu kurulumda kapalı (docs/outlook.md)."
+        )
+    notes: list[str] = []
+    attachments = await _email_attachments(job, notes)
+    title = document_export.short_report_title(
+        str(job.get("topic") or "").strip(), fallback="agent-webapp"
+    )
+    action = outlook.agent_action()
+    notes.append("Bu e-posta agent-webapp'te hazırlandı.")
+    result = await asyncio.to_thread(
+        outlook.send_mail,
+        to=setting["to"],
+        subject=title,
+        html_body=outlook.render_email_html(title, str(job.get("result") or ""), notes=notes),
+        attachments=attachments,
+        action=action,
+    )
+    if not result.ok:
+        return f"📧 E-posta hazırlanamadı ({recipients}): {result.message}"
+    if action == "send":
+        return f"📧 E-posta gönderildi: {recipients}"
+    return (
+        f"📧 E-posta taslağı Outlook'ta açıldı: {recipients} — göndermek için "
+        "Outlook'taki Gönder düğmesine basın."
+    )
 
 
 def _ensure_requested_pdf(
@@ -1754,6 +1832,9 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["opens_on_user_computer"] = (
                     intent.opens_on_user_computer
                 )
+                job["usage"]["sends_email"] = intent.sends_email
+                job["usage"]["email_to"] = list(intent.email_to)
+                job["usage"]["reads_email"] = intent.reads_email
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
             job["usage"]["agent_executor"] = agent_executor()
@@ -1776,6 +1857,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 conversation_id=job.get("conversation_id"),
                 reuses_uploaded_document=intent.reuses_uploaded_document,
                 opens_on_user_computer=intent.opens_on_user_computer,
+                reads_email=intent.reads_email,
             )
             if not control.cancelled:
                 synthesized, is_partial = await camel_service.synthesize_workforce_result(
@@ -1840,6 +1922,22 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
             )
         else:
             job["status"] = "failed"
+        if (
+            job["status"] in {"done", "partial"}
+            and not control.cancelled
+            and job.get("origin") != "schedule"
+        ):
+            try:
+                notice = await _email_answer_from_prompt(job)
+            except Exception:  # noqa: BLE001 - a mail problem must not fail the job
+                logging.getLogger("agent_webapp.jobs").exception(
+                    "job=%s could not prepare the email it was asked for", job_id
+                )
+                notice = "📧 E-posta hazırlanamadı; ayrıntı için sunucu günlüğüne bakın."
+            if notice:
+                # Appended after the typing replay, so it lands in the stored
+                # answer and shows when the job completes.
+                job["result"] = f"{job['result']}\n\n{notice}".strip()
     except Exception as exc:  # noqa: BLE001 - surfaced as a bounded job error
         if not control.cancelled:
             job["status"] = "error"
@@ -2284,6 +2382,12 @@ async def _routing_for_workforce(
     # got a Python script explaining how to fill it in -- after two
     # minutes. Cheap to rule out here, where both facts are known.
     needs_code = intent.needs_code_execution and not intent.reuses_uploaded_document
+    # Granted only when the deployment actually allows reading. Without this
+    # the capability would be handed out on the classifier's word alone, the
+    # Mail Agent would be scheduled, and the run would spend a worker slot
+    # discovering that OUTLOOK_READ_ENABLED is off -- a slower way to reach
+    # the same "I cannot read your mailbox" that costs nothing here.
+    reads_email = bool(intent.reads_email) and outlook.read_enabled()
     effective = capabilities.apply_artifact_intent(
         base,
         wants_artifact=intent.wants_artifact,
@@ -2292,6 +2396,7 @@ async def _routing_for_workforce(
         text=topic,
         has_workspace_files=has_workspace_files,
         workspace_file_kinds=workspace_file_kinds,
+        reads_email=reads_email,
     )
     decision = capability_routing.merge_decision(
         "workforce",
@@ -2584,6 +2689,21 @@ async def submit_job(
                 if artifact_intent_result is not None
                 else None
             ),
+            sends_email=(
+                artifact_intent_result.sends_email
+                if artifact_intent_result is not None
+                else None
+            ),
+            email_to=(
+                list(artifact_intent_result.email_to)
+                if artifact_intent_result is not None
+                else []
+            ),
+            reads_email=(
+                artifact_intent_result.reads_email
+                if artifact_intent_result is not None
+                else None
+            ),
         ).model_dump(),
         # Set only when the request needs something this system does not
         # implement. _run_job turns it into an immediate, explicit answer --
@@ -2591,6 +2711,9 @@ async def submit_job(
         # impossible request must cost one routing call rather than an
         # executor's whole iteration budget.
         "unsupported_capabilities": list(routing.unsupported),
+        # "user" or "schedule"; a scheduled run has nobody at the computer,
+        # so it emails through the scheduler instead of opening a draft.
+        "origin": origin,
         "cancellation_requested": False,
         "cancellation_note": None,
         # Resolved once, at submission, and never re-read from the request
@@ -3249,13 +3372,87 @@ _RUN_FAILURE_TEXT = {
 }
 
 
-async def _deliver_scheduled_run(task: dict[str, Any], run: dict[str, Any]) -> DeliveryOutcome:
-    """Email one settled run's result to the task's fixed recipients.
+async def _email_attachments(
+    job: dict[str, Any], notes: list[str]
+) -> list[tuple[str, bytes]]:
+    """A job's artifacts as mail attachments, within the size cap.
 
-    The recipients come from the task's delivery setting, entered by a person
-    in the task editor -- nothing the model wrote decides who gets mail.
+    Skipped files are named in ``notes`` so the body says what is missing
+    rather than the mail arriving quietly incomplete.
     """
-    setting = task.get("delivery") or {}
+    attachments: list[tuple[str, bytes]] = []
+    attached_bytes = 0
+    root = _resolve_workspace_root(job)
+    if not root:
+        return attachments
+    for entry in _job_artifacts(job):
+        name = str(entry.get("filename") or "")
+        if entry.get("bundle") or not name:
+            continue
+        # Checked here, not only in send_mail, so the note reaches the body.
+        if attached_bytes + int(entry.get("size_bytes") or 0) > outlook.MAX_ATTACHMENT_BYTES:
+            limit_mb = outlook.MAX_ATTACHMENT_BYTES // (1024 * 1024)
+            notes.append(f"{name} eklenmedi: ekler toplam {limit_mb} MB ile sınırlı; dosya uygulamada duruyor.")
+            continue
+        try:
+            source = _safe_child(Path(root), str(entry["path"]), must_exist=True)
+            content = await asyncio.to_thread(source.read_bytes)
+        except Exception as exc:  # noqa: BLE001 - send the rest without this file
+            notes.append(f"{name} eklenemedi: {exc}")
+            continue
+        attachments.append((name, content))
+        attached_bytes += len(content)
+    return attachments
+
+
+def _prompt_delivery(job: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Recipients the user named in the request text itself.
+
+    artifact_intent decides "they asked for this to be emailed" and keeps only
+    addresses that appear verbatim in that text, so a poisoned web page or
+    uploaded document cannot add a recipient.
+    """
+    usage = (job or {}).get("usage") or {}
+    if not usage.get("sends_email"):
+        return None
+    recipients = [str(item).strip() for item in (usage.get("email_to") or []) if str(item).strip()]
+    if not recipients:
+        return None
+    return {
+        "to": recipients,
+        "cc": [],
+        "on": "success",
+        "attach_files": True,
+        "source": "prompt",
+    }
+
+
+def _resolve_task_delivery(
+    task: dict[str, Any], run: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """The delivery setting in force for one scheduled run.
+
+    The task's own Email setting wins; otherwise the task prompt may ask for
+    it ("... ve ali@sirket.com'a gonder"), which is how a task emails without
+    anyone ticking the box. Injected into the Scheduler as resolve_delivery.
+    """
+    setting = task.get("delivery")
+    if setting and setting.get("to"):
+        return {**setting, "source": "task"}
+    job = _JOBS.get(run["job_id"]) if run.get("job_id") else None
+    return _prompt_delivery(job)
+
+
+async def _deliver_scheduled_run(task: dict[str, Any], run: dict[str, Any]) -> DeliveryOutcome:
+    """Email one settled run's result to that run's recipients.
+
+    Recipients come from the task's delivery setting or from the task prompt
+    itself -- in both cases text a person wrote. Nothing the run read on the
+    way (web pages, uploads, an upstream report) can add one.
+    """
+    setting = _resolve_task_delivery(task, run) or {}
+    if not setting.get("to"):
+        return DeliveryOutcome(False, "This run has no email recipients.", retryable=False)
     job = _JOBS.get(run["job_id"]) if run.get("job_id") else None
     if run.get("job_id") and job is None:
         return DeliveryOutcome(False, "The run's job is no longer available.", retryable=False)
@@ -3268,7 +3465,6 @@ async def _deliver_scheduled_run(task: dict[str, Any], run: dict[str, Any]) -> D
 
     notes: list[str] = []
     attachments: list[tuple[str, bytes]] = []
-    attached_bytes = 0
     intro: Optional[str] = None
     if result and status in {"done", "partial", "no_change"}:
         body = result
@@ -3277,29 +3473,14 @@ async def _deliver_scheduled_run(task: dict[str, Any], run: dict[str, Any]) -> D
         if status == "partial":
             notes.append("Bu çalıştırma kısmen tamamlandı; sonuç eksik olabilir.")
         if setting.get("attach_files", True) and job is not None:
-            root = _resolve_workspace_root(job)
-            for entry in _job_artifacts(job):
-                name = str(entry.get("filename") or "")
-                if entry.get("bundle") or not name or not root:
-                    continue
-                # Checked here, not only in send_mail, so the note reaches the body.
-                if attached_bytes + int(entry.get("size_bytes") or 0) > outlook.MAX_ATTACHMENT_BYTES:
-                    limit_mb = outlook.MAX_ATTACHMENT_BYTES // (1024 * 1024)
-                    notes.append(f"{name} eklenmedi: ekler toplam {limit_mb} MB ile sınırlı; dosya uygulamada duruyor.")
-                    continue
-                try:
-                    source = _safe_child(Path(root), str(entry["path"]), must_exist=True)
-                    content = await asyncio.to_thread(source.read_bytes)
-                except Exception as exc:  # noqa: BLE001 - send the rest without this file
-                    notes.append(f"{name} eklenemedi: {exc}")
-                    continue
-                attachments.append((name, content))
-                attached_bytes += len(content)
+            attachments = await _email_attachments(job, notes)
     else:
         detail = run.get("error") or (job or {}).get("error")
         body = _RUN_FAILURE_TEXT.get(status, f"Görev tamamlanmadı ({status}).")
         if detail:
             body += f"\n\n{detail}"
+    if setting.get("source") == "prompt":
+        notes.append("Alıcılar görev metninde yazdığı için bu adrese gönderildi.")
     notes.append(f"Bu e-posta \"{task['name']}\" zamanlanmış görevi tarafından otomatik gönderildi.")
 
     html_body = outlook.render_email_html(title, body, intro=intro, notes=notes)
@@ -3324,6 +3505,7 @@ _SCHEDULER = Scheduler(
     job_state=_JOBS.get,
     collect_files=_collect_job_files,
     deliver=_deliver_scheduled_run,
+    resolve_delivery=_resolve_task_delivery,
 )
 app.include_router(
     build_scheduling_router(lambda: _SCHEDULER, describe_upload=_describe_upload)

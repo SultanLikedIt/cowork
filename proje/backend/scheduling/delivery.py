@@ -54,14 +54,15 @@ def normalize(raw: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 
 
 def should_deliver(
-    task: dict[str, Any],
+    setting: Optional[dict[str, Any]],
     status: str,
     change_detected: Optional[bool],
     *,
     is_watch: bool,
     has_result: bool,
 ) -> bool:
-    setting = task.get("delivery")
+    """``setting`` is the task's own delivery setting, or one derived from the
+    task prompt (main._resolve_task_delivery)."""
     if not setting or not setting.get("to"):
         return False
     # Someone stopped this run on purpose; nobody needs an email about it.

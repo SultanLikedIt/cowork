@@ -132,8 +132,12 @@ services:
       LOCAL_COMPUTER_URL: ${LOCAL_COMPUTER_URL:-http://host.docker.internal:8765}
       # Outlook email through the same bridge (backend/outlook.py, docs/outlook.md).
       OUTLOOK_ENABLED: ${OUTLOOK_ENABLED:-false}
+      # Reading the mailbox is opt-in separately from sending it; default off
+      # so enabling scheduled email never implies inbox access.
+      OUTLOOK_READ_ENABLED: ${OUTLOOK_READ_ENABLED:-false}
       LOCAL_COMPUTER_TOKEN: ${LOCAL_COMPUTER_TOKEN:-}
       SCHEDULE_DELIVERY_MAX_ATTEMPTS: ${SCHEDULE_DELIVERY_MAX_ATTEMPTS:-10}
+      OUTLOOK_AGENT_ACTION: ${OUTLOOK_AGENT_ACTION:-draft}
     volumes:
       - backend-data:/data
     # Host ports differ from the Camel stack (8000/8080) so both can run

@@ -169,9 +169,47 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 Köprüyü **aynı** token ile başlat (§ 6), sonra arayüzde: Scheduled → görev →
 **Email** bölümü → alıcı → **Send test email**.
 
+Kutuyu işaretlemek şart değil: görev metnine "... ve ali@sirket.com'a gönder"
+yazarsan sonuç yine o adrese gider. Sohbette (Workforce) aynı cümle, e-postayı
+Outlook'ta **taslak** olarak açar; göndermeye kullanıcı karar verir
+(`OUTLOOK_AGENT_ACTION=send` ile doğrudan gönderilir). Alıcı olarak yalnız senin
+yazdığın adresler kabul edilir.
+
 Gereken: Windows + **klasik** Outlook (Office masaüstü), hesabı tanımlı ve
 uygulama açık. "Yeni Outlook" uygulamasında otomasyon desteği **yoktur**.
 Ayrıntı ve sorun giderme: [`docs/outlook.md`](docs/outlook.md).
+
+### 5.6 Posta kutusunu okuma
+
+Ajanın **gelen/giden e-postalarını kaynak olarak okuması** ayrı bir izindir:
+
+```env
+OUTLOOK_ENABLED=true
+OUTLOOK_READ_ENABLED=true
+LOCAL_COMPUTER_TOKEN=<köprüyle aynı değer>
+```
+
+Açıkken Workforce'ta şunlar çalışır:
+
+```text
+gelen maillerime bak
+bugün gelen okunmamış mailleri özetle
+ahmetten gelen son faturayı özetle
+geçen hafta gelen teklifleri karşılaştır ve pdf ver
+```
+
+Okunan: **Gelen Kutusu + Gönderilmiş Öğeler**. Ekler iş klasörüne indirilir ve
+yüklenmiş dosya gibi (Docling/OCR ile) okunur — "mailde gelen PDF'i özetle"
+çalışır. **Salt okunur:** hiçbir mail okundu işaretlenmez, taşınmaz, silinmez.
+
+Köprüyü bu sürümle **yeniden başlatman** gerekir (okuma uçları yeni). Kontrol:
+`curl http://127.0.0.1:8765/health` → `outlook.can_read: true`.
+
+> ⚠️ Bu, ajanın posta kutunu okumasına izin vermek demektir. E-postaların
+> içindeki "şunu şu adrese gönder" gibi cümleler **uygulanmaz** (alıcılar
+> yalnız senin yazdığın metinden alınır), ama yine de kapalıyken hiçbir iş
+> posta kutusuna erişemez — varsayılan `false` olmasının sebebi budur.
+> Ayrıntı: [`docs/outlook.md`](docs/outlook.md#posta-kutusunu-okuma).
 
 ---
 

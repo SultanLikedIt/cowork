@@ -133,6 +133,16 @@ eklenir (toplam en fazla 10). Silinmiş bir upload çalıştırmayı düşürmez
 `delivery`: `{"to": [...], "cc": [...], "on": "success" | "change" | "always", "attach_files": true}`.
 Alıcıları görevi oluşturan kişi yazar; model alıcı seçemez.
 
+**Kutuyu işaretlemeden de gönderilir.** Görev metni "... ve ali@sirket.com'a
+gönder" diyorsa, çalıştırma başındaki niyet sınıflandırması (`artifact_intent`,
+`sends_email` + `email_to`) bunu anlar ve sonuç o adrese gider (koşul `success`,
+dosyalar ekli). Görevin **kendi** `delivery` ayarı varsa o kazanır. Alıcı olarak
+yalnız **metinde birebir geçen** adresler kabul edilir: sınıflandırıcının
+uydurduğu ya da araştırma sırasında okunan bir sayfadan gelen adres düşürülür
+(`artifact_intent._verified_recipients`). Her run'da `delivery_to` ve
+`delivery_source` (`task` | `prompt`) yazılır; arayüzde rozetin üzerine gelince
+görünür.
+
 - `on` zincir koşullarıyla aynı anlamdadır, görevin **kendi** çalıştırmasına
   uygulanır: `success` her rapor, `change` izleme görevinde yalnız değişiklik
   bulunduğunda, `always` başarısız çalıştırmada da (hata bildirimi). `cancelled`
@@ -145,6 +155,10 @@ Alıcıları görevi oluşturan kişi yazar; model alıcı seçemez.
   gidebilir.
 - Konu `<görev adı> — <tarih>`; gövde cevabın markdown'ından HTML; oluşturulan
   dosyalar toplam 15 MB'a kadar eklenir, sığmayanlar gövdede listelenir.
+- Sohbette (Workforce modu) aynı cümle kurulduğunda e-posta **gönderilmez**,
+  Outlook'ta taslak olarak açılır; kullanıcı Gönder'e basar. `OUTLOOK_AGENT_ACTION=send`
+  bunu doğrudan göndermeye çevirir. Zamanlanmış çalıştırmada başında kimse
+  olmadığı için taslak açılmaz, gönderilir.
 
 ## Run durumları
 

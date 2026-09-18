@@ -2,6 +2,7 @@ import {
   BotIcon,
   CodeIcon,
   FileIcon,
+  MailIcon,
   SearchIcon,
 } from './icons.jsx'
 
@@ -12,6 +13,8 @@ const BUILT_IN_AGENT_ICONS = new Map([
   ['document', FileIcon],
   ['coding agent', CodeIcon],
   ['coding', CodeIcon],
+  ['mail agent', MailIcon],
+  ['mail', MailIcon],
 ])
 
 export function iconForAgent(name) {

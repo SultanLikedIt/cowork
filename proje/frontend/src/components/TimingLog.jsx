@@ -16,6 +16,9 @@ const PROCESS_LABELS = {
   'llm:web_answer': 'LLM · answer',
   'llm:web_plan': 'LLM · research plan',
   'llm:web_coverage': 'LLM · coverage check',
+  'llm:mail_plan': 'LLM · mail search plan',
+  'llm:mail_select': 'LLM · mail selection',
+  'tool:read_mailbox': 'Mailbox read',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 

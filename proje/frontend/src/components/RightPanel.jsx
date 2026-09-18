@@ -193,6 +193,7 @@ const FIXED_AGENT_BLURB = {
   'Research Agent': 'Searches the web and reads sources',
   'Document Agent': 'Writes Word, PDF, PowerPoint and spreadsheets',
   'Coding Agent': 'Writes and runs code',
+  'Mail Agent': 'Reads your Outlook inbox and sent mail',
 }
 
 function AgentCard({ worker, assignments, runtime }) {

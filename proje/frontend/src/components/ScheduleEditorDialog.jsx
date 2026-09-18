@@ -15,6 +15,7 @@ import {
   CONDITIONS,
   DEFAULT_TIMEZONE,
   DELIVERY_CONDITIONS,
+  addressesInText,
   PROMPT_VARIABLES,
   SCHEDULE_KINDS,
   WEEKDAYS,
@@ -301,6 +302,7 @@ export default function ScheduleEditorDialog({
     }
   }
 
+  const promptAddresses = useMemo(() => addressesInText(draft.prompt), [draft.prompt])
   const { schedule } = draft
   const isFollower = schedule.kind === 'after_task'
   const upstreamTask = tasks.find((item) => item.task_id === schedule.upstreamTaskId) || null
@@ -785,6 +787,26 @@ export default function ScheduleEditorDialog({
               title="Email results"
               description="Each result also goes to these people, with the files the run created attached."
             />
+            {!draft.emailEnabled && promptAddresses.length > 0 && (
+              <p className="text-xs leading-relaxed text-muted-foreground" role="status">
+                The task text asks for {promptAddresses.join(', ')}, so each result is emailed
+                there anyway.{' '}
+                <button
+                  type="button"
+                  className="underline underline-offset-2 hover:text-foreground"
+                  onClick={() =>
+                    setDraft((previous) => ({
+                      ...previous,
+                      emailEnabled: true,
+                      email: { ...previous.email, to: promptAddresses.join(', ') },
+                    }))
+                  }
+                >
+                  Set them here
+                </button>{' '}
+                to choose when and whether files are attached.
+              </p>
+            )}
             {draft.emailEnabled && (
               <div className="ml-7 flex flex-col gap-4 border-l border-border/70 pl-4">
                 {outlookProblem(outlookStatus) && (
