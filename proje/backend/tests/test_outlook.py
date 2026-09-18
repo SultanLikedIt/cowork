@@ -228,3 +228,44 @@ def test_bridge_strips_attachment_paths(bridge) -> None:
     assert response.ok
     [(name, _)] = bridge["mailer"].messages[0]["attachments"]
     assert "\\" not in name and "/" not in name
+
+
+# -- routes ------------------------------------------------------------------
+
+
+@pytest.fixture()
+def api(monkeypatch):
+    """The real router, so a route that cannot read its body fails here.
+
+    Regression: TestRequest was declared inside build_router, where FastAPI
+    could not resolve it (postponed annotations), so POST /test answered 422
+    "missing query parameter req" and no email was ever sent.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(outlook, "send_mail", lambda **kwargs: (sent.append(kwargs), outlook.SendResult(True))[1])
+    monkeypatch.setattr(outlook, "status", lambda: {"enabled": True})
+    app = FastAPI()
+    app.include_router(outlook.build_router())
+    return TestClient(app), sent
+
+
+def test_test_route_sends(api) -> None:
+    client, sent = api
+    response = client.post("/integrations/outlook/test", json={"to": "ali@example.com"})
+    assert response.status_code == 200, response.text
+    assert sent[0]["to"] == ["ali@example.com"]
+    assert "test" in sent[0]["subject"].casefold()
+
+
+def test_test_route_rejects_a_bad_address(api) -> None:
+    client, sent = api
+    assert client.post("/integrations/outlook/test", json={"to": "ali@"}).status_code == 422
+    assert sent == []
+
+
+def test_status_route(api) -> None:
+    client, _ = api
+    assert client.get("/integrations/outlook/status").json() == {"enabled": True}

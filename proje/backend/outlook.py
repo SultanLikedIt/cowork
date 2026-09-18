@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
 import requests
+from pydantic import BaseModel, Field
 
 _STATUS_TIMEOUT_SECONDS = 3.0
 # Classic Outlook can take a while to start on the first call of the day.
@@ -296,17 +297,25 @@ def send_mail(
 # -- HTTP --------------------------------------------------------------------
 
 
+class TestRequest(BaseModel):
+    """Body of POST /integrations/outlook/test.
+
+    Module level on purpose: this file uses postponed annotations, so FastAPI
+    resolves a route's type hints against module globals. Declared inside
+    build_router it was invisible there, and every request came back 422
+    "missing query parameter req" instead of reading the body.
+    """
+
+    to: str = Field(min_length=3, max_length=320)
+
+
 def build_router() -> Any:
     """/integrations/outlook: status for the UI and a test message."""
     import asyncio
 
     from fastapi import APIRouter, HTTPException
-    from pydantic import BaseModel, Field
 
     router = APIRouter(prefix="/integrations/outlook", tags=["outlook"])
-
-    class TestRequest(BaseModel):
-        to: str = Field(min_length=3, max_length=320)
 
     @router.get("/status")
     async def outlook_status():
