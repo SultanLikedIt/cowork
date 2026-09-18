@@ -17,12 +17,14 @@ import re
 import threading
 import time
 from typing import Any, Callable, Optional, Sequence, TypedDict
+from urllib.parse import urlsplit
 
 from langgraph.graph import END, START, StateGraph
 
 import capabilities
 import runtime_context
 import web_controller
+import web_fetch
 from execution.ids import child_task_id
 from execution.langgraph_runtime import events as lg_events
 from execution.langgraph_runtime.openai_chat import complete_chat
@@ -485,7 +487,13 @@ async def _make_complete(
     async def complete(
         phase: str, system: str, user: str, schema: Optional[type]
     ) -> Any:
-        if schema is not None:
+        if phase == "iterate":
+            # Iterative deep research: each round's JSON carries the whole
+            # rewritten report (~3k tokens by ITER_REPORT_MAX_CHARS) plus
+            # think/action. At 2048 the JSON is cut mid-report and the
+            # round is lost.
+            max_tokens = 8192
+        elif schema is not None:
             max_tokens = 2048
         elif deep_research and phase == "answer":
             # A deep run gathers dozens of pages across many angles, and the
@@ -516,7 +524,10 @@ async def _make_complete(
             # Document worker is skipped and this text is what the user
             # downloads, so being cut short is a broken deliverable rather
             # than a shorter plan.
-            retry_on_truncation=(phase == "answer" and schema is None),
+            # And an iterate round: truncated JSON loses the whole report.
+            retry_on_truncation=(
+                (phase == "answer" and schema is None) or phase == "iterate"
+            ),
             temperature=0 if schema is not None else None,
             response_format=schema,
         )
@@ -1547,14 +1558,28 @@ def _cheap_recovery_lookup(
 
     Includes short excerpts so SEARCH can name opponent/date/etc. the way
     Camel's search→read→refine loop did, without a second propose-query call.
+
+    Must hold no URL at all: acquire_web_evidence takes any URL in its text
+    as one the user typed and fetches it WITHOUT searching. Listing the
+    opened pages here by URL turned every recovery pass into a re-fetch of
+    pages already read (served from cache), then a second ANSWER over the
+    same evidence. Opened pages are named by host only; the callers keep
+    them out of SELECT with ``exclude_urls``.
     """
-    opened_block = "\n".join(f"- {u}" for u in opened[:8]) or "(none)"
+    hosts = list(
+        dict.fromkeys(
+            urlsplit(u).netloc.casefold() for u in opened if urlsplit(u).netloc
+        )
+    )
+    opened_block = "\n".join(f"- {h}" for h in hosts[:8]) or "(none)"
     learned_lines: list[str] = []
     for item in (evidence or [])[-4:]:
         if not item.get("ok"):
             continue
-        title = str(item.get("title") or "").strip()
-        text = str(item.get("text") or "").strip().replace("\n", " ")
+        title = web_fetch._URL_RE.sub("", str(item.get("title") or "")).strip()
+        text = web_fetch._URL_RE.sub(
+            "", str(item.get("text") or "")
+        ).strip().replace("\n", " ")
         if len(text) > 220:
             text = text[:220] + "…"
         learned_lines.append(f"- {title}: {text}")
@@ -1567,8 +1592,8 @@ def _cheap_recovery_lookup(
         "detail/report/article HTML pages (not list/overview/homepage, "
         "not .pdf downloads). For ihracat/ithalat asks prefer a different "
         "on-topic bulletin/news page with published figures (association, "
-        "TIM, TÜİK HTML, trade press) — not Wikipedia. Do NOT open these "
-        "URLs again:\n"
+        "TIM, TÜİK HTML, trade press) — not Wikipedia. Pages already "
+        "opened on these sites were not enough; prefer other sources:\n"
         f"{opened_block}\n\n"
         f"LEARNED FROM OPENED PAGES:\n{learned}"
     )
@@ -1706,9 +1731,11 @@ async def _run_research(
         allow_refine: bool = True,
         compact: bool = False,
         targets: Optional[list[str]] = None,
+        exclude_urls: Optional[list[str]] = None,
     ) -> Any:
         return await web_controller.acquire_web_evidence(
             lookup_text,
+            exclude_urls=exclude_urls,
             # Named, not positional -- so the recorded args carry "query"/
             # "url" instead of a bare positional tuple, which is what the
             # frontend's Tool activity panel looks for to show a preview.
@@ -1735,6 +1762,10 @@ async def _run_research(
             ),
         )
 
+    # Set when the first acquisition ran the iterative deep-research loop:
+    # its final report, every URL the loop opened, and the ones it cites.
+    iter_run: dict[str, Any] = {}
+
     async def _answer(
         evidence: list[dict[str, Any]],
     ) -> tuple[str, list[dict[str, Any]]]:
@@ -1749,14 +1780,32 @@ async def _run_research(
         figures could not be found -- the page was trimmed out of what the
         model read, yet still passed the (separate, untrimmed) citation
         filter."""
+        report = str(iter_run.get("report") or "")
+        if report:
+            # Iterative deep research already read every page in full and
+            # folded it into the report's cited findings. The answer gets
+            # that report plus only the pages it cites (and pages no report
+            # round saw: the loop's last round, recovery passes), each with
+            # more room than the untargeted 40-page trim below allows.
+            loop_urls = iter_run["urls"]
+            cited_urls = iter_run["cited_urls"]
+            compact = _trim_evidence_for_answer(
+                [
+                    item
+                    for item in evidence
+                    if str(item.get("url") or "") in cited_urls
+                    or str(item.get("url") or "") not in loop_urls
+                ],
+                max_items=40,
+                max_text=2500,
+            )
         # Deep mode can gather dozens of pages -- the default 6-item/2000-char
         # trim would silently throw away most of that research at the final
         # synthesis step, discarding the whole point of the wider budget.
-        compact = (
-            _trim_evidence_for_answer(evidence, max_items=40, max_text=1200)
-            if deep_research
-            else _trim_evidence_for_answer(evidence)
-        )
+        elif deep_research:
+            compact = _trim_evidence_for_answer(evidence, max_items=40, max_text=1200)
+        else:
+            compact = _trim_evidence_for_answer(evidence)
         ask = answer_text
         if wants_artifact:
             # Research must NOT refuse file creation — Document Agent writes
@@ -1812,6 +1861,7 @@ async def _run_research(
                 complete=complete,
                 current_date=date_line,
                 depth=research_depth,
+                report=report,
             )
             prose = _strip_capability_refusals(prose or "")
             return (_research_handoff_output(prose, handoff), compact)
@@ -1821,6 +1871,7 @@ async def _run_research(
             complete=complete,
             current_date=date_line,
             depth=research_depth,
+            report=report,
         )
         return (
             (
@@ -1858,6 +1909,19 @@ async def _run_research(
         )
         if handle.cancelled:
             return ""
+        if getattr(acquired, "report", ""):
+            iter_run.update(
+                report=acquired.report,
+                urls={str(i.get("url") or "") for i in acquired.evidence or []},
+                cited_urls={
+                    str(i.get("url") or "") for i in acquired.report_evidence or []
+                },
+            )
+            progress(
+                "searching",
+                f"deep research: report built over {acquired.iter_rounds} rounds, "
+                f"{len(acquired.report_evidence)} pages cited",
+            )
         _merge(merged, list(acquired.evidence or []))
         controller_urls = _merge_source_lists(
             controller_urls, _research_sources_from_controller(acquired)
@@ -1881,6 +1945,7 @@ async def _run_research(
                 ),
                 allow_refine=False,
                 compact=True,
+                exclude_urls=_opened_urls(merged),
             )
             recoveries += 1
             if not handle.cancelled:
@@ -1908,6 +1973,7 @@ async def _run_research(
                 ),
                 allow_refine=False,
                 compact=True,
+                exclude_urls=_opened_urls(merged),
             )
             recoveries += 1
             if not handle.cancelled:
@@ -1930,6 +1996,7 @@ async def _run_research(
                 ),
                 allow_refine=False,
                 compact=True,
+                exclude_urls=_opened_urls(merged),
             )
             recoveries += 1
             if not handle.cancelled:

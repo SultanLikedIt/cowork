@@ -86,6 +86,14 @@ services:
       RERANKER_ENABLED: ${RERANKER_ENABLED:-true}
       RERANKER_MODEL_PATH: /app/vendor/bge-reranker-v2-m3
       RERANKER_THREADS: ${RERANKER_THREADS:-4}
+      # Deep research strategy (backend/web_controller.py): survey = plan
+      # angles up front and trim every page for one final answer; iter =
+      # iterative loop that rewrites one cited report per round
+      # (IterResearch). docs/web-execution.md.
+      DEEP_RESEARCH_MODE: ${DEEP_RESEARCH_MODE:-survey}
+      ITER_MAX_ROUNDS: ${ITER_MAX_ROUNDS:-20}
+      ITER_MIN_SEARCHES: ${ITER_MIN_SEARCHES:-6}
+      ITER_REPORT_MAX_CHARS: ${ITER_REPORT_MAX_CHARS:-10000}
       # Narrative PDF/DOCX: Document LLM returns typed blocks (heading,
       # paragraph, list, table, quote) instead of free markdown -- see
       # backend/document_model.py. On, every narrative PDF/DOCX calls the

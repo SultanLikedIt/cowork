@@ -36,3 +36,32 @@ rendered rather than statically fetched.
 Direct/Workforce routing, compact activity/SSE events, exact-call
 memoization, and the per-agent search budget stay at the product
 boundary. CAMEL `SearchToolkit` / `BrowserToolkit` are not bound.
+
+## Deep research: survey vs iter
+
+`depth="deep"` (the user's Deep research toggle, Workforce/LangGraph only)
+has two strategies, picked by `DEEP_RESEARCH_MODE`:
+
+- `survey` (default): plan 10-12 angles up front, one
+  SEARCH→SELECT→FETCH per angle, coverage gap-fill, then one ANSWER call
+  over every page trimmed to 1,200 characters (40 pages at most).
+- `iter`: an IterResearch-style loop (`_acquire_iterative_evidence`).
+  Each round the model sees only the question, its own report from the
+  previous round and the last action's raw result, and returns
+  `{think, report, action}`. The report is rewritten in full every round
+  (sections: verified findings / open questions / contradictions / draft
+  / confidence), and every finding cites an evidence id (`[E3]`). Actions:
+  `search` (the model's query goes straight into the deterministic
+  search→rerank→fetch round), `open` (a candidate from the last search
+  only), `recall` (re-read an opened page by id, up to 8k characters),
+  `finish` (refused before `ITER_MIN_SEARCHES` searches). Raw pages live
+  in an evidence store outside the prompt, so the prompt stays the same
+  size every round.
+
+  Code checks the citations: ids that were never opened are removed, and
+  a verified finding left without an id is dropped. ANSWER gets the final
+  report plus only the pages it cites (and the last round's pages, which
+  no report turn folded in), with evidence ids stripped from the reply.
+
+Compare the two with `backend/scripts/deep_research_ab.py` (live model and
+search; run inside the backend container).

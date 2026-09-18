@@ -59,6 +59,31 @@ MAX_PLAN_ANGLES_DEEP = 12
 # thin enough to be worth nothing. Raised toward the ceiling so an
 # explicit deep request actually buys breadth.
 MIN_PLAN_ANGLES_DEEP = 10
+# Iterative deep research (IterResearch-style, DEEP_RESEARCH_MODE=iter):
+# instead of planning angles up front and cutting 60 pages down to
+# 1,200 characters each for one final ANSWER call, every round the model
+# sees only the question, its own report from the previous round and the
+# last action's result, and rewrites the whole report. Pages are read in
+# full once and folded into cited findings as they arrive. Search/select/
+# fetch stay deterministic (_search_select_fetch); the model only decides
+# the next query. Budgets reuse MAX_SEARCH_PHASES_DEEP / MAX_FETCHES_DEEP.
+DEEP_RESEARCH_MODE_ENV = "DEEP_RESEARCH_MODE"
+ITER_MAX_ROUNDS = max(2, int(os.environ.get("ITER_MAX_ROUNDS") or 20))
+# A deep run that stops after two searches is the thin report deep mode
+# exists to prevent (see MIN_PLAN_ANGLES_DEEP): "finish" is refused below this.
+ITER_MIN_SEARCHES = max(1, int(os.environ.get("ITER_MIN_SEARCHES") or 6))
+# ~3k tokens. The report is the loop's only memory, so it must stay small
+# enough to be rewritten every round without drifting.
+ITER_REPORT_MAX_CHARS = max(2_000, int(os.environ.get("ITER_REPORT_MAX_CHARS") or 10_000))
+# One round's tool result (~4-5k tokens), split across the pages it opened.
+ITER_TOOL_RESPONSE_CHARS = 16_000
+ITER_PAGE_CHARS = 4_000
+ITER_RECALL_CHARS = 8_000
+ITER_MAX_RECALL = 2
+ITER_MAX_OPEN = 3
+# What web_tools.read_page returns at most (web_tools.MAX_TEXT_CHARS); kept
+# per page so recall can show more than the ledger's MAX_EVIDENCE_TEXT.
+MAX_PAGE_TEXT = 12_000
 MAX_EVIDENCE_TEXT = 4_000
 # Below this a "successful" text fetch carries no usable prose -- it is a
 # consent wall, a paywall stub or a JS shell. Deliberately low: the point
@@ -106,6 +131,17 @@ class CoverageAssessment(BaseModel):
     missing: list[str] = Field(default_factory=list)
 
 
+class IterTurn(BaseModel):
+    """One round of the iterative deep-research loop (see ITER_SYSTEM)."""
+
+    think: str = ""
+    report: str = ""
+    action: str = ""
+    query: str = ""
+    urls: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
 @dataclass
 class ControllerResult:
     evidence: list[dict[str, Any]] = field(default_factory=list)
@@ -119,6 +155,19 @@ class ControllerResult:
     target_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
     # (step name, seconds, detail) for timed steps that are neither tool nor model calls.
     on_timing: Optional[Callable[[str, float, str], None]] = None
+    # Iterative deep research only (DEEP_RESEARCH_MODE=iter): the final
+    # rewritten report, and the evidence ANSWER should see with it -- the
+    # pages the report cites plus the last round's pages, which no report
+    # turn got to fold in. Empty for every other depth.
+    report: str = ""
+    report_evidence: list[dict[str, Any]] = field(default_factory=list)
+    iter_rounds: int = 0
+    # Fuller page text than the evidence ledger keeps (MAX_EVIDENCE_TEXT),
+    # by normalized URL -- what a recall action re-reads.
+    page_texts: dict[str, str] = field(default_factory=dict)
+    # Normalized URLs a previous pass already opened (recovery passes):
+    # hidden from SELECT so a second pass opens something new.
+    excluded_urls: set[str] = field(default_factory=set)
 
 
 def _normalize_url(url: str) -> str:
@@ -1245,6 +1294,36 @@ def handoff_from_evidence(evidence: list[dict[str, Any]]) -> Optional[dict[str, 
 
 def format_evidence_prompt(request_text: str, evidence: list[dict[str, Any]]) -> str:
     """Bounded evidence block for ANSWER. Rows stay on disk via data_path."""
+    body = json.dumps(_compact_evidence(evidence), ensure_ascii=False, indent=2)
+    return (
+        "ACQUIRED EVIDENCE (append-only, from pages that were actually opened).\n"
+        "You have no web search, fetch, or artifact tools. Answer only from "
+        "this evidence and the user request. Do not mention data_path, "
+        "workspace paths, or write a markdown/file download link.\n\n"
+        f"USER REQUEST:\n{request_text}\n\n"
+        f"EVIDENCE:\n{body}"
+    )
+
+
+def format_report_prompt(
+    request_text: str, report: str, evidence: list[dict[str, Any]]
+) -> str:
+    """ANSWER input for an iterative run: the report plus the pages it cites."""
+    body = json.dumps(_compact_evidence(evidence), ensure_ascii=False, indent=2)
+    return (
+        "RESEARCH REPORT (notes rewritten over an iterative research pass; "
+        "each verified finding ends with the evidence ids it came from):\n"
+        f"{report.strip()}\n\n"
+        "CITED EVIDENCE (the opened pages behind those ids, trimmed; pages "
+        "opened in the last round may not be in the report yet):\n"
+        f"{body}\n\n"
+        "You have no web search, fetch, or artifact tools. Do not mention "
+        "data_path, workspace paths, or write a markdown/file download link.\n\n"
+        f"USER REQUEST:\n{request_text}"
+    )
+
+
+def _compact_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     compact: list[dict[str, Any]] = []
     for item in evidence:
         entry = {
@@ -1252,6 +1331,8 @@ def format_evidence_prompt(request_text: str, evidence: list[dict[str, Any]]) ->
             "title": item.get("title"),
             "ok": item.get("ok"),
         }
+        if item.get("evidence_id"):
+            entry["evidence_id"] = item["evidence_id"]
         if item.get("error_reason"):
             entry["error_reason"] = item["error_reason"]
             entry["error"] = item.get("error") or ""
@@ -1278,15 +1359,7 @@ def format_evidence_prompt(request_text: str, evidence: list[dict[str, Any]]) ->
                 if isinstance(table, dict)
             ]
         compact.append(entry)
-    body = json.dumps(compact, ensure_ascii=False, indent=2)
-    return (
-        "ACQUIRED EVIDENCE (append-only, from pages that were actually opened).\n"
-        "You have no web search, fetch, or artifact tools. Answer only from "
-        "this evidence and the user request. Do not mention data_path, "
-        "workspace paths, or write a markdown/file download link.\n\n"
-        f"USER REQUEST:\n{request_text}\n\n"
-        f"EVIDENCE:\n{body}"
-    )
+    return compact
 
 
 SEARCH_SYSTEM = (
@@ -1527,6 +1600,77 @@ SURVEY_ANSWER_SYSTEM = (
     "If evidence is thin or off-topic, say so clearly "
     "instead of filling gaps. Write in the user's language. Do not "
     "mention data_path, workspace paths, or write markdown file links."
+)
+
+# Iterative deep research: one call per round, and the report is the only
+# thing that survives between rounds -- so it carries the citations, not
+# the model's memory. Evidence ids instead of URLs: the model copies a
+# short id far more reliably than a long URL, and code resolves ids to
+# the pages actually opened (_validate_report_citations).
+ITER_SYSTEM = (
+    "You run an iterative deep web research loop. Each round you see ONLY "
+    "the research question, your own report from the previous round, and "
+    "the result of your last action. Nothing else from earlier rounds "
+    "survives: whatever you do not write into the report is gone, except "
+    "that an opened page can be re-read with a recall action by its "
+    "evidence id.\n"
+    "Respond with JSON only: "
+    '{"think": "...", "report": "...", "action": "search|open|recall|finish", '
+    '"query": "...", "urls": ["..."], "evidence_ids": ["E1"]}\n'
+    "think: two or three sentences -- what the last result taught you and "
+    "why the next action is the most useful one.\n"
+    "report: REWRITE THE WHOLE REPORT every round; never append a log of "
+    "rounds. Merge new findings from the last result, update findings it "
+    "made outdated, record disagreements, and drop what turned out to be "
+    "irrelevant. Use exactly these sections:\n"
+    "## Verified findings\n"
+    "- <concrete finding: figures, dates, names, units> [E3]\n"
+    "## Open questions\n"
+    "- <part of the question not answered yet>\n"
+    "## Contradictions\n"
+    "- <where sources disagree, with both ids> [E2] [E5]\n"
+    "## Current best answer draft\n"
+    "<short draft answer>\n"
+    "## Confidence\n"
+    "<low|medium|high> -- <why>\n"
+    "Every verified finding MUST end with the evidence id(s) it came from, "
+    "like [E3] or [E3] [E7]. Only ids shown in a result or already in the "
+    "report are valid; a finding without one is unsourced and will not "
+    "reach the final answer. Copy figures exactly as the page states them. "
+    "Keep the report under {max_chars} characters: merge similar findings "
+    "and shorten wording, but never drop a sourced figure the question "
+    "needs.\n"
+    "Actions (one per round):\n"
+    "- search: one web search. query is short search-engine text: topic, "
+    "entity, place, and a year when recency matters -- no instructions, no "
+    "file-format words (pdf, word, rapor hazırla). The system opens the "
+    "most relevant new results for you.\n"
+    "- open: open up to 3 pages from the CANDIDATES list of the last "
+    "result; copy their urls exactly into urls.\n"
+    "- recall: re-read up to 2 already-opened pages in full by evidence id, "
+    "when the report needs a detail you did not note.\n"
+    "- finish: stop, when the open questions that matter are answered or "
+    "further searching would not change the answer.\n"
+    "Each search targets one open question from your report. Never repeat "
+    "a query already run; rewording a query that found nothing rarely "
+    "helps -- search a different facet or name the specifics you learned "
+    "(dates, names, versions). The user asked for a thorough investigation: "
+    "cover every part of the question across different facets, time "
+    "periods, stakeholders, and primary (official, statistical) sources. "
+    "Write the report in the user's language. Do not explain outside the "
+    "JSON."
+)
+
+ITER_ANSWER_ADDENDUM = (
+    " The input is a RESEARCH REPORT written over an iterative research "
+    "pass, plus the opened pages its findings cite. Build the brief from "
+    "the report's verified findings and use the cited evidence to confirm "
+    "figures and add exact detail. Pages opened in the last round may hold "
+    "facts the report has not absorbed yet; use them too. State the "
+    "report's open questions and contradictions plainly as gaps or "
+    "conflicts. Never state a fact that neither the report's findings nor "
+    "the evidence supports. Do not write evidence ids such as [E3] in the "
+    "reply."
 )
 
 
@@ -1890,7 +2034,14 @@ async def _search_select_fetch(
     retry: bool = False,
     refine: bool = False,
     max_fetches: int = MAX_FETCHES,
-) -> None:
+    literal_query: str = "",
+) -> list[dict[str, Any]]:
+    """One SEARCH → SELECT → FETCH round; returns the ranked candidates.
+
+    ``literal_query``: run exactly this query (the iterative loop's model
+    already wrote it) instead of asking SEARCH for one, and hide pages
+    already opened from SELECT -- they stay reachable through recall.
+    """
     seed_source = _SEARCH_HINT_BLOCK_RE.sub(
         " ", (target or request_text) or ""
     ).strip()
@@ -1917,6 +2068,7 @@ async def _search_select_fetch(
     candidate_entries: list[dict[str, str]] = []
     fetch_error_reason = ""
     prior = list(result.evidence)
+    ranked: list[dict[str, Any]] = []
     try:
         # The model writes the query; it reads the sentence, so it knows
         # "bilgisayarımda aç" says where the file goes and "1 haftalık" says
@@ -1927,28 +2079,29 @@ async def _search_select_fetch(
         seed = None
         if not retry and not refine and not (target or "").strip():
             seed = fact_seed_query(request_text, current_date)
-        query = ""
+        query = " ".join((literal_query or "").split())[:240]
         search_system = REFINE_SEARCH_SYSTEM if refine else SEARCH_SYSTEM
-        try:
-            parsed = await _complete(
-                complete,
-                "search",
-                search_system,
-                _with_year(
-                    current_date,
-                    _search_user_payload(
-                        request_text,
-                        target=target,
-                        retry=retry and not refine,
-                        refine=refine,
-                        prior_evidence=prior if refine else None,
+        if not query:
+            try:
+                parsed = await _complete(
+                    complete,
+                    "search",
+                    search_system,
+                    _with_year(
+                        current_date,
+                        _search_user_payload(
+                            request_text,
+                            target=target,
+                            retry=retry and not refine,
+                            refine=refine,
+                            prior_evidence=prior if refine else None,
+                        ),
                     ),
-                ),
-                SearchQuery,
-            )
-            query = _query_from_complete(parsed, "").strip()
-        except Exception:  # noqa: BLE001 - fall back, never fail the phase
-            query = ""
+                    SearchQuery,
+                )
+                query = _query_from_complete(parsed, "").strip()
+            except Exception:  # noqa: BLE001 - fall back, never fail the phase
+                query = ""
         if query:
             query = _strip_stray_anchor_day(query, request_text, current_date)
         else:
@@ -1956,10 +2109,11 @@ async def _search_select_fetch(
             _emit(progress, "searching", f"fact seed: {query[:120]}")
         search_result = search(query, 10)
         result.search_count += 1
-        if refine or retry:
-            search_result = _drop_opened_candidates(
-                search_result, _opened_url_keys(prior)
-            )
+        hidden = set(result.excluded_urls)
+        if refine or retry or literal_query:
+            hidden |= _opened_url_keys(prior)
+        if hidden:
+            search_result = _drop_opened_candidates(search_result, hidden)
         if refine:
             search_result = _prefer_untried_hosts(
                 search_result, _opened_hosts(prior)
@@ -1967,10 +2121,15 @@ async def _search_select_fetch(
         search_result = _prefer_relevant_candidates(
             search_result, request_text, current_date=current_date
         )
+        ranked = [
+            item
+            for item in (search_result.get("results") or [])
+            if isinstance(item, dict) and item.get("url")
+        ]
         candidates = _candidate_urls(search_result)
         candidate_entries = _candidate_entries(search_result)
         if not candidates:
-            return
+            return ranked
         rerank_started = time.monotonic()
         picked = await _rerank_select(
             search_result, request_text, target=target, limit=select_limit
@@ -2079,6 +2238,7 @@ async def _search_select_fetch(
             stats["fetch_error_reason"] = fetch_error_reason
         elif int(stats.get("success") or 0) > 0:
             stats.pop("fetch_error_reason", None)
+    return ranked
 
 
 def _lookup_budgets(
@@ -2120,6 +2280,8 @@ async def acquire_web_evidence(
     depth: str = "lookup",
     compact: bool = False,
     on_timing: Optional[Callable[[str, float, str], None]] = None,
+    deep_mode: Optional[str] = None,
+    exclude_urls: Optional[list[str]] = None,
 ) -> ControllerResult:
     """Run SEARCH → SELECT → FETCH. ANSWER is a separate call.
 
@@ -2137,12 +2299,19 @@ async def acquire_web_evidence(
     into a thorough pass (never phrase-triggered): more/narrower planned
     angles, and caps raised to ``MAX_SEARCH_PHASES_DEEP`` /
     ``MAX_FETCHES_DEEP``, with the coverage gap-fill repeating instead of
-    running once.
+    running once. With ``DEEP_RESEARCH_MODE=iter`` (or ``deep_mode="iter"``)
+    deep runs the iterative report loop instead
+    (``_acquire_iterative_evidence``); the result then carries ``report``
+    and ``report_evidence`` for ANSWER.
     ``compact=True``: one search + two fetches (recovery / second pass).
+    ``exclude_urls``: pages an earlier pass already opened; never selected
+    again. Pass them here, not inside ``request_text`` -- any URL in the
+    text is taken as one the user typed and fetched without a search.
     ``data_path`` alone does not produce a handoff; ``wants_artifact`` must
     also be true.
     """
     result = ControllerResult(on_timing=on_timing)
+    result.excluded_urls = {_normalize_url(url) for url in exclude_urls or [] if url}
     search_cap, fetch_cap, select_limit, allow_retry_loop = _lookup_budgets(
         wants_artifact=wants_artifact,
         compact=compact,
@@ -2164,6 +2333,21 @@ async def acquire_web_evidence(
         return result
 
     depth_normalized = (depth or "").strip().casefold()
+    if (
+        depth_normalized == "deep"
+        and not compact
+        and deep_research_mode(deep_mode) == "iter"
+    ):
+        return await _acquire_iterative_evidence(
+            result,
+            request_text,
+            search=search,
+            fetch=fetch,
+            complete=complete,
+            progress=progress,
+            current_date=current_date,
+            wants_artifact=wants_artifact,
+        )
     if depth_normalized in ("survey", "deep") and not compact:
         return await _acquire_survey_evidence(
             result,
@@ -2513,6 +2697,507 @@ async def _acquire_survey_evidence(
     return result
 
 
+def deep_research_mode(override: Optional[str] = None) -> str:
+    """``iter`` (iterative report loop) or ``survey`` (plan angles up front)."""
+    value = (
+        override or os.environ.get(DEEP_RESEARCH_MODE_ENV) or "survey"
+    ).strip().casefold()
+    return "iter" if value in {"iter", "iterative", "iterresearch"} else "survey"
+
+
+_EVIDENCE_ID_RE = re.compile(
+    r"\[\s*(E\d+(?:\s*[,;/]\s*E\d+)*)\s*\]", re.IGNORECASE
+)
+_FINDINGS_HEADING_RE = re.compile(
+    r"(?i)verified|finding|doğrulan|dogrulan|bulgu"
+)
+
+
+def _strip_evidence_ids(text: str) -> str:
+    return re.sub(
+        r"[ \t]*\[\s*E\d+(?:\s*[,;/]\s*E\d+)*\s*\]", "", text or ""
+    )
+
+
+def _validate_report_citations(
+    report: str, known: set[str]
+) -> tuple[str, set[str], int]:
+    """Keep only evidence ids that exist; drop findings left without one.
+
+    Returns (report, ids it still cites, number of findings dropped). The
+    raw page is gone from the next round's context, so a finding without a
+    valid id has no source anywhere any more -- carrying it forward is how
+    an unsourced claim ends up in the final answer with a URL made up for it.
+    """
+    cited: set[str] = set()
+
+    def _keep_known(match: re.Match) -> str:
+        ids = [part.strip().upper() for part in re.split(r"[,;/]", match.group(1))]
+        good = [eid for eid in ids if eid in known]
+        cited.update(good)
+        return " ".join(f"[{eid}]" for eid in good)
+
+    cleaned = _EVIDENCE_ID_RE.sub(_keep_known, report or "")
+    lines: list[str] = []
+    dropped = 0
+    in_findings = False
+    first_heading = True
+    for line in cleaned.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            in_findings = first_heading or bool(_FINDINGS_HEADING_RE.search(stripped))
+            first_heading = False
+            lines.append(line.rstrip())
+            continue
+        if (
+            in_findings
+            and stripped[:1] in {"-", "*", "•"}
+            and not _EVIDENCE_ID_RE.search(stripped)
+        ):
+            dropped += 1
+            continue
+        lines.append(line.rstrip())
+    return "\n".join(lines).strip(), cited, dropped
+
+
+def _iter_page_block(
+    eid: str, item: dict[str, Any], text: str, max_chars: int
+) -> str:
+    lines = [
+        f"[{eid}] {str(item.get('title') or '').strip() or '(untitled)'}",
+        f"url: {item.get('url') or ''}",
+    ]
+    body = (text or "").strip()
+    if body:
+        lines.append(body[:max_chars])
+    columns = item.get("columns") or []
+    if columns:
+        lines.append("table columns: " + ", ".join(str(c) for c in columns)[:400])
+    preview = item.get("preview") or []
+    if preview:
+        rows = "\n".join(
+            json.dumps(row, ensure_ascii=False)[:400] for row in preview[:10]
+        )
+        lines.append(f"table rows (first {min(10, len(preview))}):\n{rows}")
+    total = int(item.get("row_count") or item.get("record_count") or 0)
+    if total > len(preview):
+        lines.append(f"({total} rows in total)")
+    return "\n".join(lines)
+
+
+def _iter_result_block(
+    new_ids: list[str],
+    store: dict[str, dict[str, Any]],
+    failed: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+) -> str:
+    parts: list[str] = []
+    if new_ids:
+        per_page = min(ITER_PAGE_CHARS, ITER_TOOL_RESPONSE_CHARS // len(new_ids))
+        parts.append("OPENED PAGES (cite them by their [E#] id):")
+        for eid in new_ids:
+            item = store[eid]
+            parts.append(
+                _iter_page_block(eid, item, str(item.get("text") or ""), per_page)
+            )
+    else:
+        parts.append("No new page with usable content was opened.")
+    if failed:
+        parts.append(
+            "FAILED TO OPEN:\n"
+            + "\n".join(
+                f"- {item.get('url')} ({item.get('error_reason') or 'no usable content'})"
+                for item in failed[:8]
+            )
+        )
+    if candidates:
+        parts.append(
+            "CANDIDATES not opened (action open can read one):\n"
+            + "\n".join(
+                f"- {item.get('url')} | {str(item.get('title') or '')[:120]} | "
+                f"{str(item.get('snippet') or item.get('content') or '')[:200]}"
+                for item in candidates[:8]
+            )
+        )
+    return "\n\n".join(parts)
+
+
+def _iter_user_payload(
+    request_text: str,
+    report: str,
+    *,
+    round_no: int,
+    max_rounds: int,
+    searches_left: int,
+    pages_left: int,
+    queries_run: list[str],
+    last_action: str,
+    last_result: str,
+    note: str,
+) -> str:
+    parts = [
+        f"RESEARCH QUESTION:\n{request_text}",
+        f"BUDGET: round {round_no} of {max_rounds}; {searches_left} searches "
+        f"and {pages_left} page opens left.",
+    ]
+    if queries_run:
+        parts.append(
+            "QUERIES ALREADY RUN (do not repeat):\n"
+            + "\n".join(f"- {q}" for q in queries_run[-30:])
+        )
+    parts.append(
+        "YOUR REPORT FROM THE PREVIOUS ROUND:\n"
+        + (
+            report
+            or "(empty -- this is the first round. Write an initial report "
+            "whose Open questions list every part of the question you will "
+            "investigate, and choose the first search.)"
+        )
+    )
+    if len(report) > ITER_REPORT_MAX_CHARS:
+        parts.append(
+            f"REPORT TOO LONG: {len(report)} characters, the limit is "
+            f"{ITER_REPORT_MAX_CHARS}. Compress it this round."
+        )
+    if last_action:
+        parts.append(f"LAST ACTION: {last_action}")
+    if last_result:
+        parts.append(f"RESULT OF LAST ACTION:\n{last_result}")
+    if note:
+        parts.append(f"NOTE FROM THE SYSTEM:\n{note}")
+    return "\n\n".join(parts)
+
+
+def _as_iter_turn(parsed: Any) -> Optional[IterTurn]:
+    if isinstance(parsed, IterTurn):
+        return parsed
+    if isinstance(parsed, dict):
+        try:
+            return IterTurn.model_validate(parsed)
+        except ValidationError:
+            return None
+    if isinstance(parsed, str):
+        return recover_model(parsed, IterTurn)
+    return None
+
+
+async def _iter_turn(
+    complete: CompleteFn, system: str, payload: str
+) -> Optional[IterTurn]:
+    """One round's model call, retried once when the report or action is missing.
+
+    A second broken reply is still returned when it carries anything usable:
+    the loop then keeps the previous report and runs the action anyway.
+    """
+    best: Optional[IterTurn] = None
+    for _attempt in range(2):
+        try:
+            parsed = await _complete(complete, "iterate", system, payload, IterTurn)
+        except Exception:  # noqa: BLE001 - a failed call is a broken round, not a failed run
+            parsed = None
+        turn = _as_iter_turn(parsed)
+        if turn is not None and turn.report.strip() and _iter_action(turn):
+            return turn
+        if turn is not None and (best is None or _iter_action(turn)):
+            best = turn
+    return best
+
+
+def _iter_action(turn: IterTurn) -> str:
+    action = (turn.action or "").strip().casefold()
+    if action in {"search", "open", "recall", "finish"}:
+        return action
+    if action in {"final", "final_answer", "done", "stop"}:
+        return "finish"
+    # Tolerate a missing/unknown action name when the arguments say it.
+    if (turn.query or "").strip():
+        return "search"
+    if turn.urls:
+        return "open"
+    if turn.evidence_ids:
+        return "recall"
+    return ""
+
+
+async def _acquire_iterative_evidence(
+    result: ControllerResult,
+    request_text: str,
+    *,
+    search: SearchFn,
+    fetch: FetchFn,
+    complete: CompleteFn,
+    progress: Optional[ProgressFn],
+    current_date: Optional[str],
+    wants_artifact: bool,
+    max_rounds: int = ITER_MAX_ROUNDS,
+) -> ControllerResult:
+    """Deep research as a report-rewriting loop (IterResearch, arXiv 2511.07327).
+
+    Each round the model sees the question, its previous report and the
+    last action's raw result -- nothing else. It rewrites the report and
+    picks one action. Earlier raw results live only in ``store`` (by
+    evidence id) and come back through recall. So the prompt stays the same
+    size in round 20 as in round 2, and pages are folded into cited
+    findings as they are read instead of being truncated at the end.
+
+    Stops when the model finishes (refused before ITER_MIN_SEARCHES
+    searches), when the round cap is reached, or one round after the
+    search/fetch budget runs out -- that last round only folds the final
+    result into the report. The answer itself is written afterwards by
+    answer_from_evidence(report=...), so a budget stop still gets a full
+    synthesis rather than none.
+    """
+    search_budget = MAX_SEARCH_PHASES_DEEP
+    fetch_budget = MAX_FETCHES_DEEP
+    select_limit = SELECT_LIMIT_DEEP
+    system = ITER_SYSTEM.replace("{max_chars}", str(ITER_REPORT_MAX_CHARS))
+
+    report = ""
+    # External evidence store: evidence id -> ledger item. Never put in the
+    # prompt wholesale; one entry at a time through recall.
+    store: dict[str, dict[str, Any]] = {}
+    id_by_key: dict[str, str] = {}
+    # Evidence the report has not folded in yet: the last executed action's
+    # pages until a later round returns a valid report.
+    unfolded: list[str] = []
+    queries_run: list[str] = []
+    last_candidates: list[dict[str, Any]] = []
+    last_action = ""
+    last_result = ""
+    note = ""
+    budget_spent_round = False
+    rounds = 0
+
+    def _register(items: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]]]:
+        new_ids: list[str] = []
+        failed: list[dict[str, Any]] = []
+        for item in items:
+            if not is_successful_fetch(item):
+                failed.append(item)
+                continue
+            key = _normalize_url(str(item.get("url") or ""))
+            if key in id_by_key:
+                continue
+            eid = f"E{len(store) + 1}"
+            item["evidence_id"] = eid
+            store[eid] = item
+            id_by_key[key] = eid
+            new_ids.append(eid)
+        return new_ids, failed
+
+    def _unopened(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        opened = _opened_url_keys(result.evidence)
+        return [
+            item
+            for item in candidates
+            if _normalize_url(str(item.get("url") or "")) not in opened
+        ]
+
+    async def _run_search(query: str) -> None:
+        nonlocal last_candidates, last_result
+        before = len(result.evidence)
+        ranked = await _search_select_fetch(
+            result,
+            request_text,
+            search=search,
+            fetch=fetch,
+            complete=complete,
+            progress=progress,
+            select_limit=select_limit,
+            current_date=current_date,
+            target=query,
+            max_fetches=fetch_budget,
+            literal_query=query,
+        )
+        queries_run.append(query)
+        new_ids, failed = _register(result.evidence[before:])
+        unfolded.extend(new_ids)
+        last_candidates = _unopened(ranked)
+        if not ranked:
+            last_result = "The search returned no results."
+        else:
+            last_result = _iter_result_block(new_ids, store, failed, last_candidates)
+
+    while rounds < max_rounds:
+        searches_left = max(0, search_budget - result.search_count)
+        pages_left = max(0, fetch_budget - result.fetch_count)
+        payload = _with_date(
+            current_date,
+            _iter_user_payload(
+                request_text,
+                report,
+                round_no=rounds + 1,
+                max_rounds=max_rounds,
+                searches_left=searches_left,
+                pages_left=pages_left,
+                queries_run=queries_run,
+                last_action=last_action,
+                last_result=last_result,
+                note=note,
+            ),
+        )
+        note = ""
+        started = time.monotonic()
+        turn = await _iter_turn(complete, system, payload)
+        rounds += 1
+        if turn is not None and turn.report.strip():
+            new_report, _cited, dropped = _validate_report_citations(
+                turn.report, set(store)
+            )
+            if len(new_report) > 2 * ITER_REPORT_MAX_CHARS:
+                # Asked to compress and did not: a report that keeps
+                # growing is the context bloat this loop exists to prevent.
+                new_report = new_report[: 2 * ITER_REPORT_MAX_CHARS]
+            if new_report:
+                report = new_report
+                unfolded = []
+            if dropped:
+                note = (
+                    f"{dropped} finding(s) had no valid evidence id and were "
+                    "removed from the report. Cite every finding with the "
+                    "[E#] id of the page it came from."
+                )
+        action = _iter_action(turn) if turn is not None else ""
+        # Factual only (the action and its argument), like every other
+        # timing entry -- the timing panel is not a place for model thinking.
+        subject = ""
+        if turn is not None:
+            subject = (
+                turn.query
+                if action == "search"
+                else " ".join(turn.urls or turn.evidence_ids)
+            )
+        _report_timing(
+            result,
+            "iter_round",
+            time.monotonic() - started,
+            f"round {rounds}: {action or 'no action'} {subject[:160]}".strip()
+            + f"; report {len(report)} chars",
+        )
+
+        if budget_spent_round:
+            # This round was only for folding the last result into the report.
+            break
+
+        if action == "finish":
+            if (
+                result.search_count < min(ITER_MIN_SEARCHES, search_budget)
+                and result.fetch_count < fetch_budget
+            ):
+                last_action = "finish (refused)"
+                last_result = (
+                    f"Only {result.search_count} searches have run; a deep "
+                    f"research pass needs at least {ITER_MIN_SEARCHES}. Search "
+                    "an open question or a part of the question the report "
+                    "does not cover yet."
+                )
+                continue
+            break
+
+        if action == "recall":
+            ids = [
+                str(eid).strip().upper()
+                for eid in (turn.evidence_ids if turn is not None else [])
+            ]
+            ids = [eid for eid in dict.fromkeys(ids) if eid in store][:ITER_MAX_RECALL]
+            last_action = "recall " + (", ".join(ids) or "(no valid id)")
+            if ids:
+                _emit(progress, "reading", "recall " + ", ".join(ids))
+                last_result = "RECALLED PAGES:\n\n" + "\n\n".join(
+                    _iter_page_block(
+                        eid,
+                        store[eid],
+                        result.page_texts.get(
+                            _normalize_url(str(store[eid].get("url") or ""))
+                        )
+                        or str(store[eid].get("text") or ""),
+                        ITER_RECALL_CHARS,
+                    )
+                    for eid in ids
+                )
+            else:
+                last_result = (
+                    "No valid evidence id. Valid ids: "
+                    + (", ".join(sorted(store, key=lambda e: int(e[1:]))) or "(none yet)")
+                )
+            continue
+
+        if action == "open":
+            allowed = {
+                _normalize_url(str(item.get("url") or "")): str(item["url"])
+                for item in last_candidates
+            }
+            urls: list[str] = []
+            for raw in turn.urls if turn is not None else []:
+                key = _normalize_url(str(raw or ""))
+                if key in allowed and allowed[key] not in urls:
+                    urls.append(allowed[key])
+            urls = urls[: min(ITER_MAX_OPEN, pages_left)]
+            last_action = "open " + (" ".join(urls) or "(no valid url)")
+            if not urls:
+                last_result = (
+                    "Not opened: open only takes urls copied exactly from the "
+                    "CANDIDATES list of the last search result."
+                    + (
+                        "\n\n" + _iter_result_block([], store, [], last_candidates)
+                        if last_candidates
+                        else " There are no unopened candidates; run a search."
+                    )
+                )
+                continue
+            before = len(result.evidence)
+            await _fetch_urls(
+                result, urls, fetch=fetch, progress=progress, max_fetches=fetch_budget
+            )
+            new_ids, failed = _register(result.evidence[before:])
+            unfolded.extend(new_ids)
+            last_candidates = _unopened(last_candidates)
+            last_result = _iter_result_block(new_ids, store, failed, last_candidates)
+        else:
+            query = " ".join(((turn.query if turn is not None else "") or "").split())
+            if action != "search" or not query:
+                if result.search_count > 0:
+                    # Two broken replies in a row and nothing to run: stop
+                    # and synthesize from what the report already holds.
+                    break
+                query = fact_seed_query(request_text, current_date) or " ".join(
+                    request_text.split()
+                )[:160]
+            if query.casefold() in {q.casefold() for q in queries_run}:
+                last_action = f"search {query!r} (not run)"
+                last_result = (
+                    "Not run: this exact query already ran. Search a different "
+                    "facet, or name specifics learned so far."
+                )
+                continue
+            last_action = f"search {query!r}"
+            _emit(progress, "searching", f"deep round {rounds}: {query[:120]}")
+            await _run_search(query)
+
+        if (
+            result.search_count >= search_budget
+            or result.fetch_count >= fetch_budget
+        ):
+            budget_spent_round = True
+            note = (
+                "The search and page budget is spent; no more search or open. "
+                "Fold the last result into the report and choose finish."
+            )
+
+    report, cited, _dropped = _validate_report_citations(report, set(store))
+    result.iter_rounds = rounds
+    if report:
+        result.report = report
+        keep = sorted(
+            set(cited) | set(unfolded), key=lambda eid: int(eid[1:])
+        )
+        result.report_evidence = [store[eid] for eid in keep]
+    result.handoff = _gated_handoff(
+        result.evidence, wants_artifact=wants_artifact
+    )
+    return result
+
+
 async def _fetch_urls(
     result: ControllerResult,
     urls: list[str],
@@ -2573,6 +3258,11 @@ async def _fetch_urls(
         opened.add(_normalize_url(str(item.get("url") or url)))
         if is_successful_fetch(page):
             result.successful_fetches += 1
+            full_text = str(page.get("text") or "")
+            if len(full_text) > MAX_EVIDENCE_TEXT:
+                result.page_texts[_normalize_url(str(item.get("url") or url))] = (
+                    full_text[:MAX_PAGE_TEXT]
+                )
 
 
 async def _gather_until_enough(
@@ -2758,13 +3448,31 @@ async def answer_from_evidence(
     complete: CompleteFn,
     current_date: Optional[str] = None,
     depth: str = "lookup",
+    report: str = "",
 ) -> str:
+    """Write the reply from opened evidence.
+
+    ``report``: the iterative loop's final report. The model then writes
+    from the report's cited findings, with ``evidence`` (the cited pages)
+    to confirm figures, instead of from trimmed raw pages alone.
+    """
+    # "deep" is a survey with a bigger budget and the same deliverable: a
+    # sectioned brief. It used to fall through to the single-fact lookup
+    # prompt, so the widest runs got the narrowest answer instructions.
     system = (
         SURVEY_ANSWER_SYSTEM
-        if (depth or "").strip().casefold() == "survey"
+        if (depth or "").strip().casefold() in ("survey", "deep")
         else ANSWER_SYSTEM
     )
-    prompt = _with_date(current_date, format_evidence_prompt(request_text, evidence))
+    if (report or "").strip():
+        system = SURVEY_ANSWER_SYSTEM + ITER_ANSWER_ADDENDUM
+        prompt = _with_date(
+            current_date, format_report_prompt(request_text, report, evidence)
+        )
+    else:
+        prompt = _with_date(
+            current_date, format_evidence_prompt(request_text, evidence)
+        )
     text = ""
     # One retry when the model returns nothing usable -- a single empty/
     # degenerate completion here otherwise wastes the whole research pass
@@ -2775,6 +3483,10 @@ async def answer_from_evidence(
         text = parsed.strip() if isinstance(parsed, str) else str(parsed or "").strip()
         text = unwrap_document_source(text)
         text = drop_echoed_request(text, request_text)
+        if report:
+            # Evidence ids are the loop's internal bookkeeping; the reader
+            # gets the verified URL list the system appends instead.
+            text = _strip_evidence_ids(text)
         if text:
             break
     return text
@@ -2821,6 +3533,7 @@ __all__ = [
     "SURVEY_ANSWER_SYSTEM",
     "ControllerResult",
     "CoverageAssessment",
+    "IterTurn",
     "MAX_FETCHES",
     "MAX_FETCHES_ARTIFACT",
     "MAX_FETCHES_COMPACT",
@@ -2837,11 +3550,13 @@ __all__ = [
     "UrlSelection",
     "acquire_web_evidence",
     "answer_from_evidence",
+    "deep_research_mode",
     "evidence_has_figures",
     "evidence_looks_on_topic",
     "evidence_needs_refine",
     "fact_seed_query",
     "format_evidence_prompt",
+    "format_report_prompt",
     "handoff_from_evidence",
     "is_successful_fetch",
     "recover_model",

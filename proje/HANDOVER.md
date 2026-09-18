@@ -567,7 +567,7 @@ web_search → AgentSearch :3939 (açıksa) → SearXNG
 web_read  → crawl4ai_engine.py   (SSRF kontrolü: web_security.py)
 ```
 
-Deep research açı tabanını yükseltir (`MIN_PLAN_ANGLES_DEEP` vb.). Kanıt bütçesi
+Deep research açı tabanını yükseltir (`MIN_PLAN_ANGLES_DEEP` vb.). `DEEP_RESEARCH_MODE=iter` ile bunun yerine her turda tek bir kaynaklı raporu baştan yazan döngü çalışır (bkz. `docs/web-execution.md`). Kanıt bütçesi
 Document'a gider; derin + çok formatlı işte not kırpılması raporu zayıflatmasın
 diye ayrı tavan vardır.
 
