@@ -367,6 +367,7 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `OUTLOOK_ENABLED` | — | Zamanlanmış sonuçları Outlook'tan e-postayla gönder (Windows + klasik Outlook) |
 | `OUTLOOK_AGENT_ACTION` | — | Sohbette istenen e-posta: `draft` (varsayılan, Outlook'ta taslak) \| `send` |
 | `OUTLOOK_READ_ENABLED` | — | Ajan posta kutusunu okuyabilsin (Gelen Kutusu + Gönderilmiş Öğeler, salt okunur). Varsayılan `false`; `OUTLOOK_ENABLED` de gerekir |
+| `JIRA_ENABLED` / `JIRA_URL` | — | Şirket Jira'sını okuma (salt okunur). Cloud: `JIRA_USERNAME` + `JIRA_API_TOKEN`; Server/DC: `JIRA_PERSONAL_TOKEN` ([`docs/jira.md`](docs/jira.md)) |
 | `SCHEDULING_ENABLED` | — | Zamanlanmış görevler (varsayılan `true`); diğer `SCHEDULE_*` için `.env.example` |
 | `SCHEDULE_DELIVERY_MAX_ATTEMPTS` | — | Gönderilemeyen e-posta için deneme sayısı (varsayılan 10, ~6 saat) |
 | `DOCLING_ENABLE_OCR` | — | Compose'ta `true`; taranmış PDF ve görsel yüklemelerini okur. `false` → taranmış PDF boş, görsel reddedilir |
@@ -531,6 +532,7 @@ FastAPI (backend/main.py)
 | --- | --- |
 | Research Agent | SearXNG/AgentSearch + sayfa açma + kanıt notları |
 | Mail Agent | Outlook posta kutusunu okur (opsiyonel); kanıt toplar, cevabı yazmaz |
+| Jira Agent | Şirket Jira'sında arar, kayıtları okur (opsiyonel, salt okunur); kanıt toplar, cevabı yazmaz |
 | Document Agent | Word/PDF/PPTX/HTML/Excel yazma, şablon doldurma |
 | Coding Agent | Kod; araştırma/belge işi buraya düşmemeli |
 | Assistant | Genel; "bilgisayarımda aç" dahil |
@@ -699,6 +701,7 @@ agent-webapp-langgraph/
 | `stream_protocol.py` | SSE şekli |
 | `outlook.py` | Outlook köprü istemcisi, e-posta gövdesi, posta okuma istemcisi, `/integrations/outlook` |
 | `mail_controller.py` | Posta kutusu fazları: PLAN→SEARCH→SELECT→READ, alıntı çiti, ek indirme |
+| `jira_client.py` / `jira_query.py` / `jira_controller.py` | Jira: REST istemcisi (Cloud + Server/DC), model alanları → JQL, PLAN→SEARCH→SELECT→READ→ANSWER |
 | `scheduling/` | Zamanlanmış görevler: cron, runner, zincirler, izleme, e-posta (`delivery.py`) |
 | `runtime_context.py` | Job context |
 | `golden_prompts.py` | Gerçek kullanıcı cümleleriyle regresyon |
@@ -772,6 +775,7 @@ Backend kök path'lerini dinler; tarayıcı `/api` öneki ekler (nginx/Vite soya
 | GET/POST/PATCH/DELETE | `/scheduled-tasks` | Zamanlanmış görevler, çalıştırma geçmişi (`docs/scheduling.md`) |
 | GET | `/integrations/outlook/status` | E-posta hazır mı (köprü, token, Outlook) |
 | POST | `/integrations/outlook/test` | Test e-postası |
+| GET | `/integrations/jira/status` | Jira bağlı mı (yapılandırma, erişim, kullanıcı); `POST .../recheck` önbelleksiz |
 
 OpenAPI/Swagger: http://127.0.0.1:8001/docs
 
@@ -1126,4 +1130,5 @@ Konu bazlı derin referanslar:
 | [`docs/scheduling.md`](docs/scheduling.md) | Zamanlanmış ve izleme görevleri |
 | [`docs/local-computer.md`](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
 | [`docs/agent-search.md`](docs/agent-search.md) | AgentSearch sidecar |
+| [`docs/jira.md`](docs/jira.md) | Jira okuma: kurulum, VPN, güvenlik |
 | [`docs/backend-reliability-harness.md`](docs/backend-reliability-harness.md) | Deterministik güvenilirlik harness'ı |

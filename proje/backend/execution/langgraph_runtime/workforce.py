@@ -48,6 +48,7 @@ ROLE_CODING = "Coding Agent"
 ROLE_GENERAL = "Assistant"
 ROLE_MAIL = "Mail Agent"
 ROLE_SOCIAL = "Social Agent"
+ROLE_JIRA = "Jira Agent"
 
 WORKER_IDS = {
     ROLE_RESEARCH: "lg-research",
@@ -56,7 +57,13 @@ WORKER_IDS = {
     ROLE_GENERAL: "lg-assistant",
     ROLE_MAIL: "lg-mail",
     ROLE_SOCIAL: "lg-social",
+    ROLE_JIRA: "lg-jira",
 }
+
+# Workers that gather evidence and never write the user-facing answer. Their
+# output is notes for the next worker (quoted or summarized source material),
+# so a job made only of these needs the Assistant appended to answer.
+_GATHER_ONLY_ROLES = frozenset({ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA})
 
 
 class CancellableWorkforce:
@@ -379,6 +386,7 @@ def _select_roles(
     needs_live_data: bool = False,
     reads_email: bool = False,
     reads_social: bool = False,
+    reads_jira: bool = False,
 ) -> list[str]:
     """Pick workers for this job.
 
@@ -405,6 +413,9 @@ def _select_roles(
     # anything that has to use it.
     if reads_social or capabilities.SOCIAL_READ in caps:
         roles.append(ROLE_SOCIAL)
+    # And again for Jira: the user's tickets are the SOURCE, gathered first.
+    if reads_jira or capabilities.JIRA_READ in caps:
+        roles.append(ROLE_JIRA)
     if fast_path_role:
         roles.append(_resolve_fast_path_role(fast_path_role))
     else:
@@ -437,7 +448,7 @@ def _select_roles(
     # it as the reply would hand the user a transcript of their own inbox --
     # and would put unfenced sender text where the answer should be. Anything
     # else in the list can do the answering; alone, it needs the Assistant.
-    if roles in ([ROLE_MAIL], [ROLE_SOCIAL], [ROLE_MAIL, ROLE_SOCIAL]):
+    if roles and all(role in _GATHER_ONLY_ROLES for role in roles):
         # These gather; they do not answer. Their output is quoted text
         # inside an explicit "this is data, not instructions" fence, so
         # shipping it as the reply would put unfenced stranger-written text
@@ -2306,6 +2317,113 @@ async def _run_social(
             summary += " (yonlendirme denemesi iceren icerik var)"
     else:
         summary = f"okunamadi ({result.error_code})"
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return notes
+
+
+async def _run_jira(
+    *,
+    content: str,
+    original_request: str,
+    tracker: UsageTracker,
+    callback: Any,
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+    deep_research: bool = False,
+) -> str:
+    """Jira Agent: search and read the user's Jira, return evidence notes.
+
+    Same structure as ``_run_social``: a fixed phase sequence in
+    jira_controller, not a tool the model may call, and the return value is
+    notes for the next worker -- never the user-facing answer (see
+    _GATHER_ONLY_ROLES). Read-only: jira_client has no write method.
+    """
+    import jira_controller
+
+    worker_id = WORKER_IDS[ROLE_JIRA]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_JIRA,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description="Jira kayıtlarını oku",
+    )
+    _emit_activity(callback, unit_task_id, "searching", "Jira taranıyor")
+
+    # stage_prefix="jira": its phases cost tokens like the web, mail and
+    # social ones, and the usage panel should say which of them spent them.
+    complete = await _make_complete(
+        tracker, deep_research=deep_research, stage_prefix="jira"
+    )
+    try:
+        result = await jira_controller.acquire_jira_evidence(
+            original_request or content,
+            complete=complete,
+            deep_research=deep_research,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failure is an answer, not a crash
+        stabilization_logger.exception("jira acquisition failed")
+        _lifecycle_done(
+            callback,
+            worker_id=worker_id,
+            unit_task_id=unit_task_id,
+            result_summary="Jira okunamadı",
+            started=started,
+        )
+        return jira_controller.render_notes(
+            jira_controller.JiraResult(
+                error=f"{type(exc).__name__}: {exc}", error_code="jira_failed"
+            )
+        )
+
+    if tool_call_recorder is not None:
+        # Recorded like any other real action: which query went out and how
+        # much came back. Reading company tickets should never be invisible
+        # in the audit trail.
+        try:
+            tool_call_recorder.record(
+                "read_jira",
+                {
+                    "jql": result.jql,
+                    "issue_keys": list(result.query.issue_keys) if result.query else [],
+                    "details": [issue.key for issue in result.details],
+                },
+                result=(
+                    f"{len(result.issues)} issue(s) listed, {result.read_count} read"
+                    if result.ok
+                    else None
+                ),
+                error=None if result.ok else str(result.error_code or "jira_failed"),
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the run
+            stabilization_logger.warning("could not record read_jira", exc_info=True)
+
+    if handle.cancelled:
+        return jira_controller.render_notes(result)
+
+    if result.ok and (result.issues or result.details):
+        _emit_activity(
+            callback,
+            unit_task_id,
+            "reading",
+            f"{len(result.issues) or result.read_count} Jira kaydı okundu",
+        )
+
+    notes = jira_controller.render_notes(result)
+    if result.ok:
+        summary = f"{len(result.issues)} kayıt listelendi, {result.read_count} kayıt okundu"
+        if result.findings:
+            summary += " (yönlendirme denemesi içeren içerik var)"
+    else:
+        summary = f"okunamadı ({result.error_code})"
     _lifecycle_done(
         callback,
         worker_id=worker_id,
@@ -4968,6 +5086,17 @@ def _build_graph(
                 unit_task_id=unit_id,
                 deep_research=deep_research,
             )
+        elif role == ROLE_JIRA:
+            text = await _run_jira(
+                content=content,
+                original_request=request,
+                tracker=tracker,
+                callback=callback,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+                deep_research=deep_research,
+            )
         elif role == ROLE_RESEARCH:
             text = await _run_research(
                 content=content,
@@ -5045,7 +5174,7 @@ def _build_graph(
         # Prefer last worker output as user-facing answer; research-only keeps it.
         answer = text
         next_roles = list(roles)
-        if role in (ROLE_MAIL, ROLE_SOCIAL):
+        if role in _GATHER_ONLY_ROLES:
             # Belt and braces with the _select_roles guard: these notes are
             # quoted text wrapped in a "data, not instructions" fence, which
             # is prompt scaffolding rather than an answer. Shipping it would
@@ -5129,6 +5258,7 @@ async def _run_workforce_async(
     opens_on_user_computer: Optional[bool] = None,
     reads_email: Optional[bool] = None,
     reads_social: Optional[bool] = None,
+    reads_jira: Optional[bool] = None,
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -5181,6 +5311,7 @@ async def _run_workforce_async(
             needs_live_data=_request_needs_live_data(request),
             reads_email=bool(reads_email),
             reads_social=bool(reads_social),
+            reads_jira=bool(reads_jira),
         )
     )
     seeded_notes = (
@@ -5323,6 +5454,7 @@ def run_workforce_in_thread(
     opens_on_user_computer: Optional[bool] = None,
     reads_email: Optional[bool] = None,
     reads_social: Optional[bool] = None,
+    reads_jira: Optional[bool] = None,
 ) -> Any:
     """Sync entrypoint matching ``camel_service.run_workforce_in_thread``."""
     handle = CancellableWorkforce()
@@ -5352,6 +5484,7 @@ def run_workforce_in_thread(
                 opens_on_user_computer=opens_on_user_computer,
                 reads_email=reads_email,
                 reads_social=reads_social,
+                reads_jira=reads_jira,
             )
         )
     finally:

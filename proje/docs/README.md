@@ -19,6 +19,7 @@ bazlı derinleştirmesidir.
 | [local-computer.md](local-computer.md) | "Bilgisayarımda aç" host köprüsü |
 | [outlook.md](outlook.md) | Outlook ile e-posta: zamanlanmış görev sonuçları |
 | [social-reach.md](social-reach.md) | Reddit okuma: kurulum, çerez yenileme, güvenlik |
+| [jira.md](jira.md) | Jira okuma: kurulum (Cloud / Server), ne sorulabilir, VPN, güvenlik |
 | [openbot-integration.md](openbot-integration.md) | OpenBot / AG-UI entegrasyonu |
 | [backend-reliability-harness.md](backend-reliability-harness.md) | Deterministic reliability harness |
 

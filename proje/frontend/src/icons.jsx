@@ -62,6 +62,15 @@ export const DiscussionIcon = (p) => (
   </svg>
 )
 
+// A task clipboard: the Jira Agent reads tickets.
+export const TaskIcon = (p) => (
+  <svg {...base} {...p}>
+    <rect x="5" y="4" width="14" height="17" rx="2" />
+    <path d="M9 4.5V3h6v1.5" />
+    <path d="m9 13 2 2 4-4" />
+  </svg>
+)
+
 export const BotIcon = (p) => (
   <svg {...base} {...p}>
     <rect x="5" y="9" width="14" height="11" rx="3" />

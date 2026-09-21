@@ -5,6 +5,7 @@ import {
   DiscussionIcon,
   MailIcon,
   SearchIcon,
+  TaskIcon,
 } from './icons.jsx'
 
 const BUILT_IN_AGENT_ICONS = new Map([
@@ -18,6 +19,8 @@ const BUILT_IN_AGENT_ICONS = new Map([
   ['mail', MailIcon],
   ['social agent', DiscussionIcon],
   ['social', DiscussionIcon],
+  ['jira agent', TaskIcon],
+  ['jira', TaskIcon],
 ])
 
 export function iconForAgent(name) {

@@ -68,6 +68,9 @@ const STAGE_LABELS = {
   mail_select: 'Mail · message selection',
   social_plan: 'Reddit · search plan',
   social_select: 'Reddit · post selection',
+  jira_plan: 'Jira · search plan',
+  jira_select: 'Jira · issue selection',
+  jira_answer: 'Jira · issue summary',
   artifact_intent: 'Artifact intent',
 }
 

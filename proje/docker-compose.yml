@@ -157,6 +157,19 @@ services:
       # several jobs reading at once looks, from Reddit's side, like one
       # account behaving abnormally -- which is how an account gets locked.
       SOCIAL_MAX_CONCURRENT: ${SOCIAL_MAX_CONCURRENT:-2}
+      # Reading the company Jira, read-only (backend/jira_client.py,
+      # docs/jira.md). Off unless JIRA_ENABLED and a URL + token are set.
+      # Cloud: JIRA_USERNAME (e-mail) + JIRA_API_TOKEN; Server/DC:
+      # JIRA_PERSONAL_TOKEN. The container reaches Jira through the host's
+      # network, so a VPN-only Jira works while the host's VPN is connected.
+      JIRA_ENABLED: ${JIRA_ENABLED:-false}
+      JIRA_URL: ${JIRA_URL:-}
+      JIRA_DEPLOYMENT: ${JIRA_DEPLOYMENT:-auto}
+      JIRA_USERNAME: ${JIRA_USERNAME:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      JIRA_PERSONAL_TOKEN: ${JIRA_PERSONAL_TOKEN:-}
+      JIRA_CONNECT_TIMEOUT_SECONDS: ${JIRA_CONNECT_TIMEOUT_SECONDS:-5}
+      JIRA_TIMEOUT_SECONDS: ${JIRA_TIMEOUT_SECONDS:-20}
     volumes:
       - backend-data:/data
     # Host ports differ from the Camel stack (8000/8080) so both can run
