@@ -681,3 +681,35 @@ def test_a_failed_answer_falls_back_to_titles_not_to_quotes() -> None:
     # ...without carrying a single quoted body or marker onward.
     assert "gizli_kalmali" not in notes
     assert "<<<ALINTI_" not in notes
+
+
+def test_contaminated_content_silently_loses_the_designed_pdf_renderer() -> None:
+    """Why the brief matters beyond tidiness: it decides which renderer runs.
+
+    document_model.resolve_payload_document fingerprints the Document
+    worker's `content` against the markdown of its own typed blocks. When
+    quoted evidence gets prepended to content the two stop matching, the
+    typed blocks are discarded, and create_pdf_artifact takes the markdown
+    path -- which is reportlab, not the Chromium/CSS design (no cover, no
+    accent headings, plain table headers).
+
+    That is what happened to a live report: its PDF metadata says
+    "Producer: ReportLab PDF Library", and the design was blamed before the
+    contamination was.
+    """
+    import document_model as dm
+
+    blocks = [
+        {"type": "heading", "level": 1, "text": "Rapor"},
+        {"type": "paragraph", "text": "Gövde metni burada."},
+    ]
+    markdown = dm.document_from_blocks("Rapor", blocks).to_markdown()
+    base = {"title": "Rapor", "blocks": blocks, dm.BLOCKS_MARKDOWN_KEY: markdown}
+
+    assert dm.resolve_payload_document(dict(base, content=markdown)) is not None
+
+    poisoned = (
+        "HACKERNEWS KANITI — ALINTIDIR\n<<<ALINTI_BASLANGIC_ab12>>>\n"
+        "[yorum] biri: bir şey\n<<<ALINTI_SONU_ab12>>>\n" + markdown
+    )
+    assert dm.resolve_payload_document(dict(base, content=poisoned)) is None
