@@ -4627,13 +4627,40 @@ async def _run_document_worker(
                 notes_body = _strip_kaynaklar_section(
                     _strip_capability_refusals(notes or "")
                 ).strip()
-                if notes_body and len(body) < len(notes_body) * 0.6:
+                # How thin is "too thin" depends on whether there are typed
+                # blocks to lose. Replacing them does not just swap text: it
+                # breaks the fingerprint in resolve_payload_document, which
+                # discards the blocks, which drops the PDF onto the markdown
+                # writer -- reportlab, with no cover, no accent headings and
+                # plain tables. The design is collateral damage from a
+                # length comparison.
+                #
+                # Measured: a deep run's Document reply came back as 46
+                # typed blocks, 10,614 characters of markdown, against
+                # 18,134 characters of notes. 0.6 put the bar at 10,880, so
+                # a perfectly good report lost by 266 characters and the
+                # user got an undesigned PDF. The ratio also punishes deep
+                # mode structurally -- more notes raise the bar a condensed
+                # write-up has to clear, so the better the gathering, the
+                # likelier the design is thrown away.
+                #
+                # With blocks present the test becomes "did the writer
+                # actually lose the brief", not "is it shorter than the
+                # notes": a low ratio AND an absolute floor. Without blocks
+                # there is no design at stake, so the original 0.6 stands.
+                if payload.get("blocks"):
+                    thinness_floor = min(len(notes_body) * 0.35, 4_000)
+                else:
+                    thinness_floor = len(notes_body) * 0.6
+                if notes_body and len(body) < thinness_floor:
                     if payload.get("blocks"):
                         document_logger.warning(
-                            "document path: write-up too short (%d vs %d notes chars) "
-                            "-> research notes replace it, markdown fallback",
+                            "document path: write-up too short (%d vs %d notes chars, "
+                            "floor %d) -> research notes replace it, markdown fallback "
+                            "(designed renderer lost)",
                             len(body),
                             len(notes_body),
+                            int(thinness_floor),
                         )
                     body = notes_body
                     summary = notes_body[:600]
