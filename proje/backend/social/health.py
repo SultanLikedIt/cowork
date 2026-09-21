@@ -158,6 +158,8 @@ def check(
 
 
 def _probe(platform: Platform, run: Any) -> HealthReport:
+    if platform.transport == "http":
+        return _probe_http(platform, run)
     if not shutil.which(platform.executable):
         return HealthReport(
             platform=platform.name,
@@ -219,3 +221,50 @@ def check_all(*, use_cache: bool = True) -> list[HealthReport]:
 def reset_cache() -> None:
     """For tests, and for an endpoint that wants a fresh answer on demand."""
     _CACHE.clear()
+
+
+def _probe_http(platform: Platform, run: Any) -> HealthReport:
+    """Reachability, for a platform with no credential to check.
+
+    There is nothing to install and nothing to expire here, so the only
+    question is whether the API answers -- which makes this report boring on
+    purpose. It still does a real call rather than returning True: "the
+    network is fine" is exactly the assumption that turns a dead upstream
+    into a mysteriously empty answer.
+    """
+    from .registry import build
+
+    try:
+        probe = build(platform.name, "top", limit=1)
+    except Exception:  # noqa: BLE001 - a broken builder is an unavailable
+        return HealthReport(
+            platform=platform.name,
+            installed=True,
+            detail="Sorgu üretilemedi.",
+        )
+    result = run(probe)
+    if not result.ok and result.error_code == "network":
+        # Observed right after `docker compose up`: the first probe failed
+        # with ConnectionError while DNS was still settling, and a job
+        # starting in that window would have been told the platform was
+        # unavailable without ever trying. One retry, and only for a network
+        # error -- an auth or rate-limit failure is a real answer and
+        # retrying it just spends another request.
+        result = run(probe)
+    if not result.ok:
+        return HealthReport(
+            platform=platform.name,
+            installed=True,
+            authenticated=False,
+            detail=result.detail or "Servise ulaşılamadı.",
+            remedy=platform.setup_hint,
+        )
+    return HealthReport(
+        platform=platform.name,
+        installed=True,
+        # No credential exists, so "authenticated" means "usable" here. The
+        # alternative -- reporting False for a platform that works perfectly
+        # -- would make `ok` useless as the UI's single boolean.
+        authenticated=True,
+        detail="Bağlı (herkese açık API, kimlik gerekmez).",
+    )

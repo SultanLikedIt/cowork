@@ -24,6 +24,8 @@ attacker-controlled text, and it stays that way until
 
 from __future__ import annotations
 
+import html as html_module
+import re
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -111,6 +113,7 @@ def _post_record(post: dict[str, Any], *, comments: tuple[SocialRecord, ...] = (
         created=_iso(post.get("created_utc")),
         channel=_channel(post),
         body=_text(post.get("selftext")),
+        comment_count=_score(post.get("num_comments")),
         comments=comments,
     )
 
@@ -215,9 +218,154 @@ def _walk_comments(
     return out
 
 
-def parse(verb: str, data: Any, *, limit: int = 25) -> list[SocialRecord]:
-    """Dispatch on the verb that produced ``data``."""
+def parse(
+    verb: str, data: Any, *, limit: int = 25, platform: str = "reddit"
+) -> list[SocialRecord]:
+    """Dispatch on the platform and the verb that produced ``data``."""
+    if platform == "hackernews":
+        if verb == "read":
+            record = parse_hn_item(data)
+            return [record] if record else []
+        return parse_hn_search(data, limit=limit)
     if verb == "read":
         record = parse_post(data)
         return [record] if record else []
     return parse_listing(data, limit=limit)
+
+
+# --------------------------------------------------------------------------
+# HackerNews (Algolia API)
+# --------------------------------------------------------------------------
+
+_HN_THREAD = "https://news.ycombinator.com/item?id="
+
+# HN comment bodies are HTML, not markdown -- verified on a live thread where
+# 30 of 98 comments carried markup, with entities double-escaped
+# ("&#x27;", "&#x2F;"). Handing that to a model wastes tokens on angle
+# brackets and reads badly in a quoted block.
+_HN_PARAGRAPH_RE = re.compile(r"</?p\s*/?>", re.IGNORECASE)
+_HN_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_HN_TAG_RE = re.compile(r"<[^>]{0,400}?>")
+
+
+def hn_text(raw: Any) -> str:
+    """HN's HTML comment body as plain text.
+
+    Deliberately small rather than a real parser: these are short comment
+    bodies with a handful of tags, and html_extract's trafilatura path is
+    built for whole pages. Link text is kept and the href dropped -- a URL
+    inside a stranger's comment is not something to put in front of a model
+    as if it were a citation (extract_urls exists for reporting them).
+    """
+    text = str(raw or "")
+    if not text:
+        return ""
+    text = _HN_PARAGRAPH_RE.sub("\n\n", text)
+    text = _HN_BREAK_RE.sub("\n", text)
+    text = _HN_TAG_RE.sub("", text)
+    # Twice: HN escapes entities inside already-escaped text, so one pass
+    # leaves "&#x27;" visible as "&#x27;" in perfectly ordinary comments.
+    text = html_module.unescape(html_module.unescape(text))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _hn_when(item: dict[str, Any]) -> str:
+    """HN gives both an epoch int and an ISO string; prefer the int."""
+    if "created_at_i" in item:
+        return _iso(item.get("created_at_i"))
+    raw = str(item.get("created_at") or "")
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _hn_record(item: dict[str, Any], *, comments: tuple[SocialRecord, ...] = ()) -> SocialRecord:
+    identifier = str(item.get("objectID") or item.get("id") or "")
+    return SocialRecord(
+        platform="hackernews",
+        kind="post",
+        identifier=identifier,
+        title=_text(item.get("title")),
+        author=_text(item.get("author")),
+        # The discussion, not the linked article -- same rule as Reddit's
+        # permalink: the thread is what was read, so the thread is what a
+        # citation must point at.
+        url=f"{_HN_THREAD}{identifier}" if identifier else _text(item.get("url")),
+        score=_score(item.get("points")),
+        created=_hn_when(item),
+        channel="Hacker News",
+        body=hn_text(item.get("story_text") or item.get("text")),
+        comment_count=_score(item.get("num_comments")),
+        comments=comments,
+    )
+
+
+def parse_hn_search(data: Any, *, limit: int = 25) -> list[SocialRecord]:
+    """``search`` / ``top`` -> records. Algolia wraps results in ``hits``."""
+    hits = data.get("hits") if isinstance(data, dict) else None
+    if not isinstance(hits, list):
+        return []
+    records: list[SocialRecord] = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        if not (hit.get("objectID") or hit.get("id")):
+            continue
+        records.append(_hn_record(hit))
+        if len(records) >= limit:
+            break
+    return records
+
+
+def parse_hn_item(data: Any, *, max_comments: int = MAX_COMMENTS_PER_POST) -> Optional[SocialRecord]:
+    """``read`` -> one story with a bounded slice of its comment tree."""
+    if not isinstance(data, dict) or not (data.get("id") or data.get("objectID")):
+        return None
+    comments = _walk_hn(data.get("children"), depth=0, budget=[max_comments])
+    return _hn_record(data, comments=tuple(comments))
+
+
+def _walk_hn(
+    raw: Any, *, depth: int, budget: list[int], parent: str = ""
+) -> list[SocialRecord]:
+    """Flatten HN's recursive children, same shape as the Reddit walker."""
+    if not isinstance(raw, list) or depth > MAX_COMMENT_DEPTH or budget[0] <= 0:
+        return []
+    out: list[SocialRecord] = []
+    for item in raw:
+        if budget[0] <= 0:
+            break
+        if not isinstance(item, dict) or item.get("type") == "story":
+            continue
+        body = hn_text(item.get("text"))
+        author = _text(item.get("author"))
+        # A deleted comment arrives with both null; quoting it would put an
+        # empty attributed block in front of the model.
+        if not body and not author:
+            continue
+        budget[0] -= 1
+        out.append(
+            SocialRecord(
+                platform="hackernews",
+                kind="comment",
+                identifier=str(item.get("id") or ""),
+                author=author or "(silinmiş)",
+                score=_score(item.get("points")),
+                created=_hn_when(item),
+                body=body,
+                title=f"↳ {parent}" if parent else "",
+            )
+        )
+        out.extend(
+            _walk_hn(
+                item.get("children"),
+                depth=depth + 1,
+                budget=budget,
+                parent=author or "üst yorum",
+            )
+        )
+    return out

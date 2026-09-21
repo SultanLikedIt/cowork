@@ -170,3 +170,33 @@ def test_the_report_shape_is_serializable_for_the_api() -> None:
     assert payload["ok"] is True
     assert payload["cookie_age_days"] == 6.4
     assert payload["stale_soon"] is True
+
+
+def test_a_transient_network_error_is_retried_once() -> None:
+    """Observed right after `docker compose up`: the first probe failed with
+    ConnectionError while DNS was still settling, and any job starting in
+    that window would have been told the platform was unavailable."""
+    calls: list[int] = []
+
+    def flaky(command):
+        calls.append(1)
+        if len(calls) == 1:
+            return RunResult(ok=False, error_code="network", detail="ConnectionError")
+        return RunResult(ok=True, data={"hits": []})
+
+    report = health.check("hackernews", run=flaky)
+    assert report.ok
+    assert len(calls) == 2
+
+
+def test_an_auth_failure_is_not_retried() -> None:
+    """A real answer; retrying it just spends another request."""
+    calls: list[int] = []
+
+    def failing(command):
+        calls.append(1)
+        return RunResult(ok=False, error_code="rate_limited", detail="429")
+
+    report = health.check("hackernews", run=failing)
+    assert not report.ok
+    assert len(calls) == 1

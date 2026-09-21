@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from .registry import Command
+from .registry import Command, HttpCall
 
 stabilization_logger = logging.getLogger("agent_webapp.stabilization")
 
@@ -275,8 +275,17 @@ def _classify(stderr: str, exit_code: int, *, upstream_code: str = "") -> tuple[
     return ("failed", f"Komut {exit_code} koduyla başarısız oldu.")
 
 
-def run(command: Command, *, home: Optional[Path] = None) -> RunResult:
-    """Execute one validated command. Never raises for an expected failure."""
+def run(command: Any, *, home: Optional[Path] = None) -> RunResult:
+    """Execute one validated read. Never raises for an expected failure.
+
+    Two transports, one result type: a ``Command`` runs an upstream binary
+    under the scrubbed environment below, an ``HttpCall`` calls a public API
+    directly. Everything downstream -- the controller, the parser, the
+    evidence block -- is written against ``RunResult`` and does not know
+    which one served it.
+    """
+    if isinstance(command, HttpCall):
+        return _run_http(command)
     started = time.monotonic()
 
     if not shutil.which(command.executable):
@@ -435,4 +444,115 @@ def _envelope(stdout: str, command: Command, duration_ms: int) -> RunResult:
             duration_ms=duration_ms,
         )
 
+    return RunResult(ok=True, data=payload, duration_ms=duration_ms)
+
+
+# --------------------------------------------------------------------------
+# HTTP transport
+# --------------------------------------------------------------------------
+
+# A public API still needs a ceiling: one popular HN thread came back at
+# 123KB, and a pathological one is far larger. Smaller than the subprocess
+# cap because there is no comment tree on earth worth 8MB of JSON.
+MAX_HTTP_BYTES = 4 * 1024 * 1024
+
+# Identifies this client to the API. Politeness, and it is what lets an
+# operator on the other end tell a well-behaved reader from a scraper.
+_USER_AGENT = "agent-webapp/1.0 (+social read; contact via deployment owner)"
+
+
+def _run_http(call: HttpCall) -> RunResult:
+    """GET one public API URL, bounded in time and size."""
+    import requests
+
+    started = time.monotonic()
+    if not _CALL_SLOTS.acquire(timeout=MAX_QUEUE_WAIT_SECONDS):
+        return RunResult(
+            ok=False,
+            error_code="busy",
+            detail=(
+                f"Eşzamanlı sosyal medya okuma sınırı ({MAX_CONCURRENT_CALLS}) "
+                "dolu ve sıra açılmadı."
+            ),
+        )
+    try:
+        with requests.get(
+            call.url,
+            timeout=call.timeout_seconds,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+            # No redirect following: the URL is one this module built against
+            # a pinned host, so a redirect can only take it somewhere that
+            # host chose -- which is exactly the hop worth not taking
+            # silently.
+            allow_redirects=False,
+            stream=True,
+        ) as response:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            if response.status_code >= 400:
+                code, detail = _classify("", response.status_code)
+                if response.status_code == 404:
+                    code, detail = "not_found", "Aranan içerik bulunamadı."
+                elif response.status_code == 429:
+                    code, detail = (
+                        "rate_limited",
+                        "Platform istekleri sınırladı. Bir süre sonra tekrar denenmeli.",
+                    )
+                return RunResult(
+                    ok=False,
+                    error_code=code,
+                    detail=f"{detail} (HTTP {response.status_code})",
+                    duration_ms=duration_ms,
+                )
+            if response.status_code >= 300:
+                return RunResult(
+                    ok=False,
+                    error_code="failed",
+                    detail=f"Beklenmeyen yönlendirme (HTTP {response.status_code}).",
+                    duration_ms=duration_ms,
+                )
+
+            # Read with a cap rather than .json(): requests would otherwise
+            # buffer the whole body first, which is the bound we are trying
+            # to impose.
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(64 * 1024):
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_HTTP_BYTES:
+                    return RunResult(
+                        ok=False,
+                        error_code="too_large",
+                        detail="Yanıt çok büyük olduğu için okunamadı.",
+                        duration_ms=duration_ms,
+                    )
+            raw = b"".join(chunks)
+    except requests.exceptions.Timeout:
+        return RunResult(
+            ok=False,
+            error_code="timeout",
+            detail=f"{call.timeout_seconds} saniyede yanıt gelmedi.",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except requests.exceptions.RequestException as exc:
+        return RunResult(
+            ok=False,
+            error_code="network",
+            detail=f"Platforma ulaşılamadı ({type(exc).__name__}).",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    finally:
+        _CALL_SLOTS.release()
+
+    duration_ms = int((time.monotonic() - started) * 1000)
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except (json.JSONDecodeError, ValueError):
+        stabilization_logger.warning("social: %s returned non-JSON", call.platform)
+        return RunResult(
+            ok=False,
+            error_code="bad_output",
+            detail="Servis beklenen JSON biçiminde yanıt vermedi.",
+            duration_ms=duration_ms,
+        )
     return RunResult(ok=True, data=payload, duration_ms=duration_ms)

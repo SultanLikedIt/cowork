@@ -1,11 +1,28 @@
-# Reddit okuma (social read)
+# Sosyal okuma (Reddit + HackerNews)
 
-Ajanın **herkese açık Reddit tartışmalarını** okuyup cevaba kanıt olarak
-katmasını sağlar. "Bu telefon hakkında ne diyorlar", "r/LocalLLaMA'da neler
+Ajanın **herkese açık tartışmaları** okuyup cevaba kanıt olarak katmasını
+sağlar. "Bu telefon hakkında ne diyorlar", "r/LocalLLaMA'da neler
 konuşuluyor", "kullanıcı şikayetlerini PDF yap" gibi istekler bu yolu kullanır.
 
 **Sadece okur.** Oy verme, yorum yazma, abone olma, mesaj gönderme yoktur ve
-bunların komutu üretilemez (`backend/social/registry.py`, `REDDIT.verbs`).
+bunların komutu üretilemez (`backend/social/registry.py`, `*.verbs`).
+
+## İki platform
+
+| | **Reddit** | **HackerNews** |
+| --- | --- | --- |
+| Kurulum | Çerez gerekir (aşağıda) | **Yok** — herkese açık API |
+| Bakım | ~7 günde bir çerez yenileme | Yok |
+| Hesap riski | Var (ToS) | Yok |
+| Ne için | Tüketici ürünleri, oyunlar, hobiler, ülke/dil toplulukları, kişisel deneyim | Yazılım, altyapı, startup, AI/ML, teknoloji haberleri |
+| Nasıl çalışır | `rdt-cli` alt süreci | Doğrudan HTTP (Algolia HN API) |
+
+Hangisinin kullanılacağına PLAN fazı karar verir (`social_controller.
+PLAN_SYSTEM_PROMPT`): teknik konularda HackerNews tercih edilir, kullanıcı
+adını anarsa (`HN`, `Hacker News`, `r/...`) o platform seçilir.
+
+**HackerNews için hiçbir şey yapmanız gerekmez** — kutudan çalışır. Aşağıdaki
+kurulum adımları yalnızca Reddit içindir.
 
 ---
 
@@ -171,7 +188,7 @@ print(json.dumps(json.loads(row[0]), indent=2, ensure_ascii=False))"
 
 ## Sınırlar
 
-- **Sadece Reddit.** Facebook/Instagram/X yok: tek çalışan yolları masaüstünde
+- **Facebook/Instagram/X yok**: tek çalışan yolları masaüstünde
   açık ve giriş yapılmış bir Chrome gerektiriyor (OpenCLI), kap içinde
   mümkün değil. Bunlar için `scripts/local_computer_bridge.py` genişletilmeli.
 - `rdt-cli` resmî değil ve upstream 2026-03'ten beri güncellenmiyor; sabit bir
@@ -179,3 +196,7 @@ print(json.dumps(json.loads(row[0]), indent=2, ensure_ascii=False))"
   `/integrations/social/status` bunu görünür kılar, iş sessizce yanlış cevap
   vermez.
 - Arama **anahtar kelime** tabanlıdır, anlamsal değil.
+- HackerNews'te alt topluluk (subreddit) kavramı yoktur; "r/..." isteği
+  HackerNews'e yönlendirilirse aramaya çevrilir.
+- Yorumu olmayan başlıklar geri plana alınır: bir konuda hiç tartışma yoksa
+  başlık listesi soruya cevap vermez (`_prefer_discussed`).

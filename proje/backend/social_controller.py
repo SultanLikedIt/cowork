@@ -71,6 +71,7 @@ BLOCK_CHARS_DEEP = 40_000
 class SocialQuery(BaseModel):
     """What the user's request asks of the platform."""
 
+    platform: str = "reddit"  # reddit | hackernews
     mode: str = "search"  # search | subreddit | popular
     query: str = ""
     subreddit: str = ""
@@ -90,6 +91,9 @@ class SocialResult:
     query: Optional[SocialQuery] = None
     platform: str = "reddit"
     findings: tuple[untrusted_content.Finding, ...] = ()
+    # Another platform that IS usable, when the chosen one is not. Reported,
+    # never substituted -- see acquire_social_evidence.
+    alternative: str = ""
     error: Optional[str] = None
     error_code: Optional[str] = None
     remedy: str = ""
@@ -100,11 +104,21 @@ class SocialResult:
 
 
 PLAN_SYSTEM_PROMPT = (
-    "You turn ONE user request (any language, usually Turkish) into a Reddit "
-    "lookup. Respond with JSON only:\n"
-    '{"mode": "search" | "subreddit" | "popular", "query": "", '
+    "You turn ONE user request (any language, usually Turkish) into a lookup "
+    "on Reddit or HackerNews. Respond with JSON only:\n"
+    '{"platform": "reddit" | "hackernews", '
+    '"mode": "search" | "subreddit" | "popular", "query": "", '
     '"subreddit": "", "sort": "", "time": ""}\n\n'
     "Rules:\n"
+    "- platform 'hackernews' for software engineering, startups, programming "
+    "languages, infrastructure, AI/ML research and tech industry news: HN "
+    "discussion on those is higher signal, and it needs no login. Use it "
+    "whenever the user names Hacker News or HN.\n"
+    "- platform 'reddit' for consumer products, games, hobbies, country- or "
+    "language-specific communities, personal experience, and anything the "
+    "user asks about a named subreddit.\n"
+    "- When the user names neither and the topic is technical, prefer "
+    "'hackernews'.\n"
     "- mode 'search': the user asks what people say about a TOPIC. Put "
     "English keywords in `query` -- Reddit is mostly English, and a Turkish "
     "query returns nothing.\n"
@@ -137,8 +151,16 @@ SELECT_SYSTEM_PROMPT = (
 def _normalize_query(raw: Any) -> SocialQuery:
     if not isinstance(raw, SocialQuery):
         return SocialQuery()
+    platform = str(raw.platform or "reddit").strip().lower()
+    if platform not in registry.PLATFORMS:
+        platform = "reddit"
     mode = str(raw.mode or "search").strip().lower()
     if mode not in {"search", "subreddit", "popular"}:
+        mode = "search"
+    # HackerNews has no per-community browsing: there is one front page and
+    # one index. A "subreddit" request aimed at it is a category error by the
+    # classifier, and searching is the closest honest answer.
+    if platform == "hackernews" and mode == "subreddit":
         mode = "search"
     sort = str(raw.sort or "").strip().lower()[:20]
     window = str(raw.time or "").strip().lower()[:20]
@@ -151,6 +173,7 @@ def _normalize_query(raw: Any) -> SocialQuery:
     if sort == "top" and not window:
         window = "year"
     return SocialQuery(
+        platform=platform,
         mode=mode,
         query=str(raw.query or "").strip()[:registry.MAX_QUERY_CHARS],
         subreddit=str(raw.subreddit or "").strip()[:100],
@@ -189,11 +212,35 @@ def _headers_block(records: Sequence[registry.SocialRecord]) -> str:
         author = untrusted_content.clean(record.author, max_chars=60).text
         channel = untrusted_content.clean(record.channel, max_chars=60).text
         score = record.score if record.score is not None else "?"
+        comments = record.comment_count if record.comment_count is not None else "?"
         lines.append(
             f"{number}. [{channel}] {title}\n"
-            f"   {author} · puan {score} · {record.created}"
+            f"   {author} · puan {score} · {comments} yorum · {record.created}"
         )
     return "\n".join(lines)
+
+
+def _prefer_discussed(
+    records: Sequence[registry.SocialRecord], *, limit: int
+) -> list[registry.SocialRecord]:
+    """Put threads that actually have replies in front of ones that do not.
+
+    Observed on a live HackerNews run: a relevance search for "local llm
+    hardware" returned fresh Show HN link posts, two were opened, and the
+    whole evidence block came back with one comment and an empty body. The
+    titles matched the query perfectly and answered nothing, because nobody
+    had replied yet.
+
+    Ordering rather than filtering: when a topic genuinely has no discussion
+    anywhere, an empty result is worse than a thin one, and the relative
+    order within each group is left alone so the platform's own ranking
+    still decides among equals.
+    """
+    discussed = [r for r in records if (r.comment_count or 0) > 0]
+    quiet = [r for r in records if (r.comment_count or 0) <= 0]
+    if len(discussed) >= limit:
+        return discussed
+    return discussed + quiet
 
 
 async def select_posts(
@@ -235,7 +282,13 @@ async def select_posts(
     return picked or list(records[:limit])
 
 
-def _build(query: SocialQuery, *, limit: int) -> registry.Command:
+def _build(query: SocialQuery, *, limit: int) -> Any:
+    if query.platform == "hackernews":
+        if query.mode == "popular":
+            return registry.build("hackernews", "top", limit=limit)
+        return registry.build(
+            "hackernews", "search", query=query.query, limit=limit, sort=query.sort
+        )
     if query.mode == "subreddit" and query.subreddit:
         return registry.build(
             "reddit",
@@ -266,20 +319,42 @@ async def acquire_social_evidence(
     real subprocess runner and doctor.
     """
     do_run = execute or (lambda command: asyncio.to_thread(runner.run, command))
-    do_health = check_health or (lambda: asyncio.to_thread(health.check, "reddit"))
+    do_health = check_health or (
+        lambda name: asyncio.to_thread(health.check, name)
+    )
 
-    # Checked before anything is planned: an expired cookie is the single
-    # most likely failure, it costs an LLM call to discover the slow way,
-    # and the remedy is something only the user can carry out.
-    report = await do_health()
+    # PLAN runs before the health check now, which reverses the original
+    # order for a reason: with more than one platform, there is nothing to
+    # check until the plan says which one. The probe is cached, so the cost
+    # is one LLM call spent discovering an expired cookie -- and in exchange
+    # the failure message can name the platform the user actually wanted.
+    query = await plan_query(request_text, complete=complete)
+
+    report = await do_health(query.platform)
     if not report.ok:
+        # Deliberately not switching platforms automatically. If the user
+        # asked what Reddit says, answering from HackerNews instead is the
+        # wrong answer delivered confidently; naming the working alternative
+        # lets the next worker say so honestly.
+        alternative = ""
+        for other in registry.PLATFORMS:
+            if other == query.platform:
+                continue
+            try:
+                if (await do_health(other)).ok:
+                    alternative = other
+                    break
+            except Exception:  # noqa: BLE001 - a failed probe is just no hint
+                continue
         return SocialResult(
-            error=report.detail or "Reddit okunamıyor.",
+            platform=query.platform,
+            query=query,
+            error=report.detail or f"{query.platform} okunamıyor.",
             error_code="unavailable",
             remedy=report.remedy,
+            alternative=alternative,
         )
 
-    query = await plan_query(request_text, complete=complete)
     try:
         command = _build(query, limit=MAX_SEARCH_RESULTS)
     except registry.ArgumentError as exc:
@@ -294,12 +369,19 @@ async def acquire_social_evidence(
             remedy=report.remedy if result.needs_setup else "",
         )
 
-    found = parse.parse(command.verb, result.data, limit=MAX_SEARCH_RESULTS)
+    found = parse.parse(
+        command.verb, result.data, limit=MAX_SEARCH_RESULTS, platform=query.platform
+    )
     if not found:
         return SocialResult(query=query, searched=0, records=[])
 
     limit = MAX_READ_POSTS_DEEP if deep_research else MAX_READ_POSTS
-    chosen = await select_posts(found, request_text, complete=complete, limit=limit)
+    chosen = await select_posts(
+        _prefer_discussed(found, limit=limit),
+        request_text,
+        complete=complete,
+        limit=limit,
+    )
 
     comment_budget = MAX_COMMENTS_DEEP if deep_research else MAX_COMMENTS
     opened: list[registry.SocialRecord] = []
@@ -308,7 +390,7 @@ async def acquire_social_evidence(
             continue
         try:
             read_command = registry.build(
-                "reddit",
+                query.platform,
                 "read",
                 post_id=record.identifier,
                 comment_limit=comment_budget,
@@ -327,12 +409,33 @@ async def acquire_social_evidence(
             )
             opened.append(record)
             continue
-        full = parse.parse_post(read_result.data, max_comments=comment_budget)
-        opened.append(full or record)
+        opened_records = parse.parse(
+            "read", read_result.data, platform=query.platform
+        )
+        if not opened_records:
+            opened.append(record)
+            continue
+        full = opened_records[0]
+        # Carry over what only the search result knew. HackerNews' item
+        # endpoint has no num_comments field at all (verified against its
+        # own key list), so without this the opened record reports "None
+        # yorum" for a thread whose count the run already had in hand.
+        if full.comment_count is None and record.comment_count is not None:
+            import dataclasses
+
+            full = dataclasses.replace(full, comment_count=record.comment_count)
+        opened.append(full)
 
     return SocialResult(
-        records=opened, searched=len(found), query=query, deep=deep_research
+        records=opened,
+        searched=len(found),
+        query=query,
+        deep=deep_research,
+        platform=query.platform,
     )
+
+
+PLATFORM_LABELS = {"reddit": "REDDIT", "hackernews": "HACKERNEWS"}
 
 
 def render_notes(result: SocialResult, *, request_text: str = "") -> str:
@@ -341,14 +444,22 @@ def render_notes(result: SocialResult, *, request_text: str = "") -> str:
     Everything between the markers was written by strangers; the block says
     so, above and below, and the marker itself is unguessable.
     """
+    label = PLATFORM_LABELS.get(result.platform, result.platform.upper())
     if not result.ok:
         lines = [
-            "REDDIT OKUNAMADI",
+            f"{label} OKUNAMADI",
             f"Sebep: {result.error}",
-            "Kullanıcıya bunu açıkça söyle; Reddit içeriği varmış gibi cevap yazma.",
+            f"Kullanıcıya bunu açıkça söyle; {label} içeriği varmış gibi cevap yazma.",
         ]
         if result.remedy:
             lines.append(f"Çözüm: {result.remedy}")
+        if result.alternative:
+            other = PLATFORM_LABELS.get(result.alternative, result.alternative)
+            lines.append(
+                f"NOT: {other} şu anda kullanılabilir durumda. Kullanıcı isterse "
+                "oradan bakılabileceğini söyleyebilirsin; kendiliğinden oradan "
+                "cevap üretme."
+            )
         return "\n".join(lines)
 
     if not result.records:
@@ -359,7 +470,7 @@ def render_notes(result: SocialResult, *, request_text: str = "") -> str:
             elif result.query.query:
                 scope = f" ('{result.query.query}')"
         return (
-            f"REDDIT: eşleşen gönderi bulunamadı{scope}.\n"
+            f"{label}: eşleşen gönderi bulunamadı{scope}.\n"
             "Kullanıcıya hiçbir gönderi bulunamadığını söyle; içerik uydurma."
         )
 
@@ -371,7 +482,7 @@ def render_notes(result: SocialResult, *, request_text: str = "") -> str:
             )
             for record in result.records
         ],
-        label="REDDIT KANITI",
+        label=f"{label} KANITI",
         summary=(
             f"Okunan gönderi: {len(result.records)} "
             f"(taranan sonuç: {result.searched}, alıntılanan yorum: {comment_count})."

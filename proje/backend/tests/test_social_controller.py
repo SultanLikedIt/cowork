@@ -80,9 +80,9 @@ class _Runner:
 
 
 def _healthy():
-    async def check():
+    async def check(platform="reddit"):
         return health.HealthReport(
-            platform="reddit", installed=True, authenticated=True, username="u/test"
+            platform=platform, installed=True, authenticated=True, username="u/test"
         )
 
     return check
@@ -182,11 +182,17 @@ def test_an_unreadable_post_degrades_to_its_search_result() -> None:
 # --- failure paths ----------------------------------------------------------
 
 
-def test_an_expired_cookie_is_reported_before_any_model_call() -> None:
-    """The likeliest failure, and the one only the user can fix."""
+def test_an_expired_cookie_is_reported_before_any_upstream_call() -> None:
+    """The likeliest failure, and the one only the user can fix.
+
+    The health check used to run before PLAN, so no model call was spent at
+    all. With two platforms there is nothing to check until PLAN says which
+    one, so the order reversed deliberately: one plan call, then the probe,
+    and still not a single upstream request against a rate-limited account.
+    """
     seen: list = []
 
-    async def unhealthy():
+    async def unhealthy(platform="reddit"):
         return health.HealthReport(
             platform="reddit",
             installed=True,
@@ -209,7 +215,9 @@ def test_an_expired_cookie_is_reported_before_any_model_call() -> None:
     assert not result.ok
     assert result.error_code == "unavailable"
     assert result.remedy == "Çerezi yenileyin."
-    assert seen == []  # not one LLM call was spent to discover this
+    # Only the plan call; SELECT never runs because nothing was fetched, and
+    # `never_called` proves no upstream request was made.
+    assert [phase for phase, _ in seen] == ["plan"]
     assert "Çözüm: Çerezi yenileyin." in sc.render_notes(result)
 
 
@@ -480,3 +488,64 @@ def test_every_comment_that_was_read_survives_into_the_notes(deep: bool) -> None
     for i in range(comments):
         assert f"yorum{i}" in notes, f"comment {i} was cut from the notes"
     assert "blok sınırı nedeniyle atlandı" not in notes
+
+
+def test_threads_with_discussion_are_preferred_over_silent_ones() -> None:
+    """Found by running it: a relevance search for "local llm hardware" on
+    HackerNews returned fresh Show HN link posts, and the evidence block came
+    back with one comment and an empty body. The titles matched perfectly and
+    answered nothing, because nobody had replied."""
+    quiet = registry.SocialRecord(
+        platform="reddit", kind="post", identifier="q1", title="Sessiz", comment_count=0
+    )
+    busy = registry.SocialRecord(
+        platform="reddit", kind="post", identifier="b1", title="Tartışmalı", comment_count=48
+    )
+    ordered = sc._prefer_discussed([quiet, busy], limit=1)
+    assert [r.identifier for r in ordered] == ["b1"]
+
+
+def test_quiet_threads_are_still_offered_when_there_is_nothing_else() -> None:
+    """An empty result is worse than a thin one."""
+    quiet = [
+        registry.SocialRecord(platform="reddit", kind="post", identifier=f"q{i}", comment_count=0)
+        for i in range(3)
+    ]
+    assert len(sc._prefer_discussed(quiet, limit=3)) == 3
+
+
+def test_the_selection_prompt_shows_comment_counts() -> None:
+    """The prompt tells the model to prefer discussion; without the number
+    in front of it, that instruction is unactionable."""
+    record = registry.SocialRecord(
+        platform="reddit", kind="post", title="Başlık", comment_count=17, score=3
+    )
+    assert "17 yorum" in sc._headers_block([record])
+
+
+def test_the_comment_count_survives_opening_a_post() -> None:
+    """HackerNews' item endpoint has no num_comments field, so the count the
+    search already knew would otherwise be thrown away on open."""
+    listing = {
+        "hits": [
+            {"objectID": "1", "title": "Tartışma", "author": "a", "points": 5,
+             "num_comments": 42, "created_at_i": 1746543742}
+        ]
+    }
+    item = {"id": 1, "type": "story", "title": "Tartışma", "author": "a",
+            "points": 5, "created_at_i": 1746543742, "children": []}
+
+    class HnRunner:
+        async def __call__(self, command):
+            from social.runner import RunResult
+            return RunResult(ok=True, data=item if command.verb == "read" else listing)
+
+    result = _run(
+        sc.acquire_social_evidence(
+            "x",
+            complete=_completer(plan={"platform": "hackernews", "query": "x"}),
+            execute=HnRunner(),
+            check_health=_healthy(),
+        )
+    )
+    assert result.records[0].comment_count == 42

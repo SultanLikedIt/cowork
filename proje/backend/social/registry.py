@@ -170,12 +170,39 @@ def _choice(value: Any, allowed: tuple[str, ...], *, default: str) -> str:
 
 
 @dataclass(frozen=True)
+class HttpCall:
+    """One validated HTTP read, for platforms with a real public API.
+
+    The counterpart to ``Command``. Reddit needs a logged-in CLI because it
+    has no anonymous access; HackerNews publishes everything over HTTP with
+    no credential at all, and shelling out to a scraper for it would add a
+    dependency, a failure mode and a subprocess for nothing.
+
+    The host is fixed by the builder and never comes from a parameter, so
+    there is no SSRF surface here: values are query-string only, and
+    urlencode is what keeps them there.
+    """
+
+    platform: str
+    verb: str
+    url: str
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+
+    def describe(self) -> str:
+        return self.url
+
+
+@dataclass(frozen=True)
 class Platform:
     name: str
     executable: str
     hosts: tuple[str, ...]
     verbs: frozenset[str]
     credential_env: tuple[str, ...] = ()
+    # "cli" runs an upstream binary through runner.run; "http" calls a
+    # public API directly. The distinction is about what the platform
+    # offers, not a preference: see HttpCall.
+    transport: str = "cli"
     # Human-facing, shown when the tool is missing or unauthenticated.
     setup_hint: str = ""
 
@@ -201,7 +228,26 @@ REDDIT = Platform(
     ),
 )
 
-PLATFORMS: dict[str, Platform] = {REDDIT.name: REDDIT}
+HACKERNEWS = Platform(
+    name="hackernews",
+    # No binary: the API is public and unauthenticated.
+    executable="",
+    hosts=("news.ycombinator.com", "ycombinator.com", "hn.algolia.com"),
+    verbs=frozenset({"search", "read", "top"}),
+    transport="http",
+    setup_hint="HackerNews herkese açık API kullanır; kurulum gerekmez.",
+)
+
+PLATFORMS: dict[str, Platform] = {
+    REDDIT.name: REDDIT,
+    HACKERNEWS.name: HACKERNEWS,
+}
+
+# Algolia's HN index: the search HN itself does not offer. Free, no key.
+# Pinned as a constant because it is the only host these calls may reach --
+# see HttpCall on why that matters.
+HN_API = "https://hn.algolia.com/api/v1"
+HN_THREAD_URL = "https://news.ycombinator.com/item?id="
 
 
 def platform_for_url(url: str) -> Optional[Platform]:
@@ -238,6 +284,8 @@ def build(platform: str, verb: str, /, **params: Any) -> Command:
         raise ArgumentError(f"{known.name} için izin verilmeyen işlem: {verb!r}")
     if known.name == "reddit":
         return _build_reddit(known, name, params)
+    if known.name == "hackernews":
+        return _build_hackernews(known, name, params)
     raise ArgumentError(f"{known.name} için komut üreteci yok")
 
 
@@ -304,6 +352,64 @@ def _build_reddit(platform: Platform, verb: str, params: dict[str, Any]) -> Comm
     )
 
 
+def _hn_item_id(value: Any) -> str:
+    """An HN item id: digits, or the thread URL search results carry."""
+    text = str(value or "").strip()
+    if "://" in text or "item?id=" in text:
+        from urllib.parse import parse_qs
+
+        query = parse_qs(urlparse(text).query)
+        candidate = (query.get("id") or [""])[0]
+        text = candidate or text
+    if not text.isdigit() or len(text) > 12:
+        raise ArgumentError(f"geçersiz HN kimliği: {text[:40]!r}")
+    return text
+
+
+def _build_hackernews(platform: Platform, verb: str, params: dict[str, Any]) -> HttpCall:
+    """Build one Algolia HN API call.
+
+    Values only ever reach the query string, through urlencode. The host is
+    the module constant, never a parameter, and the assertion below is the
+    cheap proof of that -- if a future edit lets a value reach the host or
+    the path, the call is refused rather than sent somewhere unexpected.
+    """
+    from urllib.parse import urlencode
+
+    limit = _limit(params.get("limit"))
+    if verb == "search":
+        query = {
+            "query": _query(params.get("query")),
+            # Stories only: a comment hit has no title and reads as a
+            # fragment torn out of a conversation.
+            "tags": "story",
+            "hitsPerPage": str(limit),
+        }
+        # HN's own ranking is by relevance; recency is a separate endpoint
+        # rather than a sort parameter.
+        path = "search_by_date" if _choice(
+            params.get("sort"), ("new", "relevance"), default="relevance"
+        ) == "new" else "search"
+        url = f"{HN_API}/{path}?{urlencode(query)}"
+    elif verb == "top":
+        url = f"{HN_API}/search?{urlencode({'tags': 'front_page', 'hitsPerPage': str(limit)})}"
+    elif verb == "read":
+        url = f"{HN_API}/items/{_hn_item_id(params.get('post_id'))}"
+    else:  # pragma: no cover - build() already gated the verb
+        raise ArgumentError(f"hackernews için komut üreteci yok: {verb!r}")
+
+    if not url.startswith(HN_API + "/"):
+        raise ArgumentError("HN isteği beklenen adrese çıkmıyor")
+
+    timeout = params.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS
+    return HttpCall(
+        platform=platform.name,
+        verb=verb,
+        url=url,
+        timeout_seconds=max(5, min(int(timeout), MAX_TIMEOUT_SECONDS)),
+    )
+
+
 # --------------------------------------------------------------------------
 # Records
 # --------------------------------------------------------------------------
@@ -342,6 +448,11 @@ class SocialRecord:
     created: str = ""
     channel: str = ""  # subreddit, and whatever the equivalent is elsewhere
     body: str = ""
+    # How many replies the thread has upstream, which is not the same as how
+    # many were quoted. It is the signal for "is there actually a discussion
+    # here": a link post with zero comments contributes a title and nothing
+    # else to a question about what people think.
+    comment_count: Optional[int] = None
     comments: tuple["SocialRecord", ...] = field(default_factory=tuple)
 
     def to_quoted_item(self, *, body_chars: int = 1500, comment_chars: int = 500) -> Any:
