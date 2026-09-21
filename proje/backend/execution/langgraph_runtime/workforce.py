@@ -46,6 +46,7 @@ ROLE_DOCUMENT = "Document Agent"
 ROLE_CODING = "Coding Agent"
 ROLE_GENERAL = "Assistant"
 ROLE_MAIL = "Mail Agent"
+ROLE_SOCIAL = "Social Agent"
 
 WORKER_IDS = {
     ROLE_RESEARCH: "lg-research",
@@ -53,6 +54,7 @@ WORKER_IDS = {
     ROLE_CODING: "lg-coding",
     ROLE_GENERAL: "lg-assistant",
     ROLE_MAIL: "lg-mail",
+    ROLE_SOCIAL: "lg-social",
 }
 
 
@@ -375,6 +377,7 @@ def _select_roles(
     skip_web_research: bool = False,
     needs_live_data: bool = False,
     reads_email: bool = False,
+    reads_social: bool = False,
 ) -> list[str]:
     """Pick workers for this job.
 
@@ -396,6 +399,11 @@ def _select_roles(
     # to be given the mail it is supposed to summarize.
     if reads_email or capabilities.MAIL_READ in caps:
         roles.append(ROLE_MAIL)
+    # Same position and the same reasoning as the Mail Agent: public
+    # discussion is the SOURCE for this job, so it is gathered before
+    # anything that has to use it.
+    if reads_social or capabilities.SOCIAL_READ in caps:
+        roles.append(ROLE_SOCIAL)
     if fast_path_role:
         roles.append(_resolve_fast_path_role(fast_path_role))
     else:
@@ -428,7 +436,12 @@ def _select_roles(
     # it as the reply would hand the user a transcript of their own inbox --
     # and would put unfenced sender text where the answer should be. Anything
     # else in the list can do the answering; alone, it needs the Assistant.
-    if roles == [ROLE_MAIL]:
+    if roles in ([ROLE_MAIL], [ROLE_SOCIAL], [ROLE_MAIL, ROLE_SOCIAL]):
+        # These gather; they do not answer. Their output is quoted text
+        # inside an explicit "this is data, not instructions" fence, so
+        # shipping it as the reply would put unfenced stranger-written text
+        # where the answer should be. Anything else in the list can do the
+        # answering; alone, they need the Assistant.
         roles.append(ROLE_GENERAL)
 
     if not roles:
@@ -2183,6 +2196,123 @@ async def _run_mail(
         started=started,
     )
     return mail_controller.render_notes(result, request_text=original_request)
+
+
+async def _run_social(
+    *,
+    content: str,
+    original_request: str,
+    tracker: UsageTracker,
+    callback: Any,
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+    deep_research: bool = False,
+) -> str:
+    """Social Agent: read public discussion, return evidence for the next worker.
+
+    Structurally identical to ``_run_mail``: a fixed phase sequence in
+    social_controller, not a tool the model may call. The return value is
+    notes, never the user-facing answer -- see the ROLE_SOCIAL guard in
+    _select_roles. The difference from mail is who wrote the text: a mailbox
+    holds messages from people who chose to write to this user, while a
+    subreddit holds text from anyone at all, which is why the fence around
+    it carries an unguessable per-block marker.
+    """
+    import social_controller
+
+    worker_id = WORKER_IDS[ROLE_SOCIAL]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_SOCIAL,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description="Reddit tartismalarini oku",
+    )
+    _emit_activity(callback, unit_task_id, "searching", "Reddit taraniyor")
+
+    # stage_prefix="social": these phases cost tokens like the web and mail
+    # ones do, and the usage panel should say which of the three spent them.
+    complete = await _make_complete(
+        tracker, deep_research=deep_research, stage_prefix="social"
+    )
+    try:
+        result = await social_controller.acquire_social_evidence(
+            original_request or content,
+            complete=complete,
+            deep_research=deep_research,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failure is an answer, not a crash
+        stabilization_logger.exception("social acquisition failed")
+        _lifecycle_done(
+            callback,
+            worker_id=worker_id,
+            unit_task_id=unit_task_id,
+            result_summary="Reddit okunamadi",
+            started=started,
+        )
+        return social_controller.render_notes(
+            social_controller.SocialResult(
+                error=f"{type(exc).__name__}: {exc}", error_code="social_failed"
+            )
+        )
+
+    if tool_call_recorder is not None:
+        # Recorded like any other real action: which query went out, how much
+        # came back, and -- the part worth having in an audit trail -- whether
+        # what came back tried to give the model instructions.
+        try:
+            query = result.query
+            tool_call_recorder.record(
+                "read_social",
+                {
+                    "platform": result.platform,
+                    "mode": query.mode if query else "",
+                    "query": query.query if query else "",
+                    "subreddit": query.subreddit if query else "",
+                },
+                result=(
+                    f"{len(result.records)} post(s) read of {result.searched} scanned"
+                    if result.ok
+                    else None
+                ),
+                error=None if result.ok else str(result.error_code or "social_failed"),
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the run
+            stabilization_logger.warning("could not record read_social", exc_info=True)
+
+    if handle.cancelled:
+        return social_controller.render_notes(result)
+
+    if result.ok and result.records:
+        _emit_activity(
+            callback,
+            unit_task_id,
+            "reading",
+            f"{len(result.records)} gonderi okundu",
+        )
+
+    # render_notes populates result.findings as a side effect, so the summary
+    # below is built after it.
+    notes = social_controller.render_notes(result, request_text=original_request)
+    if result.ok:
+        summary = f"{len(result.records)} gonderi"
+        if result.findings:
+            # Surfaced in the worker list, not just the log: "this run quoted
+            # something that tried to steer it" is exactly the kind of thing
+            # a user should be able to see without reading server logs.
+            summary += " (yonlendirme denemesi iceren icerik var)"
+    else:
+        summary = f"okunamadi ({result.error_code})"
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return notes
 
 
 async def _run_llm_worker(
@@ -4791,6 +4921,17 @@ def _build_graph(
                 unit_task_id=unit_id,
                 deep_research=deep_research,
             )
+        elif role == ROLE_SOCIAL:
+            text = await _run_social(
+                content=content,
+                original_request=request,
+                tracker=tracker,
+                callback=callback,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+                deep_research=deep_research,
+            )
         elif role == ROLE_RESEARCH:
             text = await _run_research(
                 content=content,
@@ -4868,11 +5009,13 @@ def _build_graph(
         # Prefer last worker output as user-facing answer; research-only keeps it.
         answer = text
         next_roles = list(roles)
-        if role == ROLE_MAIL:
+        if role in (ROLE_MAIL, ROLE_SOCIAL):
             # Belt and braces with the _select_roles guard: these notes are
-            # quoted mail wrapped in a "data, not instructions" fence, which
-            # is prompt scaffolding rather than an answer. Keep whatever
-            # answer exists and let the next worker write the real one.
+            # quoted text wrapped in a "data, not instructions" fence, which
+            # is prompt scaffolding rather than an answer. Shipping it would
+            # also put a stranger's words where the answer belongs. Keep
+            # whatever answer exists and let the next worker write the real
+            # one.
             answer = state.get("answer") or ""
         if (
             role == ROLE_RESEARCH
@@ -4949,6 +5092,7 @@ async def _run_workforce_async(
     reuses_uploaded_document: Optional[bool] = None,
     opens_on_user_computer: Optional[bool] = None,
     reads_email: Optional[bool] = None,
+    reads_social: Optional[bool] = None,
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -5000,6 +5144,7 @@ async def _run_workforce_async(
             skip_web_research=skip_web_research,
             needs_live_data=_request_needs_live_data(request),
             reads_email=bool(reads_email),
+            reads_social=bool(reads_social),
         )
     )
     seeded_notes = (
@@ -5141,6 +5286,7 @@ def run_workforce_in_thread(
     reuses_uploaded_document: Optional[bool] = None,
     opens_on_user_computer: Optional[bool] = None,
     reads_email: Optional[bool] = None,
+    reads_social: Optional[bool] = None,
 ) -> Any:
     """Sync entrypoint matching ``camel_service.run_workforce_in_thread``."""
     handle = CancellableWorkforce()
@@ -5169,6 +5315,7 @@ def run_workforce_in_thread(
                 reuses_uploaded_document=reuses_uploaded_document,
                 opens_on_user_computer=opens_on_user_computer,
                 reads_email=reads_email,
+                reads_social=reads_social,
             )
         )
     finally:

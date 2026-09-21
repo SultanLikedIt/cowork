@@ -288,5 +288,6 @@ Güncel açık listesi ve nerede düzeltileceği:
 | [docs/local-computer.md](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
 | [docs/scheduling.md](docs/scheduling.md) | Zamanlanmış görevler, zincirler, e-posta |
 | [docs/outlook.md](docs/outlook.md) | Outlook ile e-posta: kurulum, güvenlik, sorun giderme |
+| [docs/social-reach.md](docs/social-reach.md) | Reddit okuma: kurulum, haftalık çerez yenileme, güvenlik |
 | [docs/agent-search.md](docs/agent-search.md) | AgentSearch sidecar |
 | [docs/README.md](docs/README.md) | `docs/` dizin indeksi |

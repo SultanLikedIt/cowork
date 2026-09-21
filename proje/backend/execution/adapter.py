@@ -42,4 +42,8 @@ def run_workforce_in_thread(*args: Any, **kwargs: Any) -> Any:
     # AGENT_EXECUTOR=camel there is no Mail Agent, so "read my mailbox"
     # quietly becomes an ordinary chat answer rather than an error.
     kwargs.pop("reads_email", None)
+    # And the same again for social reading: under AGENT_EXECUTOR=camel there
+    # is no Social Agent, so "what are people saying on Reddit" quietly
+    # becomes an ordinary chat answer rather than an error.
+    kwargs.pop("reads_social", None)
     return camel_service.run_workforce_in_thread(*args, **kwargs)

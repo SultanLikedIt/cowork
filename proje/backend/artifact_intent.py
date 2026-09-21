@@ -41,6 +41,7 @@ class ArtifactIntentResult(BaseModel):
     sends_email: bool = False
     email_to: list[str] = []
     reads_email: bool = False
+    reads_social: bool = False
 
 
 # Addresses are taken from the REQUEST TEXT only, never from anything the run
@@ -114,6 +115,11 @@ class ArtifactIntent:
     # yaz") are not about the mailbox at all, and a false positive here
     # means reading someone's inbox they never asked about.
     reads_email: bool = False
+    # "reddit'te bunun hakkinda ne diyorlar" -- the user pointing the job at
+    # public discussion as a SOURCE, as opposed to an ordinary web question
+    # that merely happens to mention a platform. Asked of the classifier for
+    # the same reason as reads_email: the word is a bad signal on its own.
+    reads_social: bool = False
 
     def normalized(self) -> "ArtifactIntent":
         kind = self.artifact_type if self.artifact_type in _ARTIFACT_TYPES else "none"
@@ -131,6 +137,7 @@ class ArtifactIntent:
             sends_email=bool(self.sends_email) and bool(self.email_to),
             email_to=tuple(self.email_to),
             reads_email=bool(self.reads_email),
+            reads_social=bool(self.reads_social),
         )
 
 
@@ -146,7 +153,8 @@ INTENT_SYSTEM_PROMPT = (
     '"opens_on_user_computer": true | false, '
     '"sends_email": true | false, '
     '"email_to": ["address", ...], '
-    '"reads_email": true | false}.\n\n'
+    '"reads_email": true | false, '
+    '"reads_social": true | false}.\n\n'
     "wants_artifact is true ONLY when the user wants a new file created and "
     "given to them (Excel/xlsx, CSV, JSON, Word/docx, PowerPoint/pptx, PDF, HTML "
     "page, or a runnable code/project bundle). "
@@ -267,6 +275,20 @@ INTENT_SYSTEM_PROMPT = (
     '- "mail sablonu hazirla" -> reads_email false\n'
     '- "raporu hazirla ve bana mail at" -> reads_email false, sends_email true\n'
     '- "email pazarlamasi hakkinda arastirma yap" -> reads_email false\n'
+    "\nreads_social is true when the user wants what PEOPLE ARE SAYING on "
+    "Reddit -- opinions, experiences, complaints, discussion -- as the "
+    "SOURCE for the answer. It is false for an ordinary factual question "
+    "that merely mentions the platform, and false when they want a website "
+    "read instead (that is needs_web_research).\n"
+    "\nreads_social examples (key named, independent of the values above):\n"
+    '- "reddit te bu telefon hakkinda ne diyorlar" -> reads_social true\n'
+    '- "r/LocalLLaMA da neler konusuluyor" -> reads_social true\n'
+    '- "kullanici yorumlarina gore en iyi model hangisi" -> reads_social true\n'
+    '- "reddit kullanicilarinin sikayetlerini pdf yap" -> reads_social true, '
+    "wants_artifact true, artifact_type pdf\n"
+    '- "reddit ne zaman kuruldu" -> reads_social false, needs_web_research '
+    "true\n"
+    '- "sosyal medya stratejisi yaz" -> reads_social false\n'
     "Output ONLY the JSON object."
 )
 
@@ -353,6 +375,10 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         # mailbox because a classifier call failed, which is not a tradeoff
         # a fallback gets to make.
         reads_email=False,
+        # Left false for the same reason as reads_email above: a failed
+        # classifier call must not degrade toward spending upstream requests
+        # against a rate-limited account.
+        reads_social=False,
     ).normalized()
 
 
@@ -378,6 +404,7 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         sends_email=bool(usage.get("sends_email")),
         email_to=tuple(usage.get("email_to") or ()),
         reads_email=bool(usage.get("reads_email")),
+        reads_social=bool(usage.get("reads_social")),
     ).normalized()
 
 
@@ -462,5 +489,6 @@ async def classify_artifact_intent(
         sends_email=result.sends_email,
         email_to=tuple(_verified_recipients(result.email_to, topic)),
         reads_email=result.reads_email,
+        reads_social=result.reads_social,
     ).normalized()
     return intent

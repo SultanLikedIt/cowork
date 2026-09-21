@@ -19,6 +19,9 @@ const PROCESS_LABELS = {
   'llm:mail_plan': 'LLM · mail search plan',
   'llm:mail_select': 'LLM · mail selection',
   'tool:read_mailbox': 'Mailbox read',
+  'llm:social_plan': 'LLM · Reddit search plan',
+  'llm:social_select': 'LLM · post selection',
+  'tool:read_social': 'Reddit read',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 

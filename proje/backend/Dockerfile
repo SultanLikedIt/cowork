@@ -88,6 +88,15 @@ RUN pip install --no-cache-dir "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
 # constraints is unsatisfiable, verified with `pip install --dry-run`).
 RUN pip install --no-cache-dir --no-deps "psutil>=6.1.1"
 
+# Reddit reading (backend/social/, docs/social-reach.md). Pinned to a git
+# commit rather than a PyPI version on purpose: PyPI is stuck at 0.4.1 while
+# the working release is 0.4.2, and upstream stopped updating in 2026-03, so
+# "latest" is not a thing that exists here. Installed with --no-deps of its
+# own? No: it needs httpx/rich/pyyaml, and they are small. Optional at
+# runtime -- when it is absent the Social Agent reports "not installed"
+# through the ordinary capability-missing channel rather than failing a job.
+RUN pip install --no-cache-dir         "rdt-cli @ git+https://github.com/public-clis/rdt-cli.git@5e4fb3720d5c174e976cd425ccc3b879d52cac66"
+
 # Now the application source.
 COPY . .
 

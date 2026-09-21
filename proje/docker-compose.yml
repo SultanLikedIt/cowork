@@ -146,6 +146,17 @@ services:
       LOCAL_COMPUTER_TOKEN: ${LOCAL_COMPUTER_TOKEN:-}
       SCHEDULE_DELIVERY_MAX_ATTEMPTS: ${SCHEDULE_DELIVERY_MAX_ATTEMPTS:-10}
       OUTLOOK_AGENT_ACTION: ${OUTLOOK_AGENT_ACTION:-draft}
+      # Reading public Reddit discussion (backend/social/, docs/social-reach.md).
+      # Needs rdt-cli (in the image) AND a session cookie written to
+      # SOCIAL_HOME -- Reddit has no anonymous access at all. The cookie
+      # lives on the /data volume so a rebuild does not wipe it; it expires
+      # in about a week and cannot refresh itself without a browser, so
+      # /integrations/social/status reports its age.
+      SOCIAL_HOME: ${SOCIAL_HOME:-/data/social-sessions/home}
+      # Concurrent upstream calls across the WHOLE backend. Kept low because
+      # several jobs reading at once looks, from Reddit's side, like one
+      # account behaving abnormally -- which is how an account gets locked.
+      SOCIAL_MAX_CONCURRENT: ${SOCIAL_MAX_CONCURRENT:-2}
     volumes:
       - backend-data:/data
     # Host ports differ from the Camel stack (8000/8080) so both can run

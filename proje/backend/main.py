@@ -60,6 +60,8 @@ from document_ingestion import DOCLING_EXTENSIONS, DocumentParseError, parse_doc
 import document_export
 import outlook
 import reranker
+import social_api
+from social import health as social_health
 from execution.adapter import (
     run_single_agent as run_single_agent_executor,
     run_workforce_in_thread as run_workforce_in_thread_executor,
@@ -676,6 +678,10 @@ class UsageTelemetry(BaseModel):
     # inbox": the classification that caused it is stored, not just its
     # effect. The messages themselves are never persisted here.
     reads_email: Optional[bool] = None
+    # "reddit'te ne diyorlar" -- this job read public discussion. Same audit
+    # reasoning as reads_email: the classification that caused it is what is
+    # stored, never the quoted posts themselves.
+    reads_social: Optional[bool] = None
     # Classified once when a Single run finishes; see _suggests_workforce.
     suggests_workforce: Optional[bool] = None
     planning_ms: Optional[int] = None
@@ -1835,6 +1841,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["sends_email"] = intent.sends_email
                 job["usage"]["email_to"] = list(intent.email_to)
                 job["usage"]["reads_email"] = intent.reads_email
+                job["usage"]["reads_social"] = intent.reads_social
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
             job["usage"]["agent_executor"] = agent_executor()
@@ -1858,6 +1865,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 reuses_uploaded_document=intent.reuses_uploaded_document,
                 opens_on_user_computer=intent.opens_on_user_computer,
                 reads_email=intent.reads_email,
+                reads_social=intent.reads_social,
             )
             if not control.cancelled:
                 synthesized, is_partial = await camel_service.synthesize_workforce_result(
@@ -2388,6 +2396,13 @@ async def _routing_for_workforce(
     # discovering that OUTLOOK_READ_ENABLED is off -- a slower way to reach
     # the same "I cannot read your mailbox" that costs nothing here.
     reads_email = bool(intent.reads_email) and outlook.read_enabled()
+    # Granted only when this deployment can actually read, for the same
+    # reason as mail above: without the check the Social Agent is scheduled
+    # on the classifier's word alone and the run spends a worker slot
+    # discovering that rdt-cli is missing or the session cookie has expired
+    # -- a slower route to the same "I cannot read Reddit" that costs
+    # nothing here. The probe is cached, so this is not a subprocess per job.
+    reads_social = bool(intent.reads_social) and social_health.check("reddit").ok
     effective = capabilities.apply_artifact_intent(
         base,
         wants_artifact=intent.wants_artifact,
@@ -2397,6 +2412,7 @@ async def _routing_for_workforce(
         has_workspace_files=has_workspace_files,
         workspace_file_kinds=workspace_file_kinds,
         reads_email=reads_email,
+        reads_social=reads_social,
     )
     decision = capability_routing.merge_decision(
         "workforce",
@@ -2701,6 +2717,11 @@ async def submit_job(
             ),
             reads_email=(
                 artifact_intent_result.reads_email
+                if artifact_intent_result is not None
+                else None
+            ),
+            reads_social=(
+                artifact_intent_result.reads_social
                 if artifact_intent_result is not None
                 else None
             ),
@@ -3511,6 +3532,7 @@ app.include_router(
     build_scheduling_router(lambda: _SCHEDULER, describe_upload=_describe_upload)
 )
 app.include_router(outlook.build_router())
+app.include_router(social_api.build_router())
 
 
 @app.on_event("startup")

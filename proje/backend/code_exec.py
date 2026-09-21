@@ -391,53 +391,9 @@ class CodeExecutionTools:
 
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
-        """Kill the child and everything it started.
+        """Kill the child and everything it started (see terminate_process)."""
+        terminate_process(process)
 
-        POSIX: SIGTERM to the group first (so a well-behaved child can
-        clean up), then SIGKILL if it is still alive. killpg rather than
-        kill because start_new_session put the child in its own group
-        precisely so this would reach its descendants.
-
-        Windows has neither signal.SIGKILL nor process-group signal
-        delivery -- there is no graceful-then-forceful distinction for an
-        arbitrary child there (TerminateProcess, which Popen.kill() already
-        calls, is the only stop mechanism). `taskkill /T` is the standard
-        way to reach the whole descendant tree by PID instead (Windows
-        tracks parent/child PIDs regardless of process groups), so it takes
-        over the "kill everything it started" job in one forceful call.
-        """
-        if sys.platform == "win32":
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=10,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
-            return
-
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(os.getpgid(process.pid), sig)
-            except (ProcessLookupError, PermissionError, OSError):
-                try:
-                    process.kill()
-                except OSError:
-                    return
-            try:
-                process.wait(timeout=5)
-                return
-            except subprocess.TimeoutExpired:
-                continue
 
     @staticmethod
     def _read_bounded(path: Path) -> str:
@@ -473,3 +429,53 @@ __all__ = [
     "MAX_OUTPUT_CHARS",
     "MAX_TIMEOUT_SECONDS",
 ]
+
+
+def terminate_process(process: subprocess.Popen) -> None:
+    """Kill the child and everything it started.
+
+    POSIX: SIGTERM to the group first (so a well-behaved child can
+    clean up), then SIGKILL if it is still alive. killpg rather than
+    kill because start_new_session put the child in its own group
+    precisely so this would reach its descendants.
+
+    Windows has neither signal.SIGKILL nor process-group signal
+    delivery -- there is no graceful-then-forceful distinction for an
+    arbitrary child there (TerminateProcess, which Popen.kill() already
+    calls, is the only stop mechanism). `taskkill /T` is the standard
+    way to reach the whole descendant tree by PID instead (Windows
+    tracks parent/child PIDs regardless of process groups), so it takes
+    over the "kill everything it started" job in one forceful call.
+    """
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                process.kill()
+            except OSError:
+                return
+        try:
+            process.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue

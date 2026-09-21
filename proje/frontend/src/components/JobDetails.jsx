@@ -66,6 +66,8 @@ const STAGE_LABELS = {
   web_coverage: 'Web · coverage check',
   mail_plan: 'Mail · search plan',
   mail_select: 'Mail · message selection',
+  social_plan: 'Reddit · search plan',
+  social_select: 'Reddit · post selection',
   artifact_intent: 'Artifact intent',
 }
 

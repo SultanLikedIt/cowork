@@ -194,6 +194,7 @@ const FIXED_AGENT_BLURB = {
   'Document Agent': 'Writes Word, PDF, PowerPoint and spreadsheets',
   'Coding Agent': 'Writes and runs code',
   'Mail Agent': 'Reads your Outlook inbox and sent mail',
+  'Social Agent': 'Reads public Reddit posts and comments',
 }
 
 function AgentCard({ worker, assignments, runtime }) {

@@ -54,6 +54,14 @@ export const MailIcon = (p) => (
   </svg>
 )
 
+export const DiscussionIcon = (p) => (
+  <svg {...base} {...p}>
+    <path d="M20 12a7 7 0 0 1-7 7H8l-4 3v-4.5A7 7 0 0 1 8 5h5a7 7 0 0 1 7 7z" />
+    <path d="M8.5 10.5h7" />
+    <path d="M8.5 14h4" />
+  </svg>
+)
+
 export const BotIcon = (p) => (
   <svg {...base} {...p}>
     <rect x="5" y="9" width="14" height="11" rx="3" />
