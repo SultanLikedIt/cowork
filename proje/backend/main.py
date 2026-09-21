@@ -1842,6 +1842,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["email_to"] = list(intent.email_to)
                 job["usage"]["reads_email"] = intent.reads_email
                 job["usage"]["reads_social"] = intent.reads_social
+                job["usage"]["email_unaddressed"] = intent.email_unaddressed
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
             job["usage"]["agent_executor"] = agent_executor()
@@ -1946,6 +1947,18 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 # Appended after the typing replay, so it lands in the stored
                 # answer and shows when the job completes.
                 job["result"] = f"{job['result']}\n\n{notice}".strip()
+            elif job.get("usage", {}).get("email_unaddressed"):
+                # The user asked for mail and no address survived
+                # verification -- almost always a typo like "@outlook" with
+                # no .com. Refusing to invent one is the anti-injection
+                # guard doing its job; saying nothing is how a run produced
+                # a report, sent no mail, and left the user to notice.
+                job["result"] = (
+                    f"{job['result']}\n\n📧 E-posta gönderilmedi: istekte "
+                    "geçerli bir adres bulunamadı (örn. alan adının sonunda "
+                    "`.com` eksik olabilir). Güvenlik gereği adres "
+                    "tahmin edilmez — adresi tam yazıp tekrar isteyin."
+                ).strip()
     except Exception as exc:  # noqa: BLE001 - surfaced as a bounded job error
         if not control.cancelled:
             job["status"] = "error"

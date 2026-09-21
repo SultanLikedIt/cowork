@@ -123,3 +123,36 @@ def test_the_status_endpoint_exists() -> None:
 
     paths = [route.path for route in social_api.build_router().routes]
     assert "/integrations/social/status" in paths
+
+
+def test_an_unaddressed_email_request_is_remembered_not_silently_dropped() -> None:
+    """Live failure: "uygar017@outlook adresine mail olarak gonder" produced
+    an 11-page PDF, sent nothing, and said nothing. Refusing an address the
+    user did not type is correct; doing it silently is not."""
+    claimed = artifact_intent.ArtifactIntent(
+        wants_artifact=True,
+        artifact_type="pdf",
+        source="llm",
+        sends_email=True,
+        email_to=(),
+    ).normalized()
+    assert claimed.sends_email is False
+    assert claimed.email_unaddressed is True
+
+
+def test_a_real_address_does_not_raise_the_flag() -> None:
+    intent = artifact_intent.ArtifactIntent(
+        wants_artifact=True,
+        artifact_type="pdf",
+        source="llm",
+        sends_email=True,
+        email_to=("a@b.com",),
+    ).normalized()
+    assert intent.sends_email is True
+    assert intent.email_unaddressed is False
+
+
+def test_the_malformed_address_from_the_live_run_finds_no_recipient() -> None:
+    text = "raporu uygar017@outlook adresine mail olarak gonder"
+    assert artifact_intent.addresses_in_text(text) == []
+    assert artifact_intent._verified_recipients(["uygar017@outlook"], text) == []

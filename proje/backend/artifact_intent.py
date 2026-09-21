@@ -121,6 +121,17 @@ class ArtifactIntent:
     # the same reason as reads_email: the word is a bad signal on its own.
     reads_social: bool = False
 
+    # The user asked for mail and no usable address survived verification.
+    # Set by normalized(), because that is the step which erases the
+    # evidence: it turns sends_email off, after which nothing downstream can
+    # tell "not asked" from "asked, unaddressable".
+    #
+    # Live example: "uygar017@outlook adresine mail olarak gonder" has no
+    # dot-TLD, so addresses_in_text finds nothing, and the run produced an
+    # 11-page PDF while saying nothing at all about the mail. Refusing an
+    # address the user did not type is correct; doing it silently is not.
+    email_unaddressed: bool = False
+
     def normalized(self) -> "ArtifactIntent":
         kind = self.artifact_type if self.artifact_type in _ARTIFACT_TYPES else "none"
         wants = bool(self.wants_artifact) and kind != "none"
@@ -133,9 +144,11 @@ class ArtifactIntent:
             reuses_uploaded_document=bool(self.reuses_uploaded_document),
             opens_on_user_computer=bool(self.opens_on_user_computer),
             # No verified recipient means nothing can be sent, whatever the
-            # classifier said.
+            # classifier said -- and email_unaddressed remembers that this
+            # is what happened.
             sends_email=bool(self.sends_email) and bool(self.email_to),
             email_to=tuple(self.email_to),
+            email_unaddressed=bool(self.sends_email) and not self.email_to,
             reads_email=bool(self.reads_email),
             reads_social=bool(self.reads_social),
         )
@@ -405,6 +418,7 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         email_to=tuple(usage.get("email_to") or ()),
         reads_email=bool(usage.get("reads_email")),
         reads_social=bool(usage.get("reads_social")),
+        email_unaddressed=bool(usage.get("email_unaddressed")),
     ).normalized()
 
 

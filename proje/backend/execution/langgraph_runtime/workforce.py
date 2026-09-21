@@ -23,6 +23,7 @@ from langgraph.graph import END, START, StateGraph
 
 import capabilities
 import runtime_context
+import untrusted_content
 import web_controller
 import web_fetch
 from execution.ids import child_task_id
@@ -4160,6 +4161,14 @@ async def _run_document_worker(
     notes, research_sources = _split_research_sources(notes_raw)
     notes = _strip_capability_refusals(notes)
     notes = _strip_slide_plan_section(notes)
+    # Last line of defence before a deliverable. The social path now hands
+    # over a written brief rather than quoted source, but this worker is
+    # told to use its notes as evidence and not ignore them -- so if a
+    # quoting marker ever reaches here again, it stops here instead of
+    # being typeset into the user's PDF. That happened: an 11-page report
+    # opened with three pages of forum comments and a <<<ALINTI_...>>>
+    # marker.
+    notes = untrusted_content.strip_fence_leakage(notes)
     if not research_sources:
         research_sources = _urls_from_notes(notes)
     wants_sources = _request_wants_sources(original_request or content)
