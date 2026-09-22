@@ -1309,6 +1309,12 @@ export default function App() {
   )
 
   const deepResearchAvailable = !isThreadModeLocked || threadLockedMode === 'multi'
+  // The streaming lock is NOT applied here, deliberately: this handler is
+  // shared by the Home composer and the thread composer, and only the thread
+  // one is locked mid-run (Home has no running job of its own -- composing
+  // the next message there while something streams is the point of it). The
+  // lock therefore lives on the `modeLocked` prop, which only the thread
+  // composer is given, exactly like the mode control it sits beside.
   const handleDeepResearchChange = useCallback(
     (next) => {
       setDeepResearch(next)

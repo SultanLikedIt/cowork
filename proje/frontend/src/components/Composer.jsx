@@ -454,17 +454,28 @@ export default function Composer({
               now, and turning it on moves the message to Workforce (see
               handleDeepResearchChange in App). Still hidden in a thread
               permanently locked to Single Agent, where that switch is not
-              available: deepResearchAvailable carries that. One-shot per
-              message like the skill selection above, not a sticky
-              conversation setting. */}
+              available: deepResearchAvailable carries that. Unlike the skill
+              selection above it is NOT one-shot: it survives the send on
+              purpose and is cleared by a mode change or a new conversation
+              (see handleSubmit in App).
+
+              Locked while a job streams, for the same reason and by the same
+              flag as the mode control above. Without that it was a backdoor
+              around the mode lock: handleDeepResearchChange also calls
+              setMode('multi'), so clicking Deep mid-run flipped the very
+              mode state the disabled segmented control was refusing to
+              change -- and because the flag is sticky, the lit pill then
+              carried into the NEXT message rather than the running one. */}
           {deepResearchAvailable !== false && (
             <SimpleTooltip
               label={
-                deepResearch
-                  ? 'Deep research is on for this message: many more angles and sources, slower. Click to turn off.'
-                  : mode === 'multi'
-                    ? 'Deep research: plan many more angles and open far more sources for this message. Slower, more thorough.'
-                    : 'Deep research: many more angles and sources for this message. Switches it to Workforce, which is what runs the research. Slower, more thorough.'
+                locked
+                  ? 'Deep research can’t be changed while a job is running. It applies to the next message.'
+                  : deepResearch
+                    ? 'Deep research is on: many more angles and sources, slower. Stays on for follow-ups. Click to turn off.'
+                    : mode === 'multi'
+                      ? 'Deep research: plan many more angles and open far more sources. Slower, more thorough.'
+                      : 'Deep research: many more angles and sources. Switches to Workforce, which is what runs the research. Slower, more thorough.'
               }
             >
               {/* Labelled in both states. On/off has to be readable at a
@@ -483,17 +494,21 @@ export default function Composer({
                 aria-pressed={deepResearch}
                 aria-label={
                   deepResearch
-                    ? 'Deep research is on for this message'
-                    : 'Turn on deep research for this message'
+                    ? 'Deep research is on'
+                    : 'Turn on deep research'
                 }
-                onClick={() => onDeepResearchChange?.(!deepResearch)}
+                disabled={locked}
+                onClick={() => !locked && onDeepResearchChange?.(!deepResearch)}
                 className={cn(
-                  'gap-1.5 font-medium',
+                  'gap-1.5 font-medium disabled:cursor-not-allowed',
                   // --primary is the one surface blue picked to keep white
                   // legible in both themes (see index.css); --link is far
                   // lighter in dark mode and would fail behind white text.
                   deepResearch &&
                     'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground hover:opacity-90',
+                  // Same dimming as the mode segmented control above, so the
+                  // two locked controls read as locked for the same reason.
+                  locked && 'opacity-60',
                 )}
               >
                 <Microscope className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />

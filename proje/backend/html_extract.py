@@ -218,6 +218,42 @@ def collapse(parts: list[str]) -> str:
     return " ".join(" ".join(parts).split())
 
 
+def _page_title(selector: Selector) -> str:
+    """The page's own title, preferring the tags written to be shared.
+
+    ``<title>`` is read with ``::text``, which concatenates every text node
+    inside the element -- and some sites put their cookie wall's markup in
+    there. A live run cited "Kanuni Sultan Süleyman Dönemi | PDF Close this
+    consent banner" as a source, which is that concatenation, not a title.
+
+    og:title and twitter:title exist to be rendered by someone else (a chat
+    app, a social card), so they carry a single clean attribute value with
+    no room for page furniture. Preferring them fixes the class of problem
+    at the source instead of naming each banner's wording downstream.
+
+    Falls back to ``<title>`` when neither is present, which is still the
+    common case; the downstream cleaner handles what survives.
+    """
+    for path in (
+        '//meta[@property="og:title"]/@content',
+        '//meta[@name="og:title"]/@content',
+        '//meta[@name="twitter:title"]/@content',
+        '//meta[@property="twitter:title"]/@content',
+    ):
+        value = collapse([selector.xpath(path).get() or ""])
+        # A single word like "Home" is a site-wide default, not this page's
+        # title; <title> is more specific when the meta tag is that generic.
+        if len(value) >= 3 and value.casefold() not in _GENERIC_TITLES:
+            return value[:300]
+    return collapse(selector.css("title ::text").getall())[:300]
+
+
+# Site-wide og:title defaults that say nothing about the page itself.
+_GENERIC_TITLES = frozenset(
+    {"home", "homepage", "index", "untitled", "ana sayfa", "anasayfa"}
+)
+
+
 def _table_caption(table_node) -> str:
     """A table's own <caption>, or failing that its nearest preceding
     heading -- the closest static-DOM signal to "which tab/season is this"
@@ -574,7 +610,7 @@ def extract_page(
             body_chars=len(text),
         )
 
-    title = collapse(selector.css("title ::text").getall())[:300]
+    title = _page_title(selector)
     cleaned = trafilatura.extract(
         html,
         url=url,

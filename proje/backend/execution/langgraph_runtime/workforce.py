@@ -1131,14 +1131,97 @@ _TITLE_CHROME_RE = re.compile(
 )
 
 
-def _clean_source_title(raw: str) -> str:
+# Title separators. Sites append their own name after one of these
+# ("Article — Site Name"), so segments are examined individually.
+_TITLE_SEPARATOR_RE = re.compile(r"\s+[|•·–—]\s+|\s+-\s+|\s*::\s*|\s*»\s*")
+
+# Longest a shown title may be. Past this it is not a title, it is the page's
+# navigation flattened into one line, and it breaks the sources list layout.
+_MAX_TITLE_CHARS = 120
+
+# Single words that are navigation, not content. A segment made only of
+# these is dropped; one that merely contains them is left alone, because
+# "Contact tracing in Turkey" is a real title and "Home Contact About" is not.
+_NAV_WORDS = frozenset(
+    {
+        "home", "homepage", "menu", "search", "login", "log in", "sign in",
+        "signin", "register", "subscribe", "newsletter", "contact", "about",
+        "about us", "privacy", "terms", "cookies", "sitemap", "share",
+        "anasayfa", "ana sayfa", "giriş", "giris", "kayıt", "kayit", "ara",
+        "arama", "menü", "menu̇", "iletişim", "iletisim", "hakkında",
+        "hakkinda", "gizlilik", "çerezler", "cerezler", "abone ol", "paylaş",
+        "paylas",
+    }
+)
+
+
+def _host_label(url: str) -> str:
+    """"example.com" from a URL, without www. Empty when unparseable."""
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _ascii_fold(value: str) -> str:
+    """Lowercase ASCII skeleton of a string, for comparison only.
+
+    Needed to recognise a Turkish site name as its own domain: "TÜİK" and
+    "tuik.gov.tr" are the same organisation, but casefold() alone leaves
+    "tüi̇k" (İ decomposes to i + combining dot) which matches nothing. NFKD
+    strips the combining marks; ı is mapped explicitly because it has no
+    decomposition of its own.
+    """
+    import unicodedata
+
+    folded = unicodedata.normalize("NFKD", str(value or "").replace("ı", "i"))
+    return "".join(
+        ch for ch in folded if not unicodedata.combining(ch)
+    ).casefold()
+
+
+def _is_nav_segment(segment: str) -> bool:
+    """Whether a title segment is pure navigation furniture."""
+    # Separators survive the split ("Home - Contact" -> [home, -, contact]),
+    # and a leftover "-" is not a nav word, which made every multi-segment
+    # run of furniture look like content. Strip first, then drop what is
+    # left empty.
+    words = [
+        stripped
+        for word in re.split(r"[\s,/>|·•–—]+", segment.casefold())
+        if (stripped := word.strip(" .:-"))
+    ]
+    if not words or len(words) > 6:
+        return False
+    return all(word in _NAV_WORDS for word in words)
+
+
+def _clean_source_title(raw: str, url: str = "") -> str:
     """A page title fit to show, from one that was scraped.
 
     Real titles arrive carrying the page's own furniture: a live run listed
     "Kanuni Sultan Süleyman Dönemi | PDF <!---->Close this consent
     banner<!----> <!---->" as a source, which is the cookie wall's markup
-    sitting in the <title>. Strip comments and tags, cut at the first piece
-    of banner text, and collapse what is left.
+    sitting in the <title>.
+
+    Cutting at a list of banner phrases (``_TITLE_CHROME_RE``) only ever
+    fixed the wordings that list knows, in the two languages it knows, and
+    the open set of websites keeps producing new ones -- site navigation
+    flattened into the element, a breadcrumb trail, the site name repeated.
+    So the phrase cut is kept as one step and the rest is structural:
+
+    * split on the separators sites use to append their own name;
+    * drop segments that are nothing but navigation words;
+    * drop a trailing segment that is just the site's domain, which is
+      already shown next to the title in the sources list;
+    * cap the length, and if nothing survives that looks like a title, say
+      the domain rather than show the page's furniture.
+
+    ``url`` is optional so existing single-argument calls keep working; it
+    only enables the last two rules.
     """
     text = re.sub(r"<!--.*?-->", " ", str(raw or ""), flags=re.DOTALL)
     text = re.sub(r"<[^>]*>", " ", text)
@@ -1146,6 +1229,40 @@ def _clean_source_title(raw: str) -> str:
     if match:
         text = text[: match.start()]
     text = " ".join(text.split()).strip(" |-–—·•")
+    if not text:
+        return ""
+
+    host = _host_label(url)
+    segments = [
+        part.strip(" |-–—·•")
+        for part in _TITLE_SEPARATOR_RE.split(text)
+        if part and part.strip(" |-–—·•")
+    ]
+    if len(segments) > 1:
+        # Every segment being navigation is not a failed split -- it is a
+        # title that is entirely furniture ("Home | Contact | About"). Let
+        # it empty out and fall through to the domain below.
+        kept = [seg for seg in segments if not _is_nav_segment(seg)]
+        # A trailing segment that is the site's own name duplicates the URL
+        # shown beside it. Only trailing, and only when something else
+        # remains -- "BBC News" as the whole title is the title.
+        if len(kept) > 1 and host:
+            tail = _ascii_fold(kept[-1]).replace(" ", "")
+            stem = _ascii_fold(host.split(".")[0])
+            if tail in {_ascii_fold(host), _ascii_fold(host).replace(".", ""), stem}:
+                kept.pop()
+        text = " - ".join(kept)
+
+    if len(text) > _MAX_TITLE_CHARS:
+        # Prefer a clean break at the last separator that still fits over a
+        # hard slice through the middle of a word.
+        head = text[:_MAX_TITLE_CHARS]
+        cut = max(head.rfind(" - "), head.rfind(": "))
+        text = (head[:cut] if cut > 40 else head.rsplit(" ", 1)[0]).rstrip(" ,;:-–—")
+
+    text = text.strip(" |-–—·•")
+    if not text or _is_nav_segment(text):
+        return host
     return text
 
 
@@ -1173,7 +1290,11 @@ def _format_sources_lines(sources: list[dict[str, str]]) -> list[str]:
             continue
         if not url.startswith(("http://", "https://")):
             continue
-        title = _clean_source_title(item.get("title")).replace("[", "(").replace("]", ")")
+        title = (
+            _clean_source_title(item.get("title"), url)
+            .replace("[", "(")
+            .replace("]", ")")
+        )
         if title and title != url:
             lines.append(f"- [{title}]({url})")
         else:
@@ -1190,7 +1311,7 @@ def _format_sources_lines_plain(sources: list[dict[str, str]]) -> list[str]:
             continue
         if not url.startswith(("http://", "https://")):
             continue
-        title = _clean_source_title(item.get("title"))
+        title = _clean_source_title(item.get("title"), url)
         if title and title != url:
             lines.append(f"- {title} ({url})")
         else:
