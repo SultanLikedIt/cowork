@@ -26,6 +26,10 @@ const PROCESS_LABELS = {
   'llm:jira_select': 'LLM · issue selection',
   'llm:jira_answer': 'LLM · Jira issue summary',
   'tool:read_jira': 'Jira read',
+  'llm:github_plan': 'LLM · GitHub search plan',
+  'llm:github_select': 'LLM · repository selection',
+  'llm:github_answer': 'LLM · GitHub summary',
+  'tool:read_github': 'GitHub read',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 

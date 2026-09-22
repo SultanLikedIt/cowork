@@ -60,6 +60,8 @@ from document_ingestion import DOCLING_EXTENSIONS, DocumentParseError, parse_doc
 import document_export
 import outlook
 import reranker
+import github_api
+import github_client
 import jira_api
 import jira_client
 import social_api
@@ -687,6 +689,9 @@ class UsageTelemetry(BaseModel):
     # "bana atanan isler" -- this job read the user's Jira. Same audit
     # reasoning again: the classification is stored, never the tickets.
     reads_jira: Optional[bool] = None
+    # "bu repoyu ozetle" -- this job read public GitHub. Stored for the same
+    # audit reason; the READMEs and files themselves are not.
+    reads_github: Optional[bool] = None
     # Classified once when a Single run finishes; see _suggests_workforce.
     suggests_workforce: Optional[bool] = None
     planning_ms: Optional[int] = None
@@ -916,6 +921,18 @@ def _worker_pool() -> WorkerPoolResponse:
                 description=(
                     "Searches and reads issues in your company Jira and passes "
                     "them to the other workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
+    if github_client.is_configured():
+        fixed.append(
+            WorkerSummary(
+                name="GitHub Agent",
+                description=(
+                    "Finds popular and trending repositories on public GitHub "
+                    "and reads repositories, files, issues and pull requests "
+                    "you link, then passes them to the other workers. Read-only."
                 ),
                 source="fixed",
             )
@@ -1838,6 +1855,8 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     or single_intent.needs_code_execution
                     # Single has no Jira; Workforce does, when it is set up.
                     or (single_intent.reads_jira and jira_client.is_configured())
+                    # Nor GitHub: a pasted repository link is worth the offer.
+                    or (single_intent.reads_github and github_client.is_configured())
                 )
             except Exception:  # noqa: BLE001 - display hint, never fatal
                 stabilization_logger.warning(
@@ -1880,6 +1899,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["reads_email"] = intent.reads_email
                 job["usage"]["reads_social"] = intent.reads_social
                 job["usage"]["reads_jira"] = intent.reads_jira
+                job["usage"]["reads_github"] = intent.reads_github
                 job["usage"]["email_unaddressed"] = intent.email_unaddressed
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
@@ -1906,6 +1926,9 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 reads_email=intent.reads_email,
                 reads_social=intent.reads_social,
                 reads_jira=intent.reads_jira,
+                reads_github=(
+                    bool(intent.reads_github) and github_client.is_configured()
+                ),
             )
             if not control.cancelled:
                 synthesized, is_partial = await camel_service.synthesize_workforce_result(
@@ -2462,6 +2485,10 @@ async def _routing_for_workforce(
     # chat reply that never mentions Jira. A disconnected VPN costs the
     # agent one short connect timeout (JIRA_CONNECT_TIMEOUT_SECONDS).
     reads_jira = bool(intent.reads_jira) and jira_client.is_configured()
+    # Granted on configuration, like Jira: public GitHub needs no account, and
+    # a rate limit or an outage is better reported by the GitHub Agent (with
+    # the reset time) than hidden by quietly not scheduling it.
+    reads_github = bool(intent.reads_github) and github_client.is_configured()
     effective = capabilities.apply_artifact_intent(
         base,
         wants_artifact=intent.wants_artifact,
@@ -2473,6 +2500,7 @@ async def _routing_for_workforce(
         reads_email=reads_email,
         reads_social=reads_social,
         reads_jira=reads_jira,
+        reads_github=reads_github,
     )
     decision = capability_routing.merge_decision(
         "workforce",
@@ -2787,6 +2815,11 @@ async def submit_job(
             ),
             reads_jira=(
                 artifact_intent_result.reads_jira
+                if artifact_intent_result is not None
+                else None
+            ),
+            reads_github=(
+                artifact_intent_result.reads_github
                 if artifact_intent_result is not None
                 else None
             ),
@@ -3599,6 +3632,7 @@ app.include_router(
 app.include_router(outlook.build_router())
 app.include_router(social_api.build_router())
 app.include_router(jira_api.build_router())
+app.include_router(github_api.build_router())
 
 
 @app.on_event("startup")
