@@ -1479,6 +1479,7 @@ export default function App() {
                     onDeepResearchChange={handleDeepResearchChange}
                     deepResearchAvailable={deepResearchAvailable}
                     onAddAgent={() => setAgentModalOpen(true)}
+                    workers={workers}
                     workspaceName={
                       activeWorkspace?.name || 'Untitled workspace'
                     }

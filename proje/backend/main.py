@@ -60,6 +60,8 @@ from document_ingestion import DOCLING_EXTENSIONS, DocumentParseError, parse_doc
 import document_export
 import outlook
 import reranker
+import jira_api
+import jira_client
 import social_api
 from social import health as social_health
 from execution.adapter import (
@@ -682,6 +684,9 @@ class UsageTelemetry(BaseModel):
     # reasoning as reads_email: the classification that caused it is what is
     # stored, never the quoted posts themselves.
     reads_social: Optional[bool] = None
+    # "bana atanan isler" -- this job read the user's Jira. Same audit
+    # reasoning again: the classification is stored, never the tickets.
+    reads_jira: Optional[bool] = None
     # Classified once when a Single run finishes; see _suggests_workforce.
     suggests_workforce: Optional[bool] = None
     planning_ms: Optional[int] = None
@@ -881,6 +886,36 @@ def _worker_pool() -> WorkerPoolResponse:
                     "Reads the Outlook mailbox on this computer (Inbox and "
                     "Sent Items) and passes what it finds to the other "
                     "workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
+    # The Social and Jira agents, on the same terms as the Mail Agent above:
+    # listed exactly when _routing_for_workforce could schedule them. Like
+    # mail, neither belongs in camel_service.WORKER_ROLES -- they exist only
+    # on the LangGraph path.
+    try:
+        social_ready = social_health.check("reddit").ok
+    except Exception:  # noqa: BLE001 - a broken probe hides the card, nothing more
+        social_ready = False
+    if social_ready:
+        fixed.append(
+            WorkerSummary(
+                name="Social Agent",
+                description=(
+                    "Reads public discussion on Reddit and Hacker News and "
+                    "passes what people say to the other workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
+    if jira_client.is_configured():
+        fixed.append(
+            WorkerSummary(
+                name="Jira Agent",
+                description=(
+                    "Searches and reads issues in your company Jira and passes "
+                    "them to the other workers. Read-only."
                 ),
                 source="fixed",
             )
@@ -1801,6 +1836,8 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     single_intent.needs_web_research
                     or single_intent.wants_artifact
                     or single_intent.needs_code_execution
+                    # Single has no Jira; Workforce does, when it is set up.
+                    or (single_intent.reads_jira and jira_client.is_configured())
                 )
             except Exception:  # noqa: BLE001 - display hint, never fatal
                 stabilization_logger.warning(
@@ -1842,6 +1879,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["email_to"] = list(intent.email_to)
                 job["usage"]["reads_email"] = intent.reads_email
                 job["usage"]["reads_social"] = intent.reads_social
+                job["usage"]["reads_jira"] = intent.reads_jira
                 job["usage"]["email_unaddressed"] = intent.email_unaddressed
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
@@ -1867,6 +1905,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 opens_on_user_computer=intent.opens_on_user_computer,
                 reads_email=intent.reads_email,
                 reads_social=intent.reads_social,
+                reads_jira=intent.reads_jira,
             )
             if not control.cancelled:
                 synthesized, is_partial = await camel_service.synthesize_workforce_result(
@@ -2416,6 +2455,13 @@ async def _routing_for_workforce(
     # -- a slower route to the same "I cannot read Reddit" that costs
     # nothing here. The probe is cached, so this is not a subprocess per job.
     reads_social = bool(intent.reads_social) and social_health.check("reddit").ok
+    # Granted when Jira is configured -- but NOT only when it is reachable,
+    # unlike Reddit above. Jira usually sits behind a VPN, and the useful
+    # answer to "PROJ-123 ne durumda" with the VPN down is "Jira'ya
+    # ulasilamiyor, VPN bagli mi?" from the Jira Agent, not an ordinary
+    # chat reply that never mentions Jira. A disconnected VPN costs the
+    # agent one short connect timeout (JIRA_CONNECT_TIMEOUT_SECONDS).
+    reads_jira = bool(intent.reads_jira) and jira_client.is_configured()
     effective = capabilities.apply_artifact_intent(
         base,
         wants_artifact=intent.wants_artifact,
@@ -2426,6 +2472,7 @@ async def _routing_for_workforce(
         workspace_file_kinds=workspace_file_kinds,
         reads_email=reads_email,
         reads_social=reads_social,
+        reads_jira=reads_jira,
     )
     decision = capability_routing.merge_decision(
         "workforce",
@@ -2735,6 +2782,11 @@ async def submit_job(
             ),
             reads_social=(
                 artifact_intent_result.reads_social
+                if artifact_intent_result is not None
+                else None
+            ),
+            reads_jira=(
+                artifact_intent_result.reads_jira
                 if artifact_intent_result is not None
                 else None
             ),
@@ -3546,6 +3598,7 @@ app.include_router(
 )
 app.include_router(outlook.build_router())
 app.include_router(social_api.build_router())
+app.include_router(jira_api.build_router())
 
 
 @app.on_event("startup")

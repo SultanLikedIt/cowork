@@ -46,4 +46,6 @@ def run_workforce_in_thread(*args: Any, **kwargs: Any) -> Any:
     # is no Social Agent, so "what are people saying on Reddit" quietly
     # becomes an ordinary chat answer rather than an error.
     kwargs.pop("reads_social", None)
+    # And for Jira: there is no Jira Agent on the Camel path either.
+    kwargs.pop("reads_jira", None)
     return camel_service.run_workforce_in_thread(*args, **kwargs)

@@ -1,6 +1,7 @@
 import { Check, Clock, Code2, FileText, Globe, PanelLeft, Plus, Search } from 'lucide-react'
 
 import { BotIcon } from '../icons.jsx'
+import { HackerNewsLogo, JiraLogo, OutlookLogo, RedditLogo } from '../brandLogos.jsx'
 import { ERROR_JOB_STATUSES, SUCCESS_JOB_STATUSES, isActiveJob } from '../stages.js'
 import { cn } from '../lib/utils.js'
 import { Button } from './ui/button.jsx'
@@ -29,6 +30,42 @@ const WORKFORCE_AGENTS = [
     description: 'Web search & source synthesis',
     badgeClass: 'bg-sky-500/90 text-white',
     BadgeIcon: Globe,
+  },
+]
+
+// Agents that read from an outside service, shown with that service's logo.
+// Listed only when the backend roster (/workers) includes the agent behind
+// them -- the same promise the right panel makes: a card here is a source
+// this deployment can actually use. Reddit and Hacker News are one Social
+// Agent at runtime but two sources to the person choosing what to ask.
+const INTEGRATION_AGENTS = [
+  {
+    key: 'Outlook',
+    label: 'Outlook',
+    description: 'Read your inbox & sent mail',
+    Logo: OutlookLogo,
+    rosterName: 'Mail Agent',
+  },
+  {
+    key: 'Reddit',
+    label: 'Reddit',
+    description: 'Discussions & opinions',
+    Logo: RedditLogo,
+    rosterName: 'Social Agent',
+  },
+  {
+    key: 'HackerNews',
+    label: 'Hacker News',
+    description: 'Tech news & discussions',
+    Logo: HackerNewsLogo,
+    rosterName: 'Social Agent',
+  },
+  {
+    key: 'Jira',
+    label: 'Jira',
+    description: 'Find & summarize your issues',
+    Logo: JiraLogo,
+    rosterName: 'Jira Agent',
   },
 ]
 
@@ -62,7 +99,14 @@ const AGENT_BY_KEY = Object.fromEntries(
   WORKFORCE_AGENTS.map((agent) => [agent.key, agent]),
 )
 
-function AgentAvatar({ label, description, badgeClass, BadgeIcon, showLabel = false }) {
+function AgentAvatar({
+  label,
+  description,
+  badgeClass,
+  BadgeIcon,
+  Logo,
+  showLabel = false,
+}) {
   const avatar = (
     <span
       className={cn(
@@ -71,8 +115,14 @@ function AgentAvatar({ label, description, badgeClass, BadgeIcon, showLabel = fa
       )}
       aria-label={showLabel ? undefined : label}
     >
-      <BotIcon width={18} height={18} aria-hidden="true" />
-      {BadgeIcon && (
+      {/* A service logo is the identity on its own; the bot + badge pair is
+          for agents that work inside the app. */}
+      {Logo ? (
+        <Logo width={20} height={20} aria-hidden="true" />
+      ) : (
+        <BotIcon width={18} height={18} aria-hidden="true" />
+      )}
+      {!Logo && BadgeIcon && (
         <span
           className={cn(
             'absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center',
@@ -144,6 +194,7 @@ export default function HomeView({
   deepResearch,
   onDeepResearchChange,
   onAddAgent,
+  workers = [],
   workspaceName,
   workspaceId,
   workspaces,
@@ -158,6 +209,10 @@ export default function HomeView({
   const isWorkforce = mode === 'multi'
   const showStarters = isWorkforce && !value.trim()
   const recent = recentConversations.slice(0, 5)
+  const rosterNames = new Set((workers || []).map((worker) => worker?.name))
+  const integrations = INTEGRATION_AGENTS.filter((agent) =>
+    rosterNames.has(agent.rosterName),
+  )
 
   return (
     <div className="surface-grid relative flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -199,57 +254,74 @@ export default function HomeView({
             {isWorkforce ? 'Cowork with Workforce' : 'Cowork with Single Agent'}
           </h2>
 
-          <div
-            className={cn(
-              'mt-5 flex items-center justify-center gap-2',
-              // Cards are taller than the bare avatars this row was
-              // originally sized for. Three of them share the width and
-              // stack on a narrow viewport; the lone Single Agent card is
-              // held to the width one of those three gets, so the two modes
-              // show the same card rather than a wider one-off.
-              'w-full flex-col items-stretch gap-2 sm:flex-row sm:items-stretch',
-              !isWorkforce && 'mx-auto sm:max-w-[15rem]',
-            )}
-          >
-            {isWorkforce ? (
-              <>
-                {WORKFORCE_AGENTS.map((agent) => (
-                  <AgentAvatar
-                    key={agent.key}
-                    label={agent.label}
-                    description={agent.description}
-                    badgeClass={agent.badgeClass}
-                    BadgeIcon={agent.BadgeIcon}
-                    showLabel
-                  />
-                ))}
-                <SimpleTooltip label="Add an agent for this session">
-                  <button
-                    type="button"
-                    onClick={onAddAgent}
-                    aria-label="Add an agent"
-                    className={cn(
-                      // Self-centred so it sits level with the cards
-                      // instead of stretching to their full height.
-                      'flex h-10 w-10 shrink-0 self-center items-center justify-center rounded-[11px]',
-                      'border border-border/60 bg-muted/40 text-muted-foreground',
-                      'transition-colors duration-150',
-                      'hover:border-border hover:bg-muted/70 hover:text-foreground',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                    )}
-                  >
+          {isWorkforce ? (
+            // A grid rather than one row: with the service agents there can
+            // be seven cards plus Add, which a single row squeezes into
+            // slivers. Columns come from the column's own width (auto-fill,
+            // 11.5rem minimum), not the viewport, because the sidebar
+            // changes how wide this column is at any given screen size. At
+            // full width that is four columns: built-in agents first, then
+            // the services, then Add -- two even rows when all are present.
+            <div className="mt-5 grid w-full grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-2">
+              {WORKFORCE_AGENTS.map((agent) => (
+                <AgentAvatar
+                  key={agent.key}
+                  label={agent.label}
+                  description={agent.description}
+                  badgeClass={agent.badgeClass}
+                  BadgeIcon={agent.BadgeIcon}
+                  showLabel
+                />
+              ))}
+              {integrations.map((agent) => (
+                <AgentAvatar
+                  key={agent.key}
+                  label={agent.label}
+                  description={agent.description}
+                  Logo={agent.Logo}
+                  showLabel
+                />
+              ))}
+              <SimpleTooltip label="Add an agent for this session">
+                <button
+                  type="button"
+                  onClick={onAddAgent}
+                  aria-label="Add an agent"
+                  className={cn(
+                    // Card-shaped so it takes its grid cell like the others
+                    // instead of a small square floating in a wide cell;
+                    // dashed so it reads as a slot to fill, not an agent.
+                    'group flex min-w-0 items-center gap-2.5 rounded-lg border border-dashed border-border/70',
+                    'bg-transparent px-3 py-2.5 text-left text-muted-foreground',
+                    'transition-colors duration-150',
+                    'hover:border-border hover:bg-muted/40 hover:text-foreground',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  )}
+                >
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] border border-border/60 bg-muted/40">
                     <Plus className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </SimpleTooltip>
-              </>
-            ) : (
+                  </span>
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate text-[13px] font-medium leading-5">Add agent</span>
+                    <span className="text-[11px] leading-[1.35] text-muted-foreground">
+                      Your own specialist
+                    </span>
+                  </span>
+                </button>
+              </SimpleTooltip>
+            </div>
+          ) : (
+            // The lone Single Agent card is held to the width one grid
+            // column gets, so the two modes show the same card rather than
+            // a wider one-off.
+            <div className="mx-auto mt-5 flex w-full sm:max-w-[15rem]">
               <AgentAvatar
                 label="Single Agent"
                 description="One assistant answers directly"
                 showLabel
               />
-            )}
-          </div>
+            </div>
+          )}
 
           <div className="mt-8 w-full">
             <Composer

@@ -42,6 +42,7 @@ class ArtifactIntentResult(BaseModel):
     email_to: list[str] = []
     reads_email: bool = False
     reads_social: bool = False
+    reads_jira: bool = False
 
 
 # Addresses are taken from the REQUEST TEXT only, never from anything the run
@@ -120,6 +121,11 @@ class ArtifactIntent:
     # that merely happens to mention a platform. Asked of the classifier for
     # the same reason as reads_email: the word is a bad signal on its own.
     reads_social: bool = False
+    # "bana atanan acik isler", "PROJ-123 ne durumda" -- the user pointing the
+    # job at their company Jira as the SOURCE. Asked of the classifier for the
+    # same reason again: "jira" also appears in "jira nedir" and "jira'ya
+    # girilecek bir bug raporu yaz", neither of which wants tickets read.
+    reads_jira: bool = False
 
     # The user asked for mail and no usable address survived verification.
     # Set by normalized(), because that is the step which erases the
@@ -151,6 +157,7 @@ class ArtifactIntent:
             email_unaddressed=bool(self.sends_email) and not self.email_to,
             reads_email=bool(self.reads_email),
             reads_social=bool(self.reads_social),
+            reads_jira=bool(self.reads_jira),
         )
 
 
@@ -167,7 +174,8 @@ INTENT_SYSTEM_PROMPT = (
     '"sends_email": true | false, '
     '"email_to": ["address", ...], '
     '"reads_email": true | false, '
-    '"reads_social": true | false}.\n\n'
+    '"reads_social": true | false, '
+    '"reads_jira": true | false}.\n\n'
     "wants_artifact is true ONLY when the user wants a new file created and "
     "given to them (Excel/xlsx, CSV, JSON, Word/docx, PowerPoint/pptx, PDF, HTML "
     "page, or a runnable code/project bundle). "
@@ -302,6 +310,20 @@ INTENT_SYSTEM_PROMPT = (
     '- "reddit ne zaman kuruldu" -> reads_social false, needs_web_research '
     "true\n"
     '- "sosyal medya stratejisi yaz" -> reads_social false\n'
+    "\nreads_jira is true when the answer must come from the user's OWN "
+    "company Jira -- their tickets/issues/tasks/bugs, sprints, backlog, or an "
+    "issue key like PROJ-123. It is false for questions ABOUT Jira the "
+    "product, and false when the user wants text written for Jira (a bug "
+    "report, a ticket description) rather than tickets read.\n"
+    "\nreads_jira examples (key named, independent of the values above):\n"
+    '- "bana atanan acik jira islerini listele" -> reads_jira true\n'
+    '- "PROJ-123 ne durumda" -> reads_jira true\n'
+    '- "bu sprintte kalan buglari excel yap" -> reads_jira true, '
+    "wants_artifact true, artifact_type xlsx\n"
+    '- "ABC-42 ile ABC-57 yi karsilastir" -> reads_jira true\n'
+    '- "gecen hafta kapanan tasklari ozetle" -> reads_jira true\n'
+    '- "jira nedir nasil kullanilir" -> reads_jira false\n'
+    '- "jira ya girilecek bir bug raporu yaz" -> reads_jira false\n'
     "Output ONLY the JSON object."
 )
 
@@ -392,6 +414,9 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         # classifier call must not degrade toward spending upstream requests
         # against a rate-limited account.
         reads_social=False,
+        # And the same for Jira: a fallback does not get to decide to read
+        # company tickets the classifier never saw a request for.
+        reads_jira=False,
     ).normalized()
 
 
@@ -418,6 +443,7 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         email_to=tuple(usage.get("email_to") or ()),
         reads_email=bool(usage.get("reads_email")),
         reads_social=bool(usage.get("reads_social")),
+        reads_jira=bool(usage.get("reads_jira")),
         email_unaddressed=bool(usage.get("email_unaddressed")),
     ).normalized()
 
@@ -504,5 +530,6 @@ async def classify_artifact_intent(
         email_to=tuple(_verified_recipients(result.email_to, topic)),
         reads_email=result.reads_email,
         reads_social=result.reads_social,
+        reads_jira=result.reads_jira,
     ).normalized()
     return intent

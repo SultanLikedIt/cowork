@@ -22,6 +22,10 @@ const PROCESS_LABELS = {
   'llm:social_plan': 'LLM · Reddit search plan',
   'llm:social_select': 'LLM · post selection',
   'tool:read_social': 'Reddit read',
+  'llm:jira_plan': 'LLM · Jira search plan',
+  'llm:jira_select': 'LLM · issue selection',
+  'llm:jira_answer': 'LLM · Jira issue summary',
+  'tool:read_jira': 'Jira read',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 

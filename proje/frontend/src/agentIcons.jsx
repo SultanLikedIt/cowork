@@ -1,12 +1,8 @@
-import {
-  BotIcon,
-  CodeIcon,
-  FileIcon,
-  DiscussionIcon,
-  MailIcon,
-  SearchIcon,
-} from './icons.jsx'
+import { BotIcon, CodeIcon, FileIcon, SearchIcon } from './icons.jsx'
+import { JiraLogo, OutlookLogo, SocialLogos } from './brandLogos.jsx'
 
+// Agents that work inside this app get a line glyph; agents that read from
+// an outside service get that service's logo (brandLogos.jsx).
 const BUILT_IN_AGENT_ICONS = new Map([
   ['research agent', SearchIcon],
   ['research', SearchIcon],
@@ -14,10 +10,12 @@ const BUILT_IN_AGENT_ICONS = new Map([
   ['document', FileIcon],
   ['coding agent', CodeIcon],
   ['coding', CodeIcon],
-  ['mail agent', MailIcon],
-  ['mail', MailIcon],
-  ['social agent', DiscussionIcon],
-  ['social', DiscussionIcon],
+  ['mail agent', OutlookLogo],
+  ['mail', OutlookLogo],
+  ['social agent', SocialLogos],
+  ['social', SocialLogos],
+  ['jira agent', JiraLogo],
+  ['jira', JiraLogo],
 ])
 
 export function iconForAgent(name) {
