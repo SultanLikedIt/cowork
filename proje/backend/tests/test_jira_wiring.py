@@ -128,6 +128,38 @@ def test_the_role_has_a_worker_id_for_the_ui() -> None:
     assert workforce.WORKER_IDS[workforce.ROLE_JIRA] == "lg-jira"
 
 
+def test_the_roster_lists_jira_exactly_when_routing_could_schedule_it(monkeypatch) -> None:
+    """Same promise as the Mail Agent's roster entry: the panel shows who can
+    actually work on a request, and routing grants JIRA_READ on configuration."""
+    import main
+
+    monkeypatch.setenv("JIRA_ENABLED", "true")
+    monkeypatch.setenv("JIRA_URL", "https://acme.atlassian.net")
+    monkeypatch.setenv("JIRA_USERNAME", "me@acme.com")
+    monkeypatch.setenv("JIRA_API_TOKEN", "t")
+    assert "Jira Agent" in [w.name for w in main._worker_pool().workers]
+
+    monkeypatch.setenv("JIRA_ENABLED", "false")
+    names = [w.name for w in main._worker_pool().workers]
+    assert "Jira Agent" not in names
+    assert "Research Agent" in names
+
+
+def test_the_roster_lists_the_social_agent_on_the_routing_condition(monkeypatch) -> None:
+    import main
+    from social import health as social_health
+
+    def report(ok: bool):
+        return lambda *a, **k: social_health.HealthReport(
+            platform="reddit", installed=ok, authenticated=ok
+        )
+
+    monkeypatch.setattr(main.social_health, "check", report(True))
+    assert "Social Agent" in [w.name for w in main._worker_pool().workers]
+    monkeypatch.setattr(main.social_health, "check", report(False))
+    assert "Social Agent" not in [w.name for w in main._worker_pool().workers]
+
+
 def test_the_status_endpoint_exists() -> None:
     import jira_api
 

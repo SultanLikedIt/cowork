@@ -890,6 +890,36 @@ def _worker_pool() -> WorkerPoolResponse:
                 source="fixed",
             )
         )
+    # The Social and Jira agents, on the same terms as the Mail Agent above:
+    # listed exactly when _routing_for_workforce could schedule them. Like
+    # mail, neither belongs in camel_service.WORKER_ROLES -- they exist only
+    # on the LangGraph path.
+    try:
+        social_ready = social_health.check("reddit").ok
+    except Exception:  # noqa: BLE001 - a broken probe hides the card, nothing more
+        social_ready = False
+    if social_ready:
+        fixed.append(
+            WorkerSummary(
+                name="Social Agent",
+                description=(
+                    "Reads public discussion on Reddit and Hacker News and "
+                    "passes what people say to the other workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
+    if jira_client.is_configured():
+        fixed.append(
+            WorkerSummary(
+                name="Jira Agent",
+                description=(
+                    "Searches and reads issues in your company Jira and passes "
+                    "them to the other workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
     manual = [
         WorkerSummary(
             name=record["name"], description=record["description"], source="manual"

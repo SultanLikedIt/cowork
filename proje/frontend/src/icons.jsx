@@ -47,29 +47,7 @@ export const CodeIcon = (p) => (
   </svg>
 )
 
-export const MailIcon = (p) => (
-  <svg {...base} {...p}>
-    <rect x="3" y="5" width="18" height="14" rx="2" />
-    <path d="m3.5 7 8.5 6 8.5-6" />
-  </svg>
-)
-
-export const DiscussionIcon = (p) => (
-  <svg {...base} {...p}>
-    <path d="M20 12a7 7 0 0 1-7 7H8l-4 3v-4.5A7 7 0 0 1 8 5h5a7 7 0 0 1 7 7z" />
-    <path d="M8.5 10.5h7" />
-    <path d="M8.5 14h4" />
-  </svg>
-)
-
-// A task clipboard: the Jira Agent reads tickets.
-export const TaskIcon = (p) => (
-  <svg {...base} {...p}>
-    <rect x="5" y="4" width="14" height="17" rx="2" />
-    <path d="M9 4.5V3h6v1.5" />
-    <path d="m9 13 2 2 4-4" />
-  </svg>
-)
+// Mail, Social and Jira agents use brand logos instead (brandLogos.jsx).
 
 export const BotIcon = (p) => (
   <svg {...base} {...p}>
