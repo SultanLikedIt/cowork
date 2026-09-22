@@ -1064,6 +1064,18 @@ def apply_artifact_intent(
     # "github'a nasil push yaparim" wants an explanation, not a read.
     if reads_github:
         needed.add(GITHUB_READ)
+        # The structural floor adds WEB_FETCH for any literal URL, which
+        # schedules Research. When every URL is a GitHub link the GitHub
+        # Agent reads, Research would only read the same repository a second
+        # time (through the same API reader) -- extra model calls and ~half
+        # a minute for nothing. Kept when the user also wants the web, or
+        # when any other URL is present.
+        if (
+            WEB_FETCH in needed
+            and WEB_SEARCH not in needed
+            and _only_github_links(body)
+        ):
+            needed.discard(WEB_FETCH)
     if needs_code_execution:
         needed.add(CODE_EXEC)
     if wants_artifact:
@@ -1072,6 +1084,14 @@ def apply_artifact_intent(
             if _TRANSFORM_RE.search(body):
                 needed.add(CODE_EXEC)
     return expand(needed)
+
+
+def _only_github_links(text: str) -> bool:
+    """True when the text has URLs and every one is a GitHub target."""
+    import github_query
+
+    urls = web_fetch.find_urls(text or "")
+    return bool(urls) and all(github_query.parse_url(url) is not None for url in urls)
 
 
 _WEB_CAPABILITY_GROUP = frozenset({WEB_SEARCH, WEB_FETCH})
