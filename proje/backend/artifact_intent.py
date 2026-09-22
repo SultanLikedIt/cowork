@@ -210,7 +210,12 @@ INTENT_SYSTEM_PROMPT = (
     "people, cities, products, prices, news, or 'find/araştır/bul' tasks. "
     "It is true even when they also want a file at the end. "
     "needs_web_research is false only for pure chat, attached-file-only "
-    "analysis, or code/math on given data with no external lookup.\n\n"
+    "analysis, or code/math on given data with no external lookup -- and "
+    "false when one of the dedicated readers below answers it on its own "
+    "(the user's mailbox, Reddit / Hacker News discussion, their Jira, or "
+    "GitHub): 'popular / "
+    "trending / most starred repositories on GitHub' is a GitHub lookup, not "
+    "web research, even though it is current data.\n\n"
     "needs_code_execution is true when the task requires writing, running, "
     "debugging, or modifying code -- including writing functions/scripts, "
     "implementing algorithms, building software, fixing bugs, configuring "
@@ -318,7 +323,8 @@ INTENT_SYSTEM_PROMPT = (
     '- "raporu hazirla ve bana mail at" -> reads_email false, sends_email true\n'
     '- "email pazarlamasi hakkinda arastirma yap" -> reads_email false\n'
     "\nreads_social is true when the user wants what PEOPLE ARE SAYING on "
-    "Reddit -- opinions, experiences, complaints, discussion -- as the "
+    "Reddit or Hacker News -- opinions, experiences, complaints, "
+    "discussion -- as the "
     "SOURCE for the answer. It is false for an ordinary factual question "
     "that merely mentions the platform, and false when they want a website "
     "read instead (that is needs_web_research).\n"
@@ -351,15 +357,17 @@ INTENT_SYSTEM_PROMPT = (
     "request the user linked or named as owner/repo. It is false for "
     "questions about how to USE git or GitHub, and false for general "
     "programming questions that no repository answers. When GitHub alone "
-    "answers the request (finding or reading repositories), "
-    "needs_web_research is false; set it true only if the user also wants "
-    "web content such as articles, blog posts, benchmarks or news.\n"
+    "answers the request (finding or reading repositories, including what "
+    "is popular or trending on GitHub right now), needs_web_research is "
+    "false; set it true only if the user also wants web content such as "
+    "articles, blog posts, benchmarks or news.\n"
     "\nreads_github examples (key named, independent of the values above):\n"
     '- "en populer python web frameworkleri hangileri" -> reads_github true, '
     "needs_web_research false\n"
     '- "en populer rust frameworkleri ve performans karsilastirma yazilari" -> '
     "reads_github true, needs_web_research true\n"
-    '- "bu hafta github da trend olan rust projeleri" -> reads_github true\n'
+    '- "bu hafta github da trend olan rust projeleri" -> reads_github true, '
+    "needs_web_research false\n"
     '- "https://github.com/astral-sh/uv ne ise yariyor" -> reads_github true\n'
     '- "facebook/react ile vuejs/core u karsilastir" -> reads_github true\n'
     '- "langchain alternatifi acik kaynak kutuphaneler, excel yap" -> '
