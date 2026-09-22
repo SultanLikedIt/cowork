@@ -71,6 +71,9 @@ const STAGE_LABELS = {
   jira_plan: 'Jira · search plan',
   jira_select: 'Jira · issue selection',
   jira_answer: 'Jira · issue summary',
+  github_plan: 'GitHub · search plan',
+  github_select: 'GitHub · repository selection',
+  github_answer: 'GitHub · summary',
   artifact_intent: 'Artifact intent',
 }
 

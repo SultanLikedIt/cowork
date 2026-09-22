@@ -20,6 +20,7 @@ bazlı derinleştirmesidir.
 | [outlook.md](outlook.md) | Outlook ile e-posta: zamanlanmış görev sonuçları |
 | [social-reach.md](social-reach.md) | Reddit okuma: kurulum, çerez yenileme, güvenlik |
 | [jira.md](jira.md) | Jira okuma: kurulum (Cloud / Server), ne sorulabilir, VPN, güvenlik |
+| [github.md](github.md) | GitHub okuma: depo arama, bağlantı okuma, token, sınırlar, güvenlik |
 | [openbot-integration.md](openbot-integration.md) | OpenBot / AG-UI entegrasyonu |
 | [backend-reliability-harness.md](backend-reliability-harness.md) | Deterministic reliability harness |
 

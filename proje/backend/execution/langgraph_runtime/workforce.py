@@ -49,6 +49,7 @@ ROLE_GENERAL = "Assistant"
 ROLE_MAIL = "Mail Agent"
 ROLE_SOCIAL = "Social Agent"
 ROLE_JIRA = "Jira Agent"
+ROLE_GITHUB = "GitHub Agent"
 
 WORKER_IDS = {
     ROLE_RESEARCH: "lg-research",
@@ -58,12 +59,13 @@ WORKER_IDS = {
     ROLE_MAIL: "lg-mail",
     ROLE_SOCIAL: "lg-social",
     ROLE_JIRA: "lg-jira",
+    ROLE_GITHUB: "lg-github",
 }
 
 # Workers that gather evidence and never write the user-facing answer. Their
 # output is notes for the next worker (quoted or summarized source material),
 # so a job made only of these needs the Assistant appended to answer.
-_GATHER_ONLY_ROLES = frozenset({ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA})
+_GATHER_ONLY_ROLES = frozenset({ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA, ROLE_GITHUB})
 
 
 class CancellableWorkforce:
@@ -387,6 +389,7 @@ def _select_roles(
     reads_email: bool = False,
     reads_social: bool = False,
     reads_jira: bool = False,
+    reads_github: bool = False,
 ) -> list[str]:
     """Pick workers for this job.
 
@@ -416,6 +419,10 @@ def _select_roles(
     # And again for Jira: the user's tickets are the SOURCE, gathered first.
     if reads_jira or capabilities.JIRA_READ in caps:
         roles.append(ROLE_JIRA)
+    # And for GitHub: the repositories are the SOURCE ("bu repoyu ozetle",
+    # "en populer Rust frameworkleri"), gathered before anything uses them.
+    if reads_github or capabilities.GITHUB_READ in caps:
+        roles.append(ROLE_GITHUB)
     if fast_path_role:
         roles.append(_resolve_fast_path_role(fast_path_role))
     else:
@@ -454,6 +461,18 @@ def _select_roles(
         # shipping it as the reply would put unfenced stranger-written text
         # where the answer should be. Anything else in the list can do the
         # answering; alone, they need the Assistant.
+        roles.append(ROLE_GENERAL)
+    elif (
+        roles
+        and roles[-1] == ROLE_RESEARCH
+        and any(role in _GATHER_ONLY_ROLES for role in roles)
+    ):
+        # Research answers from the pages it opened and never reads prior
+        # notes, and the last worker's text is the reply. So a gatherer
+        # followed by Research alone had its evidence silently dropped: live,
+        # "github'daki en populer rust frameworkleri" came back as a web
+        # answer with "(belirtilmemis)" star counts the GitHub Agent had
+        # already fetched. The Assistant reads all notes and writes the reply.
         roles.append(ROLE_GENERAL)
 
     if not roles:
@@ -2541,6 +2560,110 @@ async def _run_jira(
     notes = jira_controller.render_notes(result)
     if result.ok:
         summary = f"{len(result.issues)} kayıt listelendi, {result.read_count} kayıt okundu"
+        if result.findings:
+            summary += " (yönlendirme denemesi içeren içerik var)"
+    else:
+        summary = f"okunamadı ({result.error_code})"
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return notes
+
+
+async def _run_github(
+    *,
+    content: str,
+    original_request: str,
+    tracker: UsageTracker,
+    callback: Any,
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+    deep_research: bool = False,
+) -> str:
+    """GitHub Agent: search and read public GitHub, return evidence notes.
+
+    Same structure as ``_run_jira``: a fixed phase sequence in
+    github_controller, not a tool the model may call, and the return value is
+    notes for the next worker -- never the user-facing answer (see
+    _GATHER_ONLY_ROLES). Read-only: github_client has no write method.
+    """
+    import github_controller
+
+    worker_id = WORKER_IDS[ROLE_GITHUB]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_GITHUB,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description="GitHub depolarını ara ve oku",
+    )
+    _emit_activity(callback, unit_task_id, "searching", "GitHub taranıyor")
+
+    complete = await _make_complete(
+        tracker, deep_research=deep_research, stage_prefix="github"
+    )
+    try:
+        result = await github_controller.acquire_github_evidence(
+            original_request or content,
+            complete=complete,
+            deep_research=deep_research,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failure is an answer, not a crash
+        stabilization_logger.exception("github acquisition failed")
+        _lifecycle_done(
+            callback,
+            worker_id=worker_id,
+            unit_task_id=unit_task_id,
+            result_summary="GitHub okunamadı",
+            started=started,
+        )
+        return github_controller.render_notes(
+            github_controller.GitHubResult(
+                error=f"{type(exc).__name__}: {exc}", error_code="github_failed"
+            )
+        )
+
+    if tool_call_recorder is not None:
+        # Recorded like any other real action: what was searched and read.
+        try:
+            tool_call_recorder.record(
+                "read_github",
+                {
+                    "search": result.search_q,
+                    "repos": [o.record.full_name for o in result.overviews],
+                    "files": [f.label for f in result.files + result.dirs],
+                    "issues": [i.label for i in result.issues],
+                },
+                result=(
+                    f"{len(result.repos)} repo(s) listed, {result.read_count} read"
+                    if result.ok
+                    else None
+                ),
+                error=None if result.ok else str(result.error_code or "github_failed"),
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the run
+            stabilization_logger.warning("could not record read_github", exc_info=True)
+
+    if handle.cancelled:
+        return github_controller.render_notes(result)
+
+    if result.ok and (result.repos or result.read_count):
+        _emit_activity(
+            callback,
+            unit_task_id,
+            "reading",
+            f"{result.read_count or len(result.repos)} GitHub kaydı okundu",
+        )
+
+    notes = github_controller.render_notes(result)
+    if result.ok:
+        summary = f"{len(result.repos)} depo listelendi, {result.read_count} kayıt okundu"
         if result.findings:
             summary += " (yönlendirme denemesi içeren içerik var)"
     else:
@@ -5218,6 +5341,17 @@ def _build_graph(
                 unit_task_id=unit_id,
                 deep_research=deep_research,
             )
+        elif role == ROLE_GITHUB:
+            text = await _run_github(
+                content=content,
+                original_request=request,
+                tracker=tracker,
+                callback=callback,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+                deep_research=deep_research,
+            )
         elif role == ROLE_RESEARCH:
             text = await _run_research(
                 content=content,
@@ -5380,6 +5514,7 @@ async def _run_workforce_async(
     reads_email: Optional[bool] = None,
     reads_social: Optional[bool] = None,
     reads_jira: Optional[bool] = None,
+    reads_github: Optional[bool] = None,
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -5433,6 +5568,7 @@ async def _run_workforce_async(
             reads_email=bool(reads_email),
             reads_social=bool(reads_social),
             reads_jira=bool(reads_jira),
+            reads_github=bool(reads_github),
         )
     )
     seeded_notes = (
@@ -5576,6 +5712,7 @@ def run_workforce_in_thread(
     reads_email: Optional[bool] = None,
     reads_social: Optional[bool] = None,
     reads_jira: Optional[bool] = None,
+    reads_github: Optional[bool] = None,
 ) -> Any:
     """Sync entrypoint matching ``camel_service.run_workforce_in_thread``."""
     handle = CancellableWorkforce()
@@ -5606,6 +5743,7 @@ def run_workforce_in_thread(
                 reads_email=reads_email,
                 reads_social=reads_social,
                 reads_jira=reads_jira,
+                reads_github=reads_github,
             )
         )
     finally:

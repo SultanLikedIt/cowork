@@ -350,7 +350,9 @@ class Cleaned:
         return bool(self.findings) or self.invisible_removed > 0
 
 
-def clean(text: str, *, max_chars: int = MAX_ITEM_CHARS) -> Cleaned:
+def clean(
+    text: str, *, max_chars: int = MAX_ITEM_CHARS, ignore: frozenset[str] = frozenset()
+) -> Cleaned:
     """Make one piece of untrusted text safe to quote.
 
     Order matters: strip the invisible payload first so detection runs on
@@ -358,6 +360,11 @@ def clean(text: str, *, max_chars: int = MAX_ITEM_CHARS) -> Cleaned:
     reported even when it sat past the budget -- an attacker who pads 50k
     characters of filler in front of the instruction must not be able to
     truncate his way out of the warning.
+
+    ``ignore`` drops finding categories that are ordinary in a given
+    source: every README says "pip install", so ``tool_direction`` there
+    is noise that would flag every repository as an attack. Only the
+    finding is dropped; the text is cleaned and fenced exactly the same.
     """
     hidden = decode_hidden_text(text or "")
     stripped, removed = strip_invisible(text or "")
@@ -377,6 +384,8 @@ def clean(text: str, *, max_chars: int = MAX_ITEM_CHARS) -> Cleaned:
         findings.extend(
             finding for finding in scan(hidden) if finding.category not in known
         )
+    if ignore:
+        findings = [finding for finding in findings if finding.category not in ignore]
     body = defang_control_tokens(stripped)
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
     truncated = len(body) > max_chars
@@ -506,12 +515,14 @@ def render(
     nonce: Optional[str] = None,
     max_item_chars: int = MAX_ITEM_CHARS,
     max_block_chars: int = MAX_BLOCK_CHARS,
+    ignore: frozenset[str] = frozenset(),
 ) -> Rendered:
     """Fence ``items`` into one evidence block for a downstream worker.
 
     Every item is cleaned, flagged inline when it looks like an injection
     attempt, and wrapped in nonce-suffixed markers. The returned findings are
     the union across items, for the caller to log and to surface in the UI.
+    ``ignore`` is passed to ``clean`` (see there).
     """
     token = nonce or new_nonce()
     marker_open = f"<<<ALINTI_BASLANGIC_{token}>>>"
@@ -539,7 +550,7 @@ def render(
             break
         lines.append(f"--- ÖĞE {number} ---")
         for key, value in (item.meta or {}).items():
-            meta = clean(str(value), max_chars=200)
+            meta = clean(str(value), max_chars=200, ignore=ignore)
             all_findings.extend(meta.findings)
             invisible_total += meta.invisible_removed
             # Metadata counts against the block budget too. It used to be
@@ -552,7 +563,7 @@ def render(
         # budget > 0 is guaranteed by the check at the top of the loop, so
         # there is no zero-allowance case to handle here.
         allowance = max(1, min(max_item_chars, budget))
-        cleaned = clean(item.body, max_chars=allowance)
+        cleaned = clean(item.body, max_chars=allowance, ignore=ignore)
         budget -= len(cleaned.text)
         all_findings.extend(cleaned.findings)
         invisible_total += cleaned.invisible_removed

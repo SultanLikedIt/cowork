@@ -150,6 +150,7 @@ LOCAL_COMPUTER_ENABLED=false    # "bilgisayarımda aç" köprüsü
 DOCLING_ENABLE_OCR=true         # PDF + görsel okuma (PaddleOCR-VL, yoksa Tesseract)
 COMPOSE_PROFILES=paddleocr      # PaddleOCR-VL servisleri (NVIDIA GPU ister)
 JIRA_ENABLED=false              # şirket Jira'sını okuma (salt okunur), docs/jira.md
+GITHUB_TOKEN=                   # GitHub okuma varsayılan açık; token sınırı 60→5000/saat yapar, docs/github.md
 ```
 
 Tam liste ve açıklamalar: [`.env.example`](.env.example) ve
@@ -291,5 +292,6 @@ Güncel açık listesi ve nerede düzeltileceği:
 | [docs/outlook.md](docs/outlook.md) | Outlook ile e-posta: kurulum, güvenlik, sorun giderme |
 | [docs/social-reach.md](docs/social-reach.md) | Reddit okuma: kurulum, haftalık çerez yenileme, güvenlik |
 | [docs/jira.md](docs/jira.md) | Jira okuma: Cloud / Server kurulumu, örnek sorular, VPN, güvenlik |
+| [docs/github.md](docs/github.md) | GitHub okuma: depo arama, bağlantı okuma, token, sınırlar, güvenlik |
 | [docs/agent-search.md](docs/agent-search.md) | AgentSearch sidecar |
 | [docs/README.md](docs/README.md) | `docs/` dizin indeksi |

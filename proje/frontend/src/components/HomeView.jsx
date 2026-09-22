@@ -1,7 +1,7 @@
 import { Check, Clock, Code2, FileText, Globe, PanelLeft, Plus, Search } from 'lucide-react'
 
 import { BotIcon } from '../icons.jsx'
-import { HackerNewsLogo, JiraLogo, OutlookLogo, RedditLogo } from '../brandLogos.jsx'
+import { GitHubLogo, HackerNewsLogo, JiraLogo, OutlookLogo, RedditLogo } from '../brandLogos.jsx'
 import { ERROR_JOB_STATUSES, SUCCESS_JOB_STATUSES, isActiveJob } from '../stages.js'
 import { cn } from '../lib/utils.js'
 import { Button } from './ui/button.jsx'
@@ -66,6 +66,13 @@ const INTEGRATION_AGENTS = [
     description: 'Find & summarize your issues',
     Logo: JiraLogo,
     rosterName: 'Jira Agent',
+  },
+  {
+    key: 'GitHub',
+    label: 'GitHub',
+    description: 'Find & read public repositories',
+    Logo: GitHubLogo,
+    rosterName: 'GitHub Agent',
   },
 ]
 

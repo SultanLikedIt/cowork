@@ -819,6 +819,9 @@ class WebTools:
 
     def _read(self, url: str) -> dict[str, Any]:
         self._emit("opening", url)
+        github_page = self._read_github(url)
+        if github_page is not None:
+            return github_page
         # Direct PDF downloads routinely hang Chromium for the full
         # WEB_ACQUIRE_TIMEOUT (30s) and return no usable text. Prefer HTML
         # candidates from SEARCH/SELECT; skip .pdf without burning the budget.
@@ -870,6 +873,33 @@ class WebTools:
         if page.text.strip() and not page.javascript_required:
             return self._deliver_text(page)
         return self._deliver_failure(page)
+
+    def _read_github(self, url: str) -> Optional[dict[str, Any]]:
+        """A GitHub repository / file / issue link, read through the API.
+
+        The rendered github.com page is mostly navigation, and a file view
+        buries the code in markup; the API returns the README or the file
+        itself. None -- not a GitHub link, GitHub reading off, or the API
+        failed (a rate limit, say) -- means the ordinary crawler reads it
+        instead, which still works for public pages. The host the API
+        reader contacts is fixed (github_client), so nothing here widens
+        what a URL can reach.
+        """
+        host = (urlsplit(url or "").hostname or "").lower()
+        if host not in {"github.com", "www.github.com", "raw.githubusercontent.com"}:
+            return None
+        import github_controller
+
+        page = github_controller.read_url_as_page(url)
+        if page is None:
+            return None
+        self._emit("reading", str(page.get("source_url") or url))
+        delivered, budget_note = self._web._spend_text(str(page.get("text") or "")[:MAX_TEXT_CHARS])
+        page["text"] = delivered
+        page["ok"] = bool(delivered.strip())
+        if budget_note:
+            page["budget_note"] = budget_note
+        return page
 
     def _deliver_records(self, page: AcquiredPage) -> dict[str, Any]:
         records = page.records[:MAX_RECORDS_PER_READ]

@@ -196,6 +196,7 @@ const FIXED_AGENT_BLURB = {
   'Mail Agent': 'Reads your Outlook inbox and sent mail',
   'Social Agent': 'Reads Reddit and Hacker News discussions',
   'Jira Agent': 'Searches and reads your Jira issues (read-only)',
+  'GitHub Agent': 'Finds and reads public GitHub repositories (read-only)',
 }
 
 function AgentCard({ worker, assignments, runtime }) {

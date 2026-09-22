@@ -43,6 +43,7 @@ class ArtifactIntentResult(BaseModel):
     reads_email: bool = False
     reads_social: bool = False
     reads_jira: bool = False
+    reads_github: bool = False
 
 
 # Addresses are taken from the REQUEST TEXT only, never from anything the run
@@ -126,6 +127,12 @@ class ArtifactIntent:
     # same reason again: "jira" also appears in "jira nedir" and "jira'ya
     # girilecek bir bug raporu yaz", neither of which wants tickets read.
     reads_jira: bool = False
+    # "en populer Rust web framework'leri", "bu repoyu ozetle <link>" -- the
+    # job reads public GitHub as the SOURCE. The classifier decides, except
+    # that a GitHub link the user typed always counts (see
+    # _with_github_links): there is no reading of a pasted repository link
+    # that does not want the repository read.
+    reads_github: bool = False
 
     # The user asked for mail and no usable address survived verification.
     # Set by normalized(), because that is the step which erases the
@@ -158,7 +165,20 @@ class ArtifactIntent:
             reads_email=bool(self.reads_email),
             reads_social=bool(self.reads_social),
             reads_jira=bool(self.reads_jira),
+            reads_github=bool(self.reads_github),
         )
+
+
+def _with_github_links(topic: str, classified: bool) -> bool:
+    """A GitHub link in the request means GitHub is read, whatever the
+    classifier said. Safe as a backstop where the equivalent for mail or
+    Jira would not be: the link names public content the user chose, and
+    reading it costs a few API requests, not anyone's privacy."""
+    if classified:
+        return True
+    import github_query
+
+    return github_query.has_github_link(topic or "")
 
 
 INTENT_SYSTEM_PROMPT = (
@@ -175,7 +195,8 @@ INTENT_SYSTEM_PROMPT = (
     '"email_to": ["address", ...], '
     '"reads_email": true | false, '
     '"reads_social": true | false, '
-    '"reads_jira": true | false}.\n\n'
+    '"reads_jira": true | false, '
+    '"reads_github": true | false}.\n\n'
     "wants_artifact is true ONLY when the user wants a new file created and "
     "given to them (Excel/xlsx, CSV, JSON, Word/docx, PowerPoint/pptx, PDF, HTML "
     "page, or a runnable code/project bundle). "
@@ -324,6 +345,27 @@ INTENT_SYSTEM_PROMPT = (
     '- "gecen hafta kapanan tasklari ozetle" -> reads_jira true\n'
     '- "jira nedir nasil kullanilir" -> reads_jira false\n'
     '- "jira ya girilecek bir bug raporu yaz" -> reads_jira false\n'
+    "\nreads_github is true when the answer should come from public GitHub "
+    "-- finding repositories (popular, trending, best, alternatives, "
+    "libraries for a purpose), or reading a repository, file, issue or pull "
+    "request the user linked or named as owner/repo. It is false for "
+    "questions about how to USE git or GitHub, and false for general "
+    "programming questions that no repository answers. When GitHub alone "
+    "answers the request (finding or reading repositories), "
+    "needs_web_research is false; set it true only if the user also wants "
+    "web content such as articles, blog posts, benchmarks or news.\n"
+    "\nreads_github examples (key named, independent of the values above):\n"
+    '- "en populer python web frameworkleri hangileri" -> reads_github true, '
+    "needs_web_research false\n"
+    '- "en populer rust frameworkleri ve performans karsilastirma yazilari" -> '
+    "reads_github true, needs_web_research true\n"
+    '- "bu hafta github da trend olan rust projeleri" -> reads_github true\n'
+    '- "https://github.com/astral-sh/uv ne ise yariyor" -> reads_github true\n'
+    '- "facebook/react ile vuejs/core u karsilastir" -> reads_github true\n'
+    '- "langchain alternatifi acik kaynak kutuphaneler, excel yap" -> '
+    "reads_github true, wants_artifact true, artifact_type xlsx\n"
+    '- "github a nasil push yaparim" -> reads_github false\n'
+    '- "python da liste nasil siralanir" -> reads_github false\n'
     "Output ONLY the JSON object."
 )
 
@@ -417,6 +459,9 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         # And the same for Jira: a fallback does not get to decide to read
         # company tickets the classifier never saw a request for.
         reads_jira=False,
+        # The one reader a fallback may turn on, and only for a GitHub link
+        # the user typed: see _with_github_links.
+        reads_github=_with_github_links(topic, False),
     ).normalized()
 
 
@@ -444,6 +489,7 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         reads_email=bool(usage.get("reads_email")),
         reads_social=bool(usage.get("reads_social")),
         reads_jira=bool(usage.get("reads_jira")),
+        reads_github=bool(usage.get("reads_github")),
         email_unaddressed=bool(usage.get("email_unaddressed")),
     ).normalized()
 
@@ -531,5 +577,6 @@ async def classify_artifact_intent(
         reads_email=result.reads_email,
         reads_social=result.reads_social,
         reads_jira=result.reads_jira,
+        reads_github=_with_github_links(topic, result.reads_github),
     ).normalized()
     return intent

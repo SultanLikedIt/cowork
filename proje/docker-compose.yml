@@ -170,6 +170,14 @@ services:
       JIRA_PERSONAL_TOKEN: ${JIRA_PERSONAL_TOKEN:-}
       JIRA_CONNECT_TIMEOUT_SECONDS: ${JIRA_CONNECT_TIMEOUT_SECONDS:-5}
       JIRA_TIMEOUT_SECONDS: ${JIRA_TIMEOUT_SECONDS:-20}
+      # Reading public GitHub, read-only (backend/github_client.py,
+      # docs/github.md). On by default: public repositories need no account.
+      # Without a token the limit is 60 requests an hour for the whole
+      # backend; GITHUB_TOKEN (a fine-grained token with no permissions)
+      # raises it to 5,000.
+      GITHUB_ENABLED: ${GITHUB_ENABLED:-true}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
     volumes:
       - backend-data:/data
     # Host ports differ from the Camel stack (8000/8080) so both can run
