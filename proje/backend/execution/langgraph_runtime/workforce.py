@@ -16,6 +16,8 @@ import logging
 import re
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TypedDict
 from urllib.parse import urlsplit
 
@@ -93,6 +95,9 @@ class WorkforceState(TypedDict, total=False):
     role_index: int
     notes: str
     answer: str
+    # Which worker wrote ``answer``. The Coding Agent's reply carries the
+    # real program output verbatim and must not be rewritten downstream.
+    answer_role: str
     cancelled: bool
 
 
@@ -1575,6 +1580,11 @@ def _present_workforce_answer(text: str) -> str:
     File-handoff lines stay *after* Kaynaklar so the brief reads like OpenBot
     (title → table → sources → download), not sources buried under the file card.
     """
+    # Fenced code and program output are shown verbatim. The prose filters
+    # below work paragraph by paragraph and harvest URLs, so a code comment
+    # with a link became a "Kaynaklar" entry and a line printing "cannot
+    # create file" could drop a whole chunk of the program.
+    text, fences = _shield_code_fences(text)
     had_marker = _RESEARCH_SOURCES_MARKER in (text or "")
     cleaned, sources = _split_research_sources(text)
     if not sources:
@@ -1602,7 +1612,36 @@ def _present_workforce_answer(text: str) -> str:
         out = cleaned
     if file_notice:
         out = f"{out.rstrip()}\n\n{file_notice}"
-    return out
+    return _restore_code_fences(out, fences)
+
+
+_CODE_FENCE_RE = re.compile(
+    r"(?ms)^[ \t]*(?P<tick>`{3,})[^\n]*\n.*?^[ \t]*(?P=tick)[ \t]*$"
+)
+_FENCE_TOKEN = "⟦KOD-{}⟧"
+_FENCE_TOKEN_RE = re.compile(r"⟦KOD-(\d+)⟧")
+
+
+def _shield_code_fences(text: str) -> tuple[str, list[str]]:
+    """Swap fenced blocks for tokens so prose filters cannot touch them."""
+    fences: list[str] = []
+
+    def keep(match: re.Match) -> str:
+        fences.append(match.group(0))
+        return _FENCE_TOKEN.format(len(fences) - 1)
+
+    return _CODE_FENCE_RE.sub(keep, text or ""), fences
+
+
+def _restore_code_fences(text: str, fences: list[str]) -> str:
+    if not fences:
+        return text
+    return _FENCE_TOKEN_RE.sub(
+        lambda match: fences[int(match.group(1))]
+        if int(match.group(1)) < len(fences)
+        else match.group(0),
+        text,
+    )
 
 
 def _inject_sources_into_payload(
@@ -2845,6 +2884,124 @@ def _append_document_sources(text: str, sources: Optional[dict[str, str]]) -> st
     return f"{(text or '').rstrip()}\n\nBelge kaynakları:\n" + "\n".join(
         f"- {line}" for line in lines
     )
+
+
+def _coding_delivered_requested_files(
+    workspace_root: Optional[str], artifact_type: str, request: str
+) -> bool:
+    """Whether artifacts/ already holds every requested format.
+
+    Only the Coding Agent writes there before Document runs, so what is on
+    disk at this point is the program's own output.
+    """
+    produced = {
+        Path(path).suffix.lstrip(".").casefold()
+        for path in _artifacts_on_disk(workspace_root)
+    }
+    if not produced:
+        return False
+    kinds = _infer_artifact_kinds(
+        artifact_type, request, attached_kinds=_uploaded_kinds(workspace_root)
+    )
+    wanted = {"py" if kind == "code" else kind for kind in kinds}
+    return bool(wanted) and wanted <= produced
+
+
+async def _run_coding(
+    *,
+    content: str,
+    original_request: str,
+    prior_notes: str,
+    tracker: UsageTracker,
+    callback: Any,
+    workspace_root: Optional[str],
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+) -> str:
+    """Coding Agent: write the code, run it, fix it, explain the real output.
+
+    A fixed phase sequence in code_controller, like ``_run_jira``; the model
+    never calls an execution tool itself. The returned text is the reply
+    (explanation + the code that ran + its real output), and it is also the
+    notes a following Document Agent writes its file from.
+    """
+    import code_controller
+    from code_exec import CodeExecutionTools
+
+    worker_id = WORKER_IDS[ROLE_CODING]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_CODING,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description=original_request or content,
+    )
+
+    def progress(stage: str, detail: str = "") -> None:
+        _emit_activity(callback, unit_task_id, stage, detail)
+
+    tools = CodeExecutionTools(Path(workspace_root))
+
+    async def execute(code: str) -> dict[str, Any]:
+        run_started = time.monotonic()
+        started_at = datetime.now(timezone.utc).isoformat()
+        outcome = await asyncio.to_thread(
+            tools.run_python, code, code_controller.RUN_TIMEOUT_SECONDS
+        )
+        seconds = time.monotonic() - run_started
+        if tool_call_recorder is not None:
+            try:
+                tool_call_recorder.record(
+                    "run_python",
+                    {"code": code[:4_000]},
+                    result=(
+                        {
+                            "stdout": str(outcome.get("stdout") or "")[:2_000],
+                            "files_written": outcome.get("files_written") or [],
+                        }
+                        if outcome.get("ok")
+                        else None
+                    ),
+                    error=None if outcome.get("ok") else str(outcome.get("error") or "failed")[:500],
+                    duration_ms=round(seconds * 1000, 1),
+                    started_at=started_at,
+                )
+            except Exception:  # noqa: BLE001 - audit must not break the run
+                stabilization_logger.warning("could not record run_python", exc_info=True)
+        return outcome
+
+    complete = await _make_complete(tracker, stage_prefix="coding")
+    try:
+        result = await code_controller.run_code_task(
+            original_request or content,
+            complete=complete,
+            execute=execute,
+            notes=prior_notes,
+            progress=progress,
+            cancelled=lambda: handle.cancelled,
+        )
+        output = code_controller.render_answer(result)
+        summary = (
+            f"{len(result.runs)} çalıştırma, "
+            + ("başarılı" if result.ok else f"başarısız ({result.error})")
+            if result.mode == code_controller.MODE_RUN
+            else "kod yazıldı (çalıştırılmadı)"
+        )
+    except Exception as exc:  # noqa: BLE001 - a failure is an answer, not a crash
+        stabilization_logger.exception("coding task failed")
+        output = f"Kod Ajanı çalışırken hata oluştu: {type(exc).__name__}: {exc}"
+        summary = "hata"
+
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return output
 
 
 async def _run_llm_worker(
@@ -5685,6 +5842,20 @@ def _build_graph(
                 deep_research=deep_research,
                 sources_out=sources_out,
             )
+        elif role == ROLE_CODING and workspace_root:
+            # Without a workspace there is nowhere to run, and the generic
+            # text worker below (code as prose, no invented output) remains.
+            text = await _run_coding(
+                content=content,
+                original_request=request,
+                prior_notes=notes,
+                tracker=tracker,
+                callback=callback,
+                workspace_root=workspace_root,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+            )
         elif role == ROLE_MAIL:
             text = await _run_mail(
                 content=content,
@@ -5843,11 +6014,31 @@ def _build_graph(
                 )
             ).strip() or (text or "").strip()
 
+        if (
+            role == ROLE_CODING
+            and wants_artifact
+            and ROLE_DOCUMENT in next_roles[index + 1 :]
+            and _coding_delivered_requested_files(
+                workspace_root, artifact_type, request
+            )
+        ):
+            # The program already wrote the file that was asked for (the
+            # month-by-month xlsx, the cleaned csv). Document would write a
+            # second, model-typed copy of the same table from the notes and
+            # replace the reply that shows the real output with a file blurb.
+            next_roles = [
+                r for i, r in enumerate(next_roles) if i <= index or r != ROLE_DOCUMENT
+            ]
+
+        chosen = answer or state.get("answer") or text
         return {
             "role_index": index + 1,
             "roles": next_roles,
             "notes": new_notes,
-            "answer": answer or state.get("answer") or text,
+            "answer": chosen,
+            "answer_role": (
+                role if chosen == text else str(state.get("answer_role") or "")
+            ),
         }
 
     def route(state: WorkforceState) -> str:
@@ -6005,6 +6196,12 @@ async def _run_workforce_async(
 
     final_answer = (final_state.get("answer") or final_state.get("notes") or "").strip()
     notes_for_doc = (final_state.get("notes") or final_answer or "").strip()
+    # The Coding Agent's reply is the code that ran and what it really
+    # printed. main's synthesis step restates answers with a model call
+    # (skills, "latest"-type asks, file jobs), which would put a retyped --
+    # possibly invented -- output where the real one was.
+    coding_answer = final_state.get("answer_role") == ROLE_CODING and bool(final_answer)
+    answer_before_fallbacks = final_answer
 
     # Safety net: only if Document never ran. Initial ``roles`` always lists
     # Document when wants_artifact — that must NOT count as "already ran".
@@ -6090,6 +6287,7 @@ async def _run_workforce_async(
             sources_out.get("documents"),
         ),
         state="DONE" if not handle.cancelled else "FAILED",
+        verbatim=coding_answer and final_answer.startswith(answer_before_fallbacks),
     )
 
 

@@ -25,7 +25,7 @@ class ActivityEvent(BaseModel):
     event_type: Literal["activity"] = "activity"
     task_id: str
     stage: Literal[
-        "searching", "opening", "browsing", "reading", "building", "done"
+        "searching", "opening", "browsing", "reading", "building", "coding", "done"
     ]
     detail: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

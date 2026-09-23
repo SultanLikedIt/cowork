@@ -2097,14 +2097,20 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 knowledge_files=list(job.get("knowledge_files") or []),
             )
             if not control.cancelled:
-                synthesized, is_partial = await camel_service.synthesize_workforce_result(
-                    result_task,
-                    resolved_request,
-                    control.usage_tracker,
-                    skills=active_skills,
-                    job_capabilities=job_capabilities,
-                    workspace_root=job.get("workspace_root"),
-                )
+                if getattr(result_task, "verbatim", False):
+                    # The Coding Agent's reply: the code that ran and what it
+                    # really printed. Synthesis restates answers with a model
+                    # call, and a restated program output is a guessed one.
+                    synthesized, is_partial = "", False
+                else:
+                    synthesized, is_partial = await camel_service.synthesize_workforce_result(
+                        result_task,
+                        resolved_request,
+                        control.usage_tracker,
+                        skills=active_skills,
+                        job_capabilities=job_capabilities,
+                        workspace_root=job.get("workspace_root"),
+                    )
                 if synthesized:
                     result_task.result = synthesized
                 else:

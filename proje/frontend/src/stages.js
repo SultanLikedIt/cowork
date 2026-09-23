@@ -53,6 +53,7 @@ export const USER_FACING_PROGRESS = {
   analyzing: 'Analyzing information',
   preparing: 'Preparing response',
   creating: 'Creating document',
+  coding: 'Writing and running code',
 }
 
 /**
@@ -86,6 +87,9 @@ export function userFacingProgress(job, tasks = []) {
   const activityStage = job.current_activity?.stage
   if (activityStage === 'building') {
     return { phase: 'creating', label: USER_FACING_PROGRESS.creating }
+  }
+  if (activityStage === 'coding') {
+    return { phase: 'coding', label: USER_FACING_PROGRESS.coding }
   }
   if (RESEARCH_ACTIVITY_STAGES.has(activityStage)) {
     return { phase: 'researching', label: USER_FACING_PROGRESS.researching }
@@ -155,6 +159,7 @@ const ACTIVITY_LABELS = {
   browsing: 'Using browser',
   reading: 'Reading web content',
   building: 'Building file',
+  coding: 'Code',
   done: 'Step complete',
 }
 
