@@ -3321,9 +3321,9 @@ def _find_uploaded_docx_template(workspace_root: Optional[str]) -> Optional[str]
 
 def _workspace_has_uploaded_sources(workspace_root: Optional[str]) -> bool:
     """True when this job's workspace has at least one uploaded source
-    file. Used only to narrow the thin_notes carve-out in
-    _run_document_worker -- never changes routing on the ordinary
-    Research-then-Document path."""
+    file: the user supplied the material. Narrows the thin_notes carve-out
+    in _run_document_worker, and stops a sources keyword from scheduling
+    Research on its own (_run_workforce_async)."""
     if not workspace_root:
         return False
     from pathlib import Path
@@ -5937,7 +5937,16 @@ async def _run_workforce_async(
     # "referans" are the material's own words ("Kaynak kod", "Ek:
     # Referans"); whether a brief needs the web is the classifier's call,
     # made through WEB_* capabilities.
-    wants_sources = _request_wants_sources(request) and not _request_is_brief(request)
+    #
+    # Nor when files are attached: the material is supplied. Live, "Yüklediğim
+    # belgeden ... sunum hazırla. Ek: Referans bölümünü son slayta koy"
+    # with the document attached spent 4.5 minutes web-searching Canva
+    # tutorials, then told the user their document was not in the evidence.
+    wants_sources = (
+        _request_wants_sources(request)
+        and not _request_is_brief(request)
+        and not _workspace_has_uploaded_sources(workspace_root)
+    )
     roles = (
         [ROLE_GENERAL]
         if (wants_local_open and not combined_create_and_open)
