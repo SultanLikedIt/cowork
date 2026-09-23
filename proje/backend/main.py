@@ -312,6 +312,16 @@ def _index_missing_documents(file_ids: list[str]) -> int:
 _CONTEXT_WHOLE_CHARS = int(MAX_CONTEXT_CHARS * 0.9)
 
 
+def _attachments_read_whole(records: list[dict[str, Any]]) -> bool:
+    """True when this job's own files fit in the prompt whole.
+
+    Then every model call that needs them already has all of them, and a
+    document search can only return pieces of what it was given.
+    """
+    in_prompt = sum(len(str(record.get("extracted_text") or "")) for record in records)
+    return bool(records) and in_prompt <= _CONTEXT_WHOLE_CHARS
+
+
 def _knowledge_files_for_job(
     workspace_id: str, records: list[dict[str, Any]]
 ) -> list[tuple[str, str]]:
@@ -347,8 +357,7 @@ def _knowledge_files_for_job(
         or status.status == knowledge_index.STATUS_INDEXED
     }
     bound = {str(record.get("file_id") or "") for record in records}
-    in_prompt = sum(len(str(record.get("extracted_text") or "")) for record in records)
-    if set(searchable) <= bound and in_prompt <= _CONTEXT_WHOLE_CHARS:
+    if set(searchable) <= bound and _attachments_read_whole(records):
         return []
     return list(searchable.items())
 
@@ -2606,6 +2615,7 @@ async def _routing_for_workforce(
     attachment_names: Optional[list[str]] = None,
     library_names: Optional[list[str]] = None,
     documents_available: bool = False,
+    attachments_read_whole: bool = False,
 ) -> tuple[capability_routing.RoutingDecision, artifact_intent.ArtifactIntent]:
     """Structural floor (WEB/FILES/CODE) + canonical work intent → effective caps."""
     base = capabilities.expand(
@@ -2657,6 +2667,16 @@ async def _routing_for_workforce(
     # Granted only with something to search (see _knowledge_files_for_job):
     # no documents, or documents already whole in the prompt, means the
     # Knowledge Agent would only spend a model call finding nothing new.
+    #
+    # And not for a FILE made from attachments that are whole in the prompt:
+    # the Document writer gets all of their text. Live, "Yüklediğim belgeden
+    # Türkçe bir PowerPoint sunumu hazırla" with a 13k-char .docx attached
+    # was classified reads_documents, and the Knowledge Agent searched the
+    # whole workspace library -- unrelated contracts included -- for 6
+    # minutes before the job was cancelled. A question about documents
+    # ("sözleşmede depozito ne kadar") still searches, library and all.
+    if intent.wants_artifact and attachments_read_whole:
+        documents_available = False
     reads_documents = bool(intent.reads_documents) and documents_available
     effective = capabilities.apply_artifact_intent(
         base,
@@ -2860,7 +2880,15 @@ async def submit_job(
                 name for file_id, name in knowledge_files if file_id not in bound_ids
             ],
             documents_available=bool(knowledge_files),
+            attachments_read_whole=_attachments_read_whole(records),
         )
+        if (
+            artifact_intent_result is not None
+            and artifact_intent_result.wants_artifact
+            and _attachments_read_whole(records)
+        ):
+            # Same rule as in _routing_for_workforce: nothing to search.
+            knowledge_files = []
         binding_source = "workforce_subtask_capabilities"
         # Chat redeelivery must not re-create Excel/PDF from a confused intent.
         if (
