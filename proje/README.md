@@ -293,5 +293,6 @@ Güncel açık listesi ve nerede düzeltileceği:
 | [docs/social-reach.md](docs/social-reach.md) | Reddit okuma: kurulum, haftalık çerez yenileme, güvenlik |
 | [docs/jira.md](docs/jira.md) | Jira okuma: Cloud / Server kurulumu, örnek sorular, VPN, güvenlik |
 | [docs/github.md](docs/github.md) | GitHub okuma: depo arama, bağlantı okuma, token, sınırlar, güvenlik |
+| [docs/knowledge.md](docs/knowledge.md) | Workspace belge arama (Knowledge Agent): nasıl çalışır, ölçümler, sınırlar |
 | [docs/agent-search.md](docs/agent-search.md) | AgentSearch sidecar |
 | [docs/README.md](docs/README.md) | `docs/` dizin indeksi |

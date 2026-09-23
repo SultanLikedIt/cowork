@@ -64,7 +64,8 @@ RESOLVE_SYSTEM_PROMPT = (
     "subject, place, names, and constraints from PRIOR TURNS. Keep the "
     "user's language. Do not answer the user.\n\n"
     "needs_external_work is true ONLY when this turn needs new web research, "
-    "opening pages, reading or comparing uploaded files, or producing a new "
+    "opening pages, reading, searching or comparing uploaded files (the FILE "
+    "CATALOG or the WORKSPACE DOCUMENTS), or producing a new "
     "downloadable file. It is false when the latest assistant answer and "
     "prior turns already contain everything needed (shorten, translate, "
     "who were the top three, what was the result, restate).\n\n"
@@ -94,6 +95,14 @@ RESOLVE_SYSTEM_PROMPT = (
     "content to write, bind that file's catalog id.\n"
     "Output ONLY the JSON object."
 )
+
+
+def _library_line(names: Optional[list[str]], limit: int = 20) -> str:
+    cleaned = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not cleaned:
+        return "(none)"
+    more = f" ... (+{len(cleaned) - limit})" if len(cleaned) > limit else ""
+    return ", ".join(cleaned[:limit]) + more
 
 
 def first_turn(topic: str) -> TurnResolution:
@@ -193,8 +202,14 @@ async def resolve_turn(
     tracker: Any,
     prior_messages: list[dict[str, Any]],
     catalog: list[dict[str, str]],
+    library_names: Optional[list[str]] = None,
 ) -> TurnResolution:
-    """Expand follow-up references. Fail closed to Workforce, not Direct."""
+    """Expand follow-up references. Fail closed to Workforce, not Direct.
+
+    ``library_names`` are the workspace's uploaded documents: a follow-up
+    that looks something up in them ("sözleşmede depozito ne kadar") is new
+    work, not a restatement of the last answer.
+    """
     topic = topic or ""
     catalog = catalog[:MAX_CATALOG_ITEMS]
     catalog_ids = tuple(
@@ -230,7 +245,8 @@ async def resolve_turn(
         response = await agent.astep(
             f"CURRENT MESSAGE:\n{topic}\n\n"
             f"PRIOR TURNS (oldest first):\n{recent or '(none)'}\n\n"
-            f"FILE CATALOG:\n{catalog_json}\n",
+            f"FILE CATALOG:\n{catalog_json}\n\n"
+            f"WORKSPACE DOCUMENTS:\n{_library_line(library_names)}\n",
             response_format=TurnResolutionResult,
         )
     except Exception:  # noqa: BLE001 - fallback must never fail the job

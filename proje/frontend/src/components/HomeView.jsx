@@ -1,4 +1,4 @@
-import { Check, Clock, Code2, FileText, Globe, PanelLeft, Plus, Search } from 'lucide-react'
+import { BookOpen, Check, Clock, Code2, FileText, Globe, PanelLeft, Plus, Search } from 'lucide-react'
 
 import { BotIcon } from '../icons.jsx'
 import { GitHubLogo, HackerNewsLogo, JiraLogo, OutlookLogo, RedditLogo } from '../brandLogos.jsx'
@@ -7,6 +7,7 @@ import { cn } from '../lib/utils.js'
 import { Button } from './ui/button.jsx'
 import { SimpleTooltip } from './ui/tooltip.jsx'
 import Composer from './Composer.jsx'
+import LibraryPanel from './LibraryPanel.jsx'
 import SpaceSelector from './SpaceSelector.jsx'
 
 const WORKFORCE_AGENTS = [
@@ -32,6 +33,18 @@ const WORKFORCE_AGENTS = [
     BadgeIcon: Globe,
   },
 ]
+
+// Built-in, but only when the backend roster has it (KNOWLEDGE_ENABLED).
+// Works inside the app, so the bot + badge form like the three above rather
+// than a service logo.
+const KNOWLEDGE_AGENT = {
+  key: 'Knowledge',
+  label: 'Knowledge',
+  description: 'Search your documents',
+  badgeClass: 'bg-violet-500/90 text-white',
+  BadgeIcon: BookOpen,
+  rosterName: 'Knowledge Agent',
+}
 
 // Agents that read from an outside service, shown with that service's logo.
 // Listed only when the backend roster (/workers) includes the agent behind
@@ -220,6 +233,8 @@ export default function HomeView({
   const integrations = INTEGRATION_AGENTS.filter((agent) =>
     rosterNames.has(agent.rosterName),
   )
+  const knowledgeOn = rosterNames.has(KNOWLEDGE_AGENT.rosterName)
+  const builtIn = knowledgeOn ? [...WORKFORCE_AGENTS, KNOWLEDGE_AGENT] : WORKFORCE_AGENTS
 
   return (
     <div className="surface-grid relative flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -270,7 +285,7 @@ export default function HomeView({
             // full width that is four columns: built-in agents first, then
             // the services, then Add -- two even rows when all are present.
             <div className="mt-5 grid w-full grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-2">
-              {WORKFORCE_AGENTS.map((agent) => (
+              {builtIn.map((agent) => (
                 <AgentAvatar
                   key={agent.key}
                   label={agent.label}
@@ -396,6 +411,12 @@ export default function HomeView({
         </div>
 
         <div className="flex min-h-8 w-full flex-[1.15] flex-col">
+          {/* Where the Knowledge Agent looks: shown with it, in Workforce. */}
+          {isWorkforce && knowledgeOn && (
+            <div className="mt-6 w-full">
+              <LibraryPanel workspaceId={workspaceId} />
+            </div>
+          )}
           {recent.length > 0 && (
             <div className="mt-6 w-full pb-8">
               <div className="mb-3 flex items-center justify-center gap-2">

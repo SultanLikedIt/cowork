@@ -134,7 +134,7 @@ async def _fake_replay(text, task_id, queue):
     await queue.put({"event_type": "token_delta", "task_id": task_id, "delta": text})
 
 
-async def _fake_intent(topic, tracker, persisted=None, attachment_names=None):
+async def _fake_intent(topic, tracker, persisted=None, attachment_names=None, library_names=None):
     import artifact_intent as ai
 
     return ai.fallback_from_regex(topic)
@@ -226,7 +226,7 @@ def test_direct_follow_up_in_workforce_thread() -> None:
     _fake_run_single_agent.seen = {}
     _fake_workforce.called = False
 
-    async def fake_resolve(topic, *, tracker, prior_messages, catalog):
+    async def fake_resolve(topic, *, tracker, prior_messages, catalog, library_names=None):
         check("resolver sees prior turns", bool(prior_messages))
         return turn_resolution.TurnResolution(
             resolved, False, (), "llm"
@@ -337,7 +337,7 @@ def test_rebind_from_bag_keeps_workforce() -> None:
     resolved = f"{record['filename']} dosyasını önceki özetle karşılaştır"
     _fake_workforce.called = False
 
-    async def fake_resolve(topic, *, tracker, prior_messages, catalog):
+    async def fake_resolve(topic, *, tracker, prior_messages, catalog, library_names=None):
         ids = [item["file_id"] for item in catalog]
         check("catalog includes bag file", record["file_id"] in ids, catalog)
         return turn_resolution.TurnResolution(

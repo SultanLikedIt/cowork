@@ -44,6 +44,7 @@ class ArtifactIntentResult(BaseModel):
     reads_social: bool = False
     reads_jira: bool = False
     reads_github: bool = False
+    reads_documents: bool = False
 
 
 # Addresses are taken from the REQUEST TEXT only, never from anything the run
@@ -133,6 +134,12 @@ class ArtifactIntent:
     # _with_github_links): there is no reading of a pasted repository link
     # that does not want the repository read.
     reads_github: bool = False
+    # "sözleşmede depozito ne kadar", "toplantıda Burak'a ne görev verildi"
+    # -- the answer is inside documents the user uploaded (this turn or
+    # earlier, anywhere in the workspace), so the Knowledge Agent searches
+    # them. Not "summarize this file": a whole-document read is what the
+    # file context is for, and retrieval picks passages, not the whole.
+    reads_documents: bool = False
 
     # The user asked for mail and no usable address survived verification.
     # Set by normalized(), because that is the step which erases the
@@ -166,6 +173,7 @@ class ArtifactIntent:
             reads_social=bool(self.reads_social),
             reads_jira=bool(self.reads_jira),
             reads_github=bool(self.reads_github),
+            reads_documents=bool(self.reads_documents),
         )
 
 
@@ -196,7 +204,8 @@ INTENT_SYSTEM_PROMPT = (
     '"reads_email": true | false, '
     '"reads_social": true | false, '
     '"reads_jira": true | false, '
-    '"reads_github": true | false}.\n\n'
+    '"reads_github": true | false, '
+    '"reads_documents": true | false}.\n\n'
     "wants_artifact is true ONLY when the user wants a new file created and "
     "given to them (Excel/xlsx, CSV, JSON, Word/docx, PowerPoint/pptx, PDF, HTML "
     "page, or a runnable code/project bundle). "
@@ -374,6 +383,33 @@ INTENT_SYSTEM_PROMPT = (
     "reads_github true, wants_artifact true, artifact_type xlsx\n"
     '- "github a nasil push yaparim" -> reads_github false\n'
     '- "python da liste nasil siralanir" -> reads_github false\n'
+    "\nreads_documents is true when the answer is INSIDE documents the user "
+    "uploaded -- the ATTACHED FILES or the WORKSPACE DOCUMENTS listed with "
+    "the request -- and has to be looked up there: a fact, figure, clause, "
+    "date, name or decision, what a document says about a topic, or the same "
+    "thing compared across several documents. It may be true together with "
+    "wants_artifact (a table or report built from what the documents say) "
+    "and with needs_web_research (the documents plus outside information). "
+    "It is false when the user wants a whole attached file summarized, "
+    "translated, rewritten or filled in (that is reading it whole, or "
+    "reuses_uploaded_document), false for general questions that no "
+    "uploaded document answers even if a document shares the topic, and "
+    "false when no document is attached or listed. When the documents alone "
+    "answer it, needs_web_research is false.\n"
+    "\nreads_documents examples (key named, independent of the values above):\n"
+    '- [kira_sozlesmesi.pdf] "evden cikarsam kac gun once haber vermeliyim" -> '
+    "reads_documents true, needs_web_research false\n"
+    '- WORKSPACE DOCUMENTS listed, "sozlesmede depozito ne kadar" -> '
+    "reads_documents true\n"
+    '- WORKSPACE DOCUMENTS listed, "yukledigim tekliflerin fiyatlarini excel de '
+    'karsilastir" -> reads_documents true, wants_artifact true, xlsx\n'
+    '- WORKSPACE DOCUMENTS listed, "toplantida kime hangi gorev verildi" -> '
+    "reads_documents true\n"
+    '- [rapor.pdf] "bu belgeyi ozetle" -> reads_documents false\n'
+    '- [sartname.docx] "bu dokumani benim icin doldur" -> reads_documents false\n'
+    '- WORKSPACE DOCUMENTS listed, "kira sozlesmesinde genel olarak nelere dikkat '
+    'etmeli" -> reads_documents false\n'
+    '- no documents, "sozlesmede fesih suresi ne" -> reads_documents false\n'
     "Output ONLY the JSON object."
 )
 
@@ -470,6 +506,9 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         # The one reader a fallback may turn on, and only for a GitHub link
         # the user typed: see _with_github_links.
         reads_github=_with_github_links(topic, False),
+        # Left false like the other readers: searching the user's documents
+        # is cheap, but a failed classifier call is not evidence they asked.
+        reads_documents=False,
     ).normalized()
 
 
@@ -498,6 +537,7 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         reads_social=bool(usage.get("reads_social")),
         reads_jira=bool(usage.get("reads_jira")),
         reads_github=bool(usage.get("reads_github")),
+        reads_documents=bool(usage.get("reads_documents")),
         email_unaddressed=bool(usage.get("email_unaddressed")),
     ).normalized()
 
@@ -508,6 +548,7 @@ async def classify_artifact_intent(
     *,
     persisted: Optional[dict] = None,
     attachment_names: Optional[list[str]] = None,
+    library_names: Optional[list[str]] = None,
 ) -> ArtifactIntent:
     """``attachment_names`` are the files in play for this turn.
 
@@ -515,6 +556,10 @@ async def classify_artifact_intent(
     docx olarak ver" is a request to reproduce the attachment when one is
     attached, and a request to write something new when nothing is. The
     same sentence, opposite answers.
+
+    ``library_names`` are the workspace's other uploaded documents, for the
+    same reason: "sözleşmede depozito ne kadar" is a document lookup in a
+    workspace holding a contract and a general question in one without.
     """
     existing = from_persisted(persisted)
     if existing is not None:
@@ -546,8 +591,20 @@ async def classify_artifact_intent(
             if names
             else "ATTACHED FILES: (none)"
         )
+        library = [
+            str(n).strip()
+            for n in (library_names or [])
+            if str(n).strip() and str(n).strip() not in names
+        ]
+        library_line = (
+            f"WORKSPACE DOCUMENTS ({len(library)}): "
+            + ", ".join(library[:10])
+            + (" ..." if len(library) > 10 else "")
+            if library
+            else "WORKSPACE DOCUMENTS: (none)"
+        )
         response = await agent.astep(
-            f"{attached_line}\nREQUEST: {topic}",
+            f"{attached_line}\n{library_line}\nREQUEST: {topic}",
             response_format=ArtifactIntentResult,
         )
     except Exception:  # noqa: BLE001 - fallback must never fail the job
@@ -586,5 +643,6 @@ async def classify_artifact_intent(
         reads_social=result.reads_social,
         reads_jira=result.reads_jira,
         reads_github=_with_github_links(topic, result.reads_github),
+        reads_documents=result.reads_documents,
     ).normalized()
     return intent

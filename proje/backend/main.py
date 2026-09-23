@@ -64,6 +64,8 @@ import github_api
 import github_client
 import jira_api
 import jira_client
+import knowledge_api
+import knowledge_index
 import social_api
 from social import health as social_health
 from execution.adapter import (
@@ -84,6 +86,7 @@ import turn_resolution
 from workforce_callback import QueueWorkforceCallback
 from workspace import (
     MAX_BATCH_UPLOAD_BYTES,
+    MAX_CONTEXT_CHARS,
     MAX_UPLOAD_SOURCES,
     WORKSPACE_TEXT_EXTENSIONS,
     WorkspaceSecurityError,
@@ -279,6 +282,77 @@ def _load_upload_record(file_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"Unknown file_id: {file_id}")
 
 
+def _index_missing_documents(file_ids: list[str]) -> int:
+    """Queue indexing for files with no current entry in the document index.
+
+    Covers uploads from before the index existed, files indexed by an older
+    knowledge_index.SCHEMA_VERSION, and a knowledge.db that was deleted.
+    Blocking (SQLite + file reads): call through asyncio.to_thread.
+    """
+    if not knowledge_index.enabled() or not file_ids:
+        return 0
+    statuses = knowledge_index.file_statuses(file_ids)
+    queued = 0
+    for file_id in dict.fromkeys(file_ids):
+        status = statuses.get(file_id)
+        if (status is not None and status.current) or knowledge_index.is_pending(file_id):
+            continue
+        try:
+            record = _load_upload_record(file_id)
+        except HTTPException:
+            # The upload is gone from disk; there is nothing left to index.
+            continue
+        knowledge_index.submit(record)
+        queued += 1
+    return queued
+
+
+# Below this much extracted text, the files bound to a job reach the prompt
+# whole (workspace.build_workspace_context), and searching them adds nothing.
+_CONTEXT_WHOLE_CHARS = int(MAX_CONTEXT_CHARS * 0.9)
+
+
+def _knowledge_files_for_job(
+    workspace_id: str, records: list[dict[str, Any]]
+) -> list[tuple[str, str]]:
+    """(file_id, filename) the Knowledge Agent may search for this job.
+
+    The workspace library plus this job's own files, minus files the index
+    skipped or failed (a zip, a CSV: nothing to search). Empty when there is
+    nothing to gain: no documents, or every document is one of this job's
+    files and they already fit in the prompt whole -- then the Assistant
+    reads them directly and a search would only add a model call.
+
+    Blocking (SQLite): call through asyncio.to_thread.
+    """
+    if not knowledge_index.enabled():
+        return []
+    files: dict[str, str] = {
+        item["file_id"]: item["filename"]
+        for item in db.list_workspace_documents(workspace_id)
+    }
+    for record in records:
+        file_id = str(record.get("file_id") or "")
+        if file_id and record.get("kind") != "zip":
+            files.setdefault(file_id, str(record.get("filename") or file_id))
+    if not files:
+        return []
+    statuses = knowledge_index.file_statuses(list(files))
+    # No status yet means not indexed yet (just uploaded, or queued at
+    # submit): kept, the agent waits for it.
+    searchable = {
+        file_id: name
+        for file_id, name in files.items()
+        if (status := statuses.get(file_id)) is None
+        or status.status == knowledge_index.STATUS_INDEXED
+    }
+    bound = {str(record.get("file_id") or "") for record in records}
+    in_prompt = sum(len(str(record.get("extracted_text") or "")) for record in records)
+    if set(searchable) <= bound and in_prompt <= _CONTEXT_WHOLE_CHARS:
+        return []
+    return list(searchable.items())
+
+
 def _delete_new_upload(record: dict[str, Any]) -> None:
     file_id = str(record["file_id"])
     targets = [Path(str(record["path"])), _metadata_path(file_id), _extracted_path(file_id)]
@@ -423,6 +497,9 @@ async def _store_upload(filename: str, content: bytes) -> UploadResponse:
         record["docling_dir"] = str(docling_dir)
         record["docling_manifest"] = docling_manifest
     _save_upload_record(record)
+    # Off the request path: the upload answers now, and the file becomes
+    # searchable a moment later (knowledge_index runs one writer thread).
+    knowledge_index.submit(record)
     return UploadResponse(
         file_id=file_id,
         filename=display_name,
@@ -491,6 +568,31 @@ async def upload_files(files: list[UploadFile] = File(...)):
             _delete_new_upload(record)
         raise
     return responses
+
+
+@app.post("/workspaces/{workspace_id}/documents", status_code=201)
+async def upload_workspace_documents(workspace_id: str, files: list[UploadFile] = File(...)):
+    """Upload straight into a workspace's document library, no chat needed.
+
+    Same checks and parsing as /uploads; the files are then library members
+    (and indexed in the background) exactly as if they had been attached to
+    a message in this workspace.
+    """
+    if await asyncio.to_thread(db.get_workspace, workspace_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown workspace_id: {workspace_id}")
+    responses = await upload_files(files)
+    await asyncio.to_thread(
+        db.add_workspace_documents,
+        workspace_id,
+        [{"file_id": item.file_id, "filename": item.filename} for item in responses],
+        time.time(),
+    )
+    entries = await asyncio.to_thread(
+        knowledge_api.library_entries,
+        workspace_id,
+        list_documents=db.list_workspace_documents,
+    )
+    return {"workspace_id": workspace_id, "documents": entries}
 
 
 # --------------------------------------------------------------------------
@@ -692,6 +794,9 @@ class UsageTelemetry(BaseModel):
     # "bu repoyu ozetle" -- this job read public GitHub. Stored for the same
     # audit reason; the READMEs and files themselves are not.
     reads_github: Optional[bool] = None
+    # "sözleşmede depozito ne kadar" -- this job searched the workspace's
+    # uploaded documents. The classification is stored; the passages are not.
+    reads_documents: Optional[bool] = None
     # Classified once when a Single run finishes; see _suggests_workforce.
     suggests_workforce: Optional[bool] = None
     planning_ms: Optional[int] = None
@@ -937,6 +1042,21 @@ def _worker_pool() -> WorkerPoolResponse:
                 source="fixed",
             )
         )
+    # Listed whenever document search is on. Unlike the readers above it
+    # needs no account, only documents, and which workspace holds some is
+    # decided per job (_knowledge_files_for_job), not per deployment.
+    if knowledge_index.enabled():
+        fixed.append(
+            WorkerSummary(
+                name="Knowledge Agent",
+                description=(
+                    "Searches the documents uploaded to this workspace and "
+                    "passes the relevant passages, with file and page, to the "
+                    "other workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
     manual = [
         WorkerSummary(
             name=record["name"], description=record["description"], source="manual"
@@ -1003,6 +1123,28 @@ def _rehydrate_from_db() -> None:
         _JOBS[job["job_id"]] = job
 
     camel_service.load_manual_workers(db.load_manual_workers())
+
+
+@app.on_event("startup")
+def _backfill_document_index() -> None:
+    # Registered after _rehydrate_from_db, so the workspace_documents
+    # migration has run. In a thread: a first run indexes every library file.
+    if not knowledge_index.enabled():
+        return
+
+    def backfill() -> None:
+        try:
+            queued = _index_missing_documents(db.all_workspace_document_ids())
+            if queued:
+                logging.getLogger("agent_webapp.knowledge").info(
+                    "Queued %d library file(s) for indexing", queued
+                )
+        except Exception:  # noqa: BLE001 - search degrades, the app does not
+            logging.getLogger("agent_webapp.knowledge").warning(
+                "document index backfill failed", exc_info=True
+            )
+
+    threading.Thread(target=backfill, name="knowledge-backfill", daemon=True).start()
 
 
 @app.on_event("startup")
@@ -1857,6 +1999,16 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     or (single_intent.reads_jira and jira_client.is_configured())
                     # Nor GitHub: a pasted repository link is worth the offer.
                     or (single_intent.reads_github and github_client.is_configured())
+                    # Nor document search, when there are documents to search.
+                    or (
+                        single_intent.reads_documents
+                        and bool(
+                            await asyncio.to_thread(
+                                db.list_workspace_documents,
+                                str(job.get("workspace_id") or ""),
+                            )
+                        )
+                    )
                 )
             except Exception:  # noqa: BLE001 - display hint, never fatal
                 stabilization_logger.warning(
@@ -1900,6 +2052,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["reads_social"] = intent.reads_social
                 job["usage"]["reads_jira"] = intent.reads_jira
                 job["usage"]["reads_github"] = intent.reads_github
+                job["usage"]["reads_documents"] = intent.reads_documents
                 job["usage"]["email_unaddressed"] = intent.email_unaddressed
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
@@ -1929,6 +2082,10 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 reads_github=(
                     bool(intent.reads_github) and github_client.is_configured()
                 ),
+                reads_documents=(
+                    bool(intent.reads_documents) and bool(job.get("knowledge_files"))
+                ),
+                knowledge_files=list(job.get("knowledge_files") or []),
             )
             if not control.cancelled:
                 synthesized, is_partial = await camel_service.synthesize_workforce_result(
@@ -2258,6 +2415,7 @@ async def _resolve_turn_for_job(
     tracker: UsageTracker,
     prior_messages: list[dict[str, Any]],
     catalog: list[dict[str, str]],
+    library_names: Optional[list[str]] = None,
 ) -> turn_resolution.TurnResolution:
     if mode == "single":
         return turn_resolution.single_mode(topic)
@@ -2268,6 +2426,7 @@ async def _resolve_turn_for_job(
         tracker=tracker,
         prior_messages=prior_messages,
         catalog=catalog,
+        library_names=library_names,
     )
 
 
@@ -2445,6 +2604,8 @@ async def _routing_for_workforce(
     tracker: UsageTracker,
     persisted: Optional[dict] = None,
     attachment_names: Optional[list[str]] = None,
+    library_names: Optional[list[str]] = None,
+    documents_available: bool = False,
 ) -> tuple[capability_routing.RoutingDecision, artifact_intent.ArtifactIntent]:
     """Structural floor (WEB/FILES/CODE) + canonical work intent → effective caps."""
     base = capabilities.expand(
@@ -2455,7 +2616,11 @@ async def _routing_for_workforce(
         )
     )
     intent = await artifact_intent.classify_artifact_intent(
-        topic, tracker, persisted=persisted, attachment_names=attachment_names
+        topic,
+        tracker,
+        persisted=persisted,
+        attachment_names=attachment_names,
+        library_names=library_names,
     )
     # Reusing an uploaded document is never a programming job. The
     # classifier is not deterministic about needs_code_execution, and one
@@ -2489,6 +2654,10 @@ async def _routing_for_workforce(
     # a rate limit or an outage is better reported by the GitHub Agent (with
     # the reset time) than hidden by quietly not scheduling it.
     reads_github = bool(intent.reads_github) and github_client.is_configured()
+    # Granted only with something to search (see _knowledge_files_for_job):
+    # no documents, or documents already whole in the prompt, means the
+    # Knowledge Agent would only spend a model call finding nothing new.
+    reads_documents = bool(intent.reads_documents) and documents_available
     effective = capabilities.apply_artifact_intent(
         base,
         wants_artifact=intent.wants_artifact,
@@ -2501,6 +2670,7 @@ async def _routing_for_workforce(
         reads_social=reads_social,
         reads_jira=reads_jira,
         reads_github=reads_github,
+        reads_documents=reads_documents,
     )
     decision = capability_routing.merge_decision(
         "workforce",
@@ -2567,12 +2737,14 @@ async def submit_job(
     prior_messages = await asyncio.to_thread(db.load_recent_messages, conversation_id)
     bag = await asyncio.to_thread(db.list_conversation_files, conversation_id)
     catalog = _file_catalog(this_turn_records, bag)
+    library = await asyncio.to_thread(db.list_workspace_documents, workspace_id)
     resolution = await _resolve_turn_for_job(
         req.mode,
         req.topic,
         tracker=control.usage_tracker,
         prior_messages=prior_messages,
         catalog=catalog,
+        library_names=[item["filename"] for item in library],
     )
     merged_ids = _merge_file_ids(this_turn_ids, resolution.bind_file_ids)
     records = _ordered_upload_records(merged_ids, this_turn_records)
@@ -2642,6 +2814,7 @@ async def submit_job(
         and wants_local_open(resolved_ask)
     ):
         needs_external_work = True
+    knowledge_files: list[tuple[str, str]] = []
     file_kinds = [
         str(record.get("kind") or "") for record in records
     ] + [
@@ -2671,6 +2844,10 @@ async def submit_job(
         binding_source = "single_chatbot"
         artifact_intent_result = None
     else:
+        knowledge_files = await asyncio.to_thread(
+            _knowledge_files_for_job, workspace_id, records
+        )
+        bound_ids = {str(r.get("file_id") or "") for r in records if isinstance(r, dict)}
         routing, artifact_intent_result = await _routing_for_workforce(
             resolution.resolved_request,
             has_workspace_files=bool(records),
@@ -2679,6 +2856,10 @@ async def submit_job(
             attachment_names=[
                 str(r.get("filename") or "") for r in records if isinstance(r, dict)
             ],
+            library_names=[
+                name for file_id, name in knowledge_files if file_id not in bound_ids
+            ],
+            documents_available=bool(knowledge_files),
         )
         binding_source = "workforce_subtask_capabilities"
         # Chat redeelivery must not re-create Excel/PDF from a confused intent.
@@ -2823,7 +3004,19 @@ async def submit_job(
                 if artifact_intent_result is not None
                 else None
             ),
+            reads_documents=(
+                artifact_intent_result.reads_documents
+                if artifact_intent_result is not None
+                else None
+            ),
         ).model_dump(),
+        # What the Knowledge Agent may search, resolved here with the
+        # library as it is now; empty when the job does not search documents.
+        "knowledge_files": (
+            knowledge_files
+            if artifact_intent_result is not None and artifact_intent_result.reads_documents
+            else []
+        ),
         # Set only when the request needs something this system does not
         # implement. _run_job turns it into an immediate, explicit answer --
         # see camel_service.unsupported_capability_message for why an
@@ -2877,6 +3070,21 @@ async def submit_job(
             for record in records
         ],
         job["created_at"],
+    )
+    # The workspace library keeps every file ever attached here, which the
+    # conversation bag above does not (it drops its oldest past ten).
+    library_files = [
+        {
+            "file_id": str(record.get("file_id") or ""),
+            "filename": str(record.get("filename") or record.get("file_id") or ""),
+        }
+        for record in records
+    ]
+    await asyncio.to_thread(
+        db.add_workspace_documents, workspace_id, library_files, job["created_at"]
+    )
+    await asyncio.to_thread(
+        _index_missing_documents, [item["file_id"] for item in library_files]
     )
 
     control.task = asyncio.create_task(_run_job(job_id, content, req.mode))
@@ -3300,9 +3508,14 @@ def _purge_jobs_from_memory(job_ids: list[str]) -> None:
 @app.delete("/workspaces/{workspace_id}")
 def delete_workspace_endpoint(workspace_id: str):
     """Delete a workspace, its conversations, jobs, and on-disk job folders."""
+    library = [item["file_id"] for item in db.list_workspace_documents(workspace_id)]
     job_ids = db.delete_workspace(workspace_id)
     if job_ids is None:
         raise HTTPException(status_code=404, detail=f"Unknown workspace_id: {workspace_id}")
+    # The library rows went with the workspace (ON DELETE CASCADE); passages
+    # of files no other workspace holds are dropped from the index. The
+    # uploads themselves stay on disk, as they always have.
+    knowledge_index.drop_files(db.unreferenced_document_ids(library))
     _purge_jobs_from_memory(job_ids)
     for job_id in job_ids:
         root = WORKSPACE_DIR / job_id
@@ -3633,6 +3846,7 @@ app.include_router(outlook.build_router())
 app.include_router(social_api.build_router())
 app.include_router(jira_api.build_router())
 app.include_router(github_api.build_router())
+app.include_router(knowledge_api.build_router(load_upload_record=_load_upload_record))
 
 
 @app.on_event("startup")

@@ -51,4 +51,8 @@ def run_workforce_in_thread(*args: Any, **kwargs: Any) -> Any:
     # Nor a GitHub Agent. A GitHub link typed into a CAMEL-path job is still
     # read through the web reader (web_tools routes it to the API).
     kwargs.pop("reads_github", None)
+    # Nor a Knowledge Agent: under AGENT_EXECUTOR=camel a question about the
+    # workspace's documents sees only the files bound into the job context.
+    kwargs.pop("reads_documents", None)
+    kwargs.pop("knowledge_files", None)
     return camel_service.run_workforce_in_thread(*args, **kwargs)

@@ -74,6 +74,8 @@ const STAGE_LABELS = {
   github_plan: 'GitHub · search plan',
   github_select: 'GitHub · repository selection',
   github_answer: 'GitHub · summary',
+  knowledge_plan: 'Documents · search plan',
+  knowledge_answer: 'Documents · summary',
   artifact_intent: 'Artifact intent',
 }
 

@@ -47,7 +47,16 @@ export const CodeIcon = (p) => (
   </svg>
 )
 
-// Mail, Social and Jira agents use brand logos instead (brandLogos.jsx).
+// Knowledge Agent: the workspace's own documents, so a line glyph (a book),
+// not a brand. Mail, Social, Jira and GitHub agents use brand logos instead
+// (brandLogos.jsx).
+export const LibraryIcon = (p) => (
+  <svg {...base} {...p}>
+    <path d="M4 19V5a2 2 0 0 1 2-2h13v14H6a2 2 0 0 0-2 2z" />
+    <path d="M6 21h13v-4" />
+    <path d="M9 7h6M9 11h4" />
+  </svg>
+)
 
 export const BotIcon = (p) => (
   <svg {...base} {...p}>

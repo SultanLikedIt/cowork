@@ -36,7 +36,7 @@ def test_the_shipped_case_file_is_valid_and_broad() -> None:
     cases = ie.load_cases()
     assert len(cases) >= 50
     tags = {tag for case in cases for tag in case.tags}
-    assert {"chat", "web", "file", "code", "upload", "mail", "email", "social", "jira", "github"} <= tags
+    assert {"chat", "web", "file", "code", "upload", "mail", "email", "social", "jira", "github", "documents"} <= tags
 
 
 def test_expected_agents_are_what_routing_produces_for_the_expected_flags() -> None:
@@ -47,7 +47,7 @@ def test_expected_agents_are_what_routing_produces_for_the_expected_flags() -> N
     for case in ie.load_cases():
         if case.expect_roles is None:
             continue
-        roles = ie.roles_for(_intent(**case.expect), case.text, case.attachments)
+        roles = ie.roles_for(_intent(**case.expect), case.text, case.attachments, case.library)
         assert roles == list(case.expect_roles), case.id
 
 
@@ -78,7 +78,7 @@ def test_duplicate_ids_are_refused() -> None:
 def _classifier(*intents):
     queue = list(intents)
 
-    async def classify(text, tracker, *, attachment_names=None):
+    async def classify(text, tracker, *, attachment_names=None, library_names=None):
         item = queue.pop(0)
         if isinstance(item, BaseException):
             raise item
