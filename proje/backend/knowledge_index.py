@@ -44,9 +44,9 @@ DATA_DIR = Path(os.environ.get("DATA_DIR") or Path(__file__).parent)
 # Module-level so tests can point it at a temporary file.
 DB_PATH = DATA_DIR / "knowledge.db"
 
-# Bump when passage building changes; the startup backfill re-indexes every
-# file stored under an older version.
-SCHEMA_VERSION = 1
+# Bump when passage building or folding changes; the startup backfill
+# re-indexes every file stored under an older version.
+SCHEMA_VERSION = 2
 
 # The reranker scores (query, passage) pairs and costs about 0.35 s per pair
 # at 240 tokens on this CPU, so passages are kept near 200 tokens. Measured
@@ -56,12 +56,17 @@ PASSAGE_OVERLAP_CHARS = 80
 MAX_PASSAGES_PER_FILE = 20_000
 
 # Trigram matching needs at least three characters per term, and a long
-# inflected query word must not be longer than the base form in the text:
-# "sözleşmesinde" (query) would never match "sözleşme" (text). Cutting query
-# terms to a prefix keeps the stem and drops most suffixes.
+# inflected query word must not be longer than the form in the text:
+# "sözleşmesinde" (query) never matches "sözleşme" (text). So a long word is
+# searched as two prefixes: a short stem for recall ("harca" finds both
+# "harcandı" and "harcadığını"; seven characters missed it) and a longer one
+# that ranks exact forms higher, since BM25 rewards a passage matching both.
+# Measured on reliability_harness/knowledge_eval: 5 alone found 21/26
+# answers without the PLAN call, 7 alone 20/26.
 MIN_TERM_CHARS = 3
+STEM_CHARS = 5
 MAX_TERM_CHARS = 7
-MAX_TERMS_PER_QUERY = 12
+MAX_TERMS_PER_QUERY = 16
 # Reciprocal rank fusion constant, the usual value from the RRF paper.
 RRF_K = 60
 
@@ -94,6 +99,8 @@ _STOPWORDS = frozenset(
 )
 
 _TR_FOLD = str.maketrans({"ı": "i", "İ": "i", "I": "i"})
+# "Wi-Fi" and "wifi", "e-posta" and "eposta" are the same word to a reader.
+_INNER_HYPHEN_RE = re.compile(r"(?<=\w)[-‐‑](?=\w)")
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 _SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?…:;])\s+|\n+")
 _MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
@@ -138,7 +145,7 @@ _init_lock = threading.Lock()
 
 
 def fold(text: str) -> str:
-    """Lowercase, ı/İ -> i, accents stripped: ş->s, ğ->g, ç->c, ö->o, ü->u.
+    """Lowercase, ı/İ -> i, accents stripped (ş->s, ğ->g ...), inner hyphens gone.
 
     Applied to the index and to every query, so the two only ever meet in
     this one spelling. Losing the ı/i distinction costs almost nothing for
@@ -146,7 +153,7 @@ def fold(text: str) -> str:
     """
     decomposed = unicodedata.normalize("NFKD", str(text or "").translate(_TR_FOLD))
     stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
-    return stripped.lower()
+    return _INNER_HYPHEN_RE.sub("", stripped.lower())
 
 
 @dataclass(frozen=True)
@@ -518,11 +525,9 @@ def query_terms(query: str) -> list[str]:
     for word in _WORD_RE.findall(fold(query)):
         if len(word) < MIN_TERM_CHARS or word in _STOPWORDS:
             continue
-        term = word[:MAX_TERM_CHARS]
-        if term not in terms:
-            terms.append(term)
-        if len(terms) >= MAX_TERMS_PER_QUERY:
-            break
+        for term in (word[:MAX_TERM_CHARS], word[:STEM_CHARS]):
+            if term not in terms and len(terms) < MAX_TERMS_PER_QUERY:
+                terms.append(term)
     return terms
 
 

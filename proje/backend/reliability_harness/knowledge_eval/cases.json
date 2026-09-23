@@ -1,0 +1,245 @@
+[
+ {
+  "id": "kira.rent",
+  "question": "Kira ne kadar?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "32.500 TL",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.deposit-return",
+  "question": "Depozito ne zaman geri verilir?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "otuz gün içinde iade",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.notice-paraphrase",
+  "question": "Evden çıkmak istersem ne kadar önce haber vermeliyim?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "altmış gün önceden",
+  "tags": [
+   "tr",
+   "paraphrase"
+  ]
+ },
+ {
+  "id": "kira.pets",
+  "question": "Kedi besleyebilir miyim?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "bir kedi",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.boiler",
+  "question": "Kombi bakımını kim yapar?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "Kombi bakımı",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.increase",
+  "question": "Kira artışı nasıl hesaplanıyor?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "tüketici fiyat endeksi",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.late",
+  "question": "Kira geç ödenirse ne olur?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "gecikme faizi",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.dues",
+  "question": "Aidatı kim öder?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "Apartman aidatı",
+  "tags": [
+   "tr"
+  ]
+ },
+ {
+  "id": "kira.en-rent",
+  "question": "What is the monthly rent?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "32.500 TL",
+  "tags": [
+   "cross-lingual"
+  ]
+ },
+ {
+  "id": "kira.en-deposit",
+  "question": "How much is the security deposit?",
+  "file": "kira-sozlesmesi.md",
+  "contains": "65.000 TL",
+  "tags": [
+   "cross-lingual"
+  ]
+ },
+ {
+  "id": "remote.days",
+  "question": "How many days a week can I work from home?",
+  "file": "remote-work-policy.md",
+  "contains": "three days per week",
+  "tags": [
+   "en",
+   "paraphrase"
+  ]
+ },
+ {
+  "id": "remote.anchor",
+  "question": "Which days must we be in the office?",
+  "file": "remote-work-policy.md",
+  "contains": "Tuesdays and Thursdays",
+  "tags": [
+   "en"
+  ]
+ },
+ {
+  "id": "remote.internet",
+  "question": "How much is the internet allowance?",
+  "file": "remote-work-policy.md",
+  "contains": "750 TL",
+  "tags": [
+   "en"
+  ]
+ },
+ {
+  "id": "remote.abroad",
+  "question": "Can I work from another country?",
+  "file": "remote-work-policy.md",
+  "contains": "20 working days",
+  "tags": [
+   "en"
+  ]
+ },
+ {
+  "id": "remote.eligible",
+  "question": "Who is eligible for remote work?",
+  "file": "remote-work-policy.md",
+  "contains": "six-month probation",
+  "tags": [
+   "en"
+  ]
+ },
+ {
+  "id": "remote.tr-internet",
+  "question": "Uzaktan çalışma için internet desteği ne kadar?",
+  "file": "remote-work-policy.md",
+  "contains": "750 TL",
+  "tags": [
+   "cross-lingual"
+  ]
+ },
+ {
+  "id": "remote.tr-abroad",
+  "question": "Yurt dışından yılda kaç gün çalışabilirim?",
+  "file": "remote-work-policy.md",
+  "contains": "20 working days",
+  "tags": [
+   "cross-lingual"
+  ]
+ },
+ {
+  "id": "remote.tr-chair",
+  "question": "Ergonomik sandalye için para veriliyor mu?",
+  "file": "remote-work-policy.md",
+  "contains": "4,000 TL",
+  "tags": [
+   "cross-lingual"
+  ]
+ },
+ {
+  "id": "remote.tr-wifi",
+  "question": "Kafede halka açık wifi kullanabilir miyim?",
+  "file": "remote-work-policy.md",
+  "contains": "Public Wi-Fi",
+  "tags": [
+   "cross-lingual"
+  ]
+ },
+ {
+  "id": "meeting.beta-delay",
+  "question": "Beta sürümü neden ertelendi?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "entegrasyon testlerini",
+  "tags": [
+   "tr",
+   "ocr"
+  ]
+ },
+ {
+  "id": "meeting.vendor",
+  "question": "Hangi tedarikçi seçildi?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "Nova Teknoloji ile devam",
+  "tags": [
+   "tr",
+   "ocr"
+  ]
+ },
+ {
+  "id": "meeting.cloud",
+  "question": "Bulut maliyetleri planı ne kadar aştı?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "yuzde 22 fazla",
+  "tags": [
+   "tr",
+   "ocr"
+  ]
+ },
+ {
+  "id": "meeting.burak",
+  "question": "Burak Şahin'in görevi ne?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "yuk testlerini",
+  "tags": [
+   "tr",
+   "ocr"
+  ]
+ },
+ {
+  "id": "meeting.spent",
+  "question": "Projede şimdiye kadar ne kadar para harcandı?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "4,2 milyon TL",
+  "tags": [
+   "tr",
+   "ocr"
+  ]
+ },
+ {
+  "id": "meeting.budget-pct",
+  "question": "Toplam bütçenin yüzde kaçı kullanıldı?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "yuzde 58",
+  "tags": [
+   "tr",
+   "ocr"
+  ]
+ },
+ {
+  "id": "meeting.en-risks",
+  "question": "What are the main project risks?",
+  "file": "toplanti-notlari-tarama.md",
+  "contains": "kilit gelistiricilerden",
+  "tags": [
+   "cross-lingual",
+   "ocr"
+  ]
+ }
+]

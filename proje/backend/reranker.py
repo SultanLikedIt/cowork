@@ -12,12 +12,18 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 _logger = logging.getLogger(__name__)
+_timing_logger = logging.getLogger("agent_webapp.timing")
 
 MAX_PAIR_TOKENS = 512
+# Waits for the shared model longer than this are logged, so contention
+# between concurrent jobs shows up in the timing log instead of as
+# unexplained slowness.
+LOCK_WAIT_LOG_SECONDS = 0.2
 
 _MODEL: Optional[tuple[Any, Any]] = None
 _LOAD_FAILED = False
@@ -104,7 +110,13 @@ def score(query: str, passages: list[str]) -> Optional[list[float]]:
     try:
         import torch
 
+        waited = time.monotonic()
         with _INFER_LOCK, torch.inference_mode():
+            waited = time.monotonic() - waited
+            if waited >= LOCK_WAIT_LOG_SECONDS:
+                _timing_logger.info(
+                    "reranker lock wait %.2fs before %d pair(s)", waited, len(passages)
+                )
             inputs = tokenizer(
                 [[query, passage] for passage in passages],
                 padding=True,
@@ -119,8 +131,41 @@ def score(query: str, passages: list[str]) -> Optional[list[float]]:
         return None
 
 
+def score_batched(
+    query: str,
+    passages: list[str],
+    *,
+    batch_size: int = 8,
+    deadline: Optional[float] = None,
+) -> Optional[list[Optional[float]]]:
+    """``score`` in small batches, releasing the shared model between them.
+
+    One model instance serves every job (_INFER_LOCK), and a web SELECT
+    round is ~10 short pairs (~1.2 s). Scoring two dozen document passages
+    in one call would hold the lock for ~7 s; in batches of 8 a web round
+    waits at most one batch. ``deadline`` (a time.monotonic() value) stops
+    before the next batch: passages not reached come back as None, and the
+    caller keeps them in their keyword order. None overall means the
+    reranker is unusable, exactly as for ``score``.
+    """
+    if not passages:
+        return []
+    if _get_model() is None:
+        return None
+    scores: list[Optional[float]] = [None] * len(passages)
+    size = max(1, batch_size)
+    for start in range(0, len(passages), size):
+        if deadline is not None and start and time.monotonic() >= deadline:
+            break
+        part = score(query, passages[start : start + size])
+        if part is None:
+            return None if start == 0 else scores
+        scores[start : start + len(part)] = part
+    return scores
+
+
 def warm_up() -> None:
     score("warm up", ["warm up"])
 
 
-__all__ = ["enabled", "is_available", "score", "warm_up"]
+__all__ = ["enabled", "is_available", "score", "score_batched", "warm_up"]

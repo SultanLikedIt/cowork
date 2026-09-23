@@ -64,6 +64,7 @@ import github_api
 import github_client
 import jira_api
 import jira_client
+import knowledge_api
 import knowledge_index
 import social_api
 from social import health as social_health
@@ -3704,6 +3705,7 @@ app.include_router(outlook.build_router())
 app.include_router(social_api.build_router())
 app.include_router(jira_api.build_router())
 app.include_router(github_api.build_router())
+app.include_router(knowledge_api.build_router(load_upload_record=_load_upload_record))
 
 
 @app.on_event("startup")

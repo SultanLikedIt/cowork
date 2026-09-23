@@ -121,12 +121,21 @@ def test_markdown_headings_become_passage_headings() -> None:
 
 
 def test_query_terms_drop_stopwords_and_short_words() -> None:
-    assert ki.query_terms("Yüklediğim belgede fesih süresi ne?") == ["fesih", "suresi"]
+    assert ki.query_terms("Yüklediğim belgede fesih süresi ne?") == ["fesih", "suresi", "sures"]
 
 
-def test_long_inflected_words_are_cut_to_a_stem() -> None:
-    # The query form is longer than the text form; the stem is not.
-    assert ki.query_terms("sözleşmesinde") == ["sozlesm"]
+def test_long_inflected_words_are_searched_as_two_prefixes() -> None:
+    # The query form is longer than the text form; the prefixes are not.
+    assert ki.query_terms("sözleşmesinde") == ["sozlesm", "sozle"]
+
+
+def test_a_passive_verb_finds_the_active_form(tmp_path: Path) -> None:
+    ki.index_upload(_text_upload("f1", "notlar.txt", "Proje ilk altı ayda 4,2 milyon TL harcadığını bildirdi."))
+    assert ki.search(["f1"], ["ne kadar para harcandı"])
+
+
+def test_fold_joins_hyphenated_words() -> None:
+    assert ki.fold("Public Wi-Fi ve e-posta") == "public wifi ve eposta"
 
 
 def test_a_query_of_only_stopwords_has_no_expression() -> None:
