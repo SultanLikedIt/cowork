@@ -1103,6 +1103,23 @@ def _request_wants_sources(text: str) -> bool:
     return bool(_SOURCES_REQUEST_RE.search(text or ""))
 
 
+# A request this long is a brief: the user pasted the material the file is to
+# be made from, the way another user would upload it. The keyword detectors
+# in this module then read that material as if it were the instruction. Live,
+# a 13k-char "bu bilgilerle Türkçe bir döküman hazırla" brief describing a
+# product that "Word / PDF / PowerPoint / Excel / HTML dosyası üretir" got a
+# .docx, a .pdf and an .xlsx; "Kaynak kod", "Veri kaynakları" and "Ek:
+# Referans" scheduled a web search that appended two unrelated sources;
+# "görsel yükleme reddediliyordu" added a stock photo; and with three formats
+# the brief was cut to 4.5k chars, so the Word file stopped mid-list.
+# For a brief, the LLM intent classifier's answer stands on its own.
+_BRIEF_MIN_CHARS = 1_500
+
+
+def _request_is_brief(text: str) -> bool:
+    return len((text or "").strip()) >= _BRIEF_MIN_CHARS
+
+
 _IMAGE_CDN_HOST = re.compile(
     r"(?i)(?:^|\.)(?:"
     r"images\.pexels\.com|images\.unsplash\.com|cdn\.pixabay\.com|"
@@ -3181,6 +3198,10 @@ def _infer_artifact_kinds(
     kind = (artifact_type or "none").strip().lower()
     if kind in {"text"}:
         kind = "txt"
+    # A pasted brief names formats as part of its content ("Word / PDF /
+    # Excel dosyası üretir"), not as orders: the classifier's one format.
+    if kind in _SUPPORTED_KINDS and _request_is_brief(request_text):
+        return [kind]
 
     text = (request_text or "").casefold()
     hints = (
@@ -3230,6 +3251,11 @@ def _infer_artifact_kinds(
             continue
         seen.add(resolved)
         ordered.append(resolved)
+    if kind in _SUPPORTED_KINDS and len(seen - {kind}) >= _MAX_ARTIFACT_KINDS:
+        # More formats named than one job produces is a list of them
+        # ("Word / PDF / PowerPoint / Excel / HTML"), not an order for each;
+        # cutting it to the first three only made the choice arbitrary.
+        return [kind]
 
     if kind in _SUPPORTED_KINDS and kind not in seen:
         ordered.insert(0, kind)
@@ -4486,6 +4512,8 @@ async def _run_document_worker(
         attached_kinds=_uploaded_kinds(workspace_root),
     )
     primary = kinds[0]
+    # The request carries the material itself (see _request_is_brief).
+    brief = _request_is_brief(original_request or content)
 
     if not workspace_root:
         return await _run_llm_worker(
@@ -4742,7 +4770,9 @@ async def _run_document_worker(
     if needs_narrative and not needs_table and not keep_docx_table:
         import image_fetch
 
-        if image_fetch.request_wants_image(original_request or content or ""):
+        # In a brief, "görsel" is the material talking ("görsel yükleme
+        # reddediliyordu"), not a request for a photo.
+        if image_fetch.request_wants_image(original_request or content or "") and not brief:
             # The user asked for pictures in so many words. Leaving the key
             # "optional" let the model omit it, and an absent image_query
             # is exactly what makes the pdf/docx branch below skip images
@@ -4786,6 +4816,10 @@ async def _run_document_worker(
         kind_count=len(kinds),
         wants_interactive_app=wants_interactive_app,
     )
+    # Uncut, for the fallbacks below that copy the notes into the file: the
+    # cap exists to bound the prompt, and a file written from the cut copy
+    # stopped mid-list with "…[truncated]" printed in it.
+    notes_full = notes
     if len(notes) > notes_cap:
         notes = notes[:notes_cap] + "\n…[truncated]"
 
@@ -4797,7 +4831,7 @@ async def _run_document_worker(
     thin_notes = _research_notes_insufficient(notes) or (
         primary in {"pdf", "docx", "pptx", "html"} and not research_sources
     )
-    if thin_notes and _workspace_has_uploaded_sources(workspace_root):
+    if thin_notes and (_workspace_has_uploaded_sources(workspace_root) or brief):
         # The user gave us a document, so there IS material -- the upload's
         # text is already in `content` (main.py's build_workspace_context).
         # Empty research notes say nothing about that.
@@ -4811,6 +4845,9 @@ async def _run_document_worker(
         # bulunamadı" over a document they had just handed us. Whether a
         # web search also happened is irrelevant when the source is in the
         # workspace.
+        #
+        # A pasted brief is the same case: the material is in the request,
+        # so no research notes is not "the facts could not be verified".
         thin_notes = False
     if thin_notes and primary in {"pdf", "docx", "pptx", "html"}:
         source_rule += (
@@ -4950,7 +4987,9 @@ async def _run_document_worker(
             # write a document out of a tender specification, timed out,
             # and the user received two lines over the file they had just
             # uploaded.
-            source_text=content if _workspace_has_uploaded_sources(workspace_root) else "",
+            source_text=(
+                content if _workspace_has_uploaded_sources(workspace_root) or brief else ""
+            ),
         )
         if use_blocks or use_slides:
             # Block JSON carries ~15% more syntax than the same markdown, and
@@ -5001,7 +5040,7 @@ async def _run_document_worker(
             import document_export
 
             progress("building", "direct_from_research_notes")
-            body = notes.strip()
+            body = notes_full.strip()
             raw = ""
             if primary == "pptx":
                 deck_title = document_export.resolve_presentation_title(
@@ -5108,7 +5147,7 @@ async def _run_document_worker(
                         saved_to or "no",
                     )
                     salvage = ""
-                fallback_body = notes or salvage[:8000]
+                fallback_body = notes_full or salvage[:8000]
                 if not fallback_body and wants_template_match and template_path:
                     # A template rewrite has no research notes by
                     # definition, so the ordinary fallback is empty and the
@@ -5131,7 +5170,7 @@ async def _run_document_worker(
                 payload = {
                     "filename": f"rapor.{primary}",
                     "title": document_export.short_report_title(
-                        notes or "Rapor", fallback="Rapor"
+                        notes_full or "Rapor", fallback="Rapor"
                     ),
                     "summary": fallback_body,
                     "columns": [],
@@ -5196,9 +5235,12 @@ async def _run_document_worker(
             )
             if deck is not None:
                 # Stat cards and charts must show the notes' own figures.
-                # Uploaded material counts as notes: it arrives in `content`.
-                grounding = notes + (
-                    "\n" + content if _workspace_has_uploaded_sources(workspace_root) else ""
+                # Uploaded or pasted material counts as notes: it arrives in
+                # `content`.
+                grounding = notes_full + (
+                    "\n" + content
+                    if _workspace_has_uploaded_sources(workspace_root) or brief
+                    else ""
                 )
                 deck = slide_model.ground_deck(
                     deck,
@@ -5240,9 +5282,9 @@ async def _run_document_worker(
         body = str(
             payload.get("content") or payload.get("body") or summary or ""
         ).strip()
-        if not summary and not body and notes:
-            summary = notes
-            body = notes
+        if not summary and not body and notes_full:
+            summary = notes_full
+            body = notes_full
             payload["summary"] = summary
             payload["content"] = body
             _sanitize_document_payload(payload, keep_bold=wants_template_match)
@@ -5261,7 +5303,7 @@ async def _run_document_worker(
             import document_export
 
             notes_body = _strip_kaynaklar_section(
-                _strip_capability_refusals(notes or "")
+                _strip_capability_refusals(notes_full or "")
             ).strip()
             # Typed slides are a designed deck, not an outline to be judged
             # by length against the notes: a twelve-slide deck with a table
@@ -5335,6 +5377,10 @@ async def _run_document_worker(
                             len(notes_body),
                             int(thinness_floor),
                         )
+                    # Judged on what the writer saw; the file gets all of it.
+                    notes_body = _strip_kaynaklar_section(
+                        _strip_capability_refusals(notes_full or "")
+                    ).strip()
                     body = notes_body
                     summary = notes_body[:600]
                     payload["content"] = body
@@ -5364,7 +5410,11 @@ async def _run_document_worker(
         # except a template-match body, which must stay exactly what the
         # user asked to be written into their own uploaded document (no
         # server-appended Kaynaklar list in someone else's legal template).
-        if not wants_template_match and (research_sources or wants_sources or primary in {
+        # Nor under a brief with no research behind it: the material is the
+        # user's own, and "Doğrulanmış sayfa URL'si bulunamadı" under it
+        # reads as if something failed.
+        brief_without_research = brief and not research_sources
+        if not wants_template_match and not brief_without_research and (research_sources or wants_sources or primary in {
             "pdf",
             "docx",
             "pptx",
@@ -5416,6 +5466,7 @@ async def _run_document_worker(
         artifact = ArtifactTools(
             Path(workspace_root),
             source_request=original_request or content,
+            images_requested=False if brief else None,
         )
         if tool_call_recorder is not None:
             # Built directly rather than via capabilities.resolve_tools (the
@@ -5882,8 +5933,11 @@ async def _run_workforce_async(
         artifact_type = "none"
     # Keep Research scheduling on the user's explicit citation ask (or
     # normal WEB_* routing). Do not force wants_sources for every PDF —
-    # that triggered long recovery loops.
-    wants_sources = _request_wants_sources(request)
+    # that triggered long recovery loops. In a pasted brief "kaynak" and
+    # "referans" are the material's own words ("Kaynak kod", "Ek:
+    # Referans"); whether a brief needs the web is the classifier's call,
+    # made through WEB_* capabilities.
+    wants_sources = _request_wants_sources(request) and not _request_is_brief(request)
     roles = (
         [ROLE_GENERAL]
         if (wants_local_open and not combined_create_and_open)

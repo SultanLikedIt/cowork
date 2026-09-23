@@ -441,13 +441,24 @@ class ArtifactTools:
     for its row/char budgets.
     """
 
-    def __init__(self, workspace_root: Path, *, source_request: str = "") -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        *,
+        source_request: str = "",
+        images_requested: Optional[bool] = None,
+    ) -> None:
         self.workspace_root = Path(workspace_root).resolve(strict=True)
         self.root = self.workspace_root / ARTIFACTS_DIRNAME
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Original user ask for this job. When set, create_pdf/docx/pptx can
         # auto-fetch a Commons image even if the model omits image_query.
         self.source_request = str(source_request or "").strip()
+        # Whether the user asked for a photo, when the caller knows better
+        # than a keyword match on source_request -- in a pasted brief,
+        # "görsel yükleme reddediliyordu" is content, not an ask. None =
+        # decide from source_request as before.
+        self.images_requested = images_requested
         self._records: dict[str, ArtifactRecord] = {}
         # Memo of (tool, normalized args) -> previous result, so an identical
         # create call returns the existing artifact instead of re-encoding it.
@@ -582,10 +593,14 @@ class ArtifactTools:
         """
         from document_export import ImageEmbed
 
-        if require_user_ask and not _image_fetch.request_wants_image(
-            self.source_request or ""
-        ):
-            return []
+        if require_user_ask:
+            asked = (
+                self.images_requested
+                if self.images_requested is not None
+                else _image_fetch.request_wants_image(self.source_request or "")
+            )
+            if not asked:
+                return []
         query = _image_fetch.resolve_image_query(
             self.source_request or "",
             model_query=str(image_query or "").strip(),
