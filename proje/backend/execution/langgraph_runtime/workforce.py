@@ -2927,6 +2927,7 @@ async def _run_coding(
     notes a following Document Agent writes its file from.
     """
     import code_controller
+    import code_data
     from code_exec import CodeExecutionTools
 
     worker_id = WORKER_IDS[ROLE_CODING]
@@ -2974,11 +2975,22 @@ async def _run_coding(
 
     complete = await _make_complete(tracker, stage_prefix="coding")
     try:
+        # The uploaded spreadsheets, described once: exact paths, how to read
+        # them, sheets, columns and first rows -- instead of the model
+        # guessing a sheet name and a separator and spending a fix on each.
+        profile_started = time.monotonic()
+        data_context = await asyncio.to_thread(code_data.render_context, workspace_root)
+        if data_context:
+            tracker.record_event(
+                "tool", "profile_data", time.monotonic() - profile_started
+            )
+            progress("coding", "veri dosyaları incelendi")
         result = await code_controller.run_code_task(
             original_request or content,
             complete=complete,
             execute=execute,
             notes=prior_notes,
+            data_context=data_context,
             progress=progress,
             cancelled=lambda: handle.cancelled,
         )

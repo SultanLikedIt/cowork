@@ -9,6 +9,7 @@ printed, the file it wrote is on disk, and nothing downstream rewrites it.
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,44 @@ def test_document_still_runs_when_the_program_wrote_another_format(tmp_path) -> 
     assert not workforce._coding_delivered_requested_files(str(root), "pdf", "analiz edip pdf rapor ver")
     assert workforce._coding_delivered_requested_files(str(root), "csv", "csv ver")
     assert not workforce._coding_delivered_requested_files(str(tmp_path / "bos"), "csv", "csv ver")
+
+
+def test_an_uploaded_csv_is_described_and_really_read(tmp_path, monkeypatch) -> None:
+    root = tmp_path / "job"
+    upload = root / "sources" / "abc123" / "satislar.csv"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes("Bölge;Tutar\nİstanbul;120\nİzmir;80\nİstanbul;50\n".encode("cp1254"))
+    program = (
+        "import pandas as pd\n"
+        "df = pd.read_csv('sources/abc123/satislar.csv', sep=';', encoding='cp1254')\n"
+        "print(df.groupby('Bölge')['Tutar'].sum().to_string())\n"
+    )
+    seen = _script(
+        monkeypatch,
+        {
+            "coding_write": [f"MODE: run\nPLAN: Bölge toplamı.\n```python\n{program}```"],
+            "coding_answer": ["İstanbul 170, İzmir 80."],
+        },
+    )
+    request = "bölgelere göre toplam tutarı hesapla"
+    result = workforce.run_workforce_in_thread(
+        Callback(),
+        workforce.UsageTracker(),
+        None,
+        request,
+        "job-csv",
+        lambda handle: None,
+        workspace_root=str(root),
+        job_capabilities=capabilities.workforce_structural_requirements(
+            request, True, ["file", "csv"]
+        ),
+        original_request=request,
+    )
+    write_prompt = seen["coding_write"][0]
+    assert "sources/abc123/satislar.csv" in write_prompt
+    assert "sep=';', encoding='cp1254'" in write_prompt
+    assert re.search(r"İstanbul\s+170", result.result)
+    assert re.search(r"İzmir\s+80", result.result)
 
 
 def test_without_a_workspace_the_text_worker_remains(monkeypatch) -> None:

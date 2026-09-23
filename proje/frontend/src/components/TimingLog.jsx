@@ -37,6 +37,7 @@ const PROCESS_LABELS = {
   'llm:coding_fix': 'LLM · code fix',
   'llm:coding_answer': 'LLM · result explanation',
   'tool:run_python': 'Code run',
+  'tool:profile_data': 'Data file profiling',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 
