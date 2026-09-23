@@ -249,6 +249,36 @@ export function uploadFiles(files, options = {}) {
   return request('/uploads', { ...options, method: 'POST', body: form })
 }
 
+// --- Workspace document library (backend/knowledge_api.py) ----------------
+
+export function getWorkspaceDocuments(workspaceId, options = {}) {
+  return request(`/workspaces/${encodeURIComponent(workspaceId)}/documents`, options)
+}
+
+export function uploadWorkspaceDocuments(workspaceId, files, options = {}) {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  return request(`/workspaces/${encodeURIComponent(workspaceId)}/documents`, {
+    ...options,
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function removeWorkspaceDocument(workspaceId, fileId, options = {}) {
+  return request(
+    `/workspaces/${encodeURIComponent(workspaceId)}/documents/${encodeURIComponent(fileId)}`,
+    { ...options, method: 'DELETE' },
+  )
+}
+
+export function reindexWorkspaceDocument(workspaceId, fileId, options = {}) {
+  return request(
+    `/workspaces/${encodeURIComponent(workspaceId)}/documents/${encodeURIComponent(fileId)}/reindex`,
+    { ...options, method: 'POST' },
+  )
+}
+
 // --- Scheduled tasks (backend/scheduling/api.py) ---------------------------
 
 function jsonRequest(path, method, body, options = {}) {

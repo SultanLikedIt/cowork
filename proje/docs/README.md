@@ -21,6 +21,7 @@ bazlı derinleştirmesidir.
 | [social-reach.md](social-reach.md) | Reddit okuma: kurulum, çerez yenileme, güvenlik |
 | [jira.md](jira.md) | Jira okuma: kurulum (Cloud / Server), ne sorulabilir, VPN, güvenlik |
 | [github.md](github.md) | GitHub okuma: depo arama, bağlantı okuma, token, sınırlar, güvenlik |
+| [knowledge.md](knowledge.md) | Workspace belge arama (Knowledge Agent): nasıl çalışır, ölçümler, eval, sınırlar |
 | [openbot-integration.md](openbot-integration.md) | OpenBot / AG-UI entegrasyonu |
 | [backend-reliability-harness.md](backend-reliability-harness.md) | Deterministic reliability harness |
 

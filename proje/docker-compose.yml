@@ -178,6 +178,11 @@ services:
       GITHUB_ENABLED: ${GITHUB_ENABLED:-true}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      # Searching documents uploaded to a workspace (backend/knowledge_index.py,
+      # docs/knowledge.md). No account needed; the index lives in
+      # /data/knowledge.db and is rebuilt at startup if deleted.
+      KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
+      KNOWLEDGE_INDEX_WAIT_SECONDS: ${KNOWLEDGE_INDEX_WAIT_SECONDS:-20}
     volumes:
       - backend-data:/data
     # Host ports differ from the Camel stack (8000/8080) so both can run

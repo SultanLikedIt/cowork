@@ -30,6 +30,9 @@ const PROCESS_LABELS = {
   'llm:github_select': 'LLM · repository selection',
   'llm:github_answer': 'LLM · GitHub summary',
   'tool:read_github': 'GitHub read',
+  'llm:knowledge_plan': 'LLM · document search plan',
+  'llm:knowledge_answer': 'LLM · document summary',
+  'tool:search_documents': 'Document search',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 

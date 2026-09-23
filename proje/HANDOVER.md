@@ -535,6 +535,7 @@ FastAPI (backend/main.py)
 | Mail Agent | Outlook posta kutusunu okur (opsiyonel); kanıt toplar, cevabı yazmaz |
 | Jira Agent | Şirket Jira'sında arar, kayıtları okur (opsiyonel, salt okunur); kanıt toplar, cevabı yazmaz |
 | GitHub Agent | Herkese açık GitHub'da depo arar; bağlantısı verilen depo / dosya / issue / PR'ı okur (salt okunur); kanıt toplar, cevabı yazmaz |
+| Knowledge Agent | Workspace'e yüklenen belgelerde arar (FTS5 + BGE reranker); `[K#]` atıflı özet toplar, cevabı yazmaz ([`docs/knowledge.md`](docs/knowledge.md)) |
 | Document Agent | Word/PDF/PPTX/HTML/Excel yazma, şablon doldurma |
 | Coding Agent | Kod; araştırma/belge işi buraya düşmemeli |
 | Assistant | Genel; "bilgisayarımda aç" dahil |
@@ -705,6 +706,7 @@ agent-webapp-langgraph/
 | `mail_controller.py` | Posta kutusu fazları: PLAN→SEARCH→SELECT→READ, alıntı çiti, ek indirme |
 | `jira_client.py` / `jira_query.py` / `jira_controller.py` | Jira: REST istemcisi (Cloud + Server/DC), model alanları → JQL, PLAN→SEARCH→SELECT→READ→ANSWER |
 | `github_client.py` / `github_query.py` / `github_controller.py` | GitHub: REST istemcisi (yalnız GET, ETag önbelleği), bağlantı ayrıştırma + doğrulama, PLAN→SEARCH→SELECT→READ→ANSWER; web araştırmasındaki github.com adresleri de buradan okunur |
+| `knowledge_index.py` / `knowledge_controller.py` / `knowledge_api.py` | Workspace belge arama: pasaj indeksi (`knowledge.db`), PLAN→SEARCH→RANK→EXPAND→ANSWER, kütüphane uçları |
 | `scheduling/` | Zamanlanmış görevler: cron, runner, zincirler, izleme, e-posta (`delivery.py`) |
 | `runtime_context.py` | Job context |
 | `golden_prompts.py` | Gerçek kullanıcı cümleleriyle regresyon |
@@ -779,6 +781,7 @@ Backend kök path'lerini dinler; tarayıcı `/api` öneki ekler (nginx/Vite soya
 | GET | `/integrations/outlook/status` | E-posta hazır mı (köprü, token, Outlook) |
 | POST | `/integrations/outlook/test` | Test e-postası |
 | GET | `/integrations/jira/status` | Jira bağlı mı (yapılandırma, erişim, kullanıcı); `POST .../recheck` önbelleksiz |
+| GET/POST/DELETE | `/workspaces/{id}/documents` | Workspace belge kütüphanesi; `GET /workspaces/{id}/knowledge/search?q=` ham arama |
 
 OpenAPI/Swagger: http://127.0.0.1:8001/docs
 
@@ -1135,4 +1138,5 @@ Konu bazlı derin referanslar:
 | [`docs/agent-search.md`](docs/agent-search.md) | AgentSearch sidecar |
 | [`docs/jira.md`](docs/jira.md) | Jira okuma: kurulum, VPN, güvenlik |
 | [`docs/github.md`](docs/github.md) | GitHub okuma: token, sınırlar, güvenlik |
+| [`docs/knowledge.md`](docs/knowledge.md) | Workspace belge arama: ölçümler, eval, sınırlar |
 | [`docs/backend-reliability-harness.md`](docs/backend-reliability-harness.md) | Deterministik güvenilirlik harness'ı |

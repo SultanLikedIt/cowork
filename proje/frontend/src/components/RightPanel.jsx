@@ -197,6 +197,7 @@ const FIXED_AGENT_BLURB = {
   'Social Agent': 'Reads Reddit and Hacker News discussions',
   'Jira Agent': 'Searches and reads your Jira issues (read-only)',
   'GitHub Agent': 'Finds and reads public GitHub repositories (read-only)',
+  'Knowledge Agent': 'Searches the documents uploaded to this workspace',
 }
 
 function AgentCard({ worker, assignments, runtime }) {
