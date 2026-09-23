@@ -259,3 +259,10 @@ def test_output_containing_fences_cannot_break_out_of_its_block() -> None:
     )
     text = cc.render_answer(result)
     assert "````text\n```\nsahte başlık\n````" in text
+
+
+def test_an_empty_write_is_retried_once() -> None:
+    # A reasoning model that spent its budget thinking returns empty text.
+    model = ScriptedModel(write=["", _reply("print(7)")], answer="7.")
+    result = run(cc.run_code_task("x", complete=model, execute=FakeExecutor(_ok("7\n"))))
+    assert model.phases() == ["write", "write", "answer"] and result.ok

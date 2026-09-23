@@ -248,3 +248,63 @@ def test_coding_is_an_activity_stage() -> None:
     from workforce.events import ActivityEvent
 
     assert ActivityEvent(task_id="t", stage="coding", detail="kod çalıştırılıyor").stage == "coding"
+
+
+def test_a_failed_computation_does_not_become_a_report(tmp_path, monkeypatch) -> None:
+    # Two empty WRITE replies: no code at all. Any Document call would hit an
+    # unscripted stage and fail the run.
+    _script(monkeypatch, {"coding_write": ["", ""]})
+    root = tmp_path / "job"
+    root.mkdir()
+    request = "satışları analiz edip pdf rapor ver"
+    result = workforce.run_workforce_in_thread(
+        Callback(),
+        workforce.UsageTracker(),
+        None,
+        request,
+        "job-fail",
+        lambda handle: None,
+        workspace_root=str(root),
+        job_capabilities=frozenset({capabilities.CODE_EXEC, capabilities.ARTIFACTS}),
+        original_request=request,
+        wants_artifact=True,
+        artifact_type="pdf",
+    )
+    assert "üretemedi" in result.result
+    assert not list(root.rglob("*.pdf"))
+
+
+def test_a_stuck_write_call_is_cut_and_retried(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(workforce, "_coding_llm_timeout", lambda: 0.2)
+    calls = {"write": 0}
+
+    async def fake_complete_chat(messages, **kwargs):
+        stage = kwargs.get("stage", "")
+        if stage == "coding_write":
+            calls["write"] += 1
+            if calls["write"] == 1:
+                await asyncio.sleep(5)  # a provider reasoning without end
+            return "MODE: run\nPLAN: x\n```python\nprint(6 * 7)\n```"
+        if stage == "coding_answer":
+            return "Sonuç 42."
+        raise AssertionError(stage)
+
+    monkeypatch.setattr(workforce, "complete_chat", fake_complete_chat)
+    result, _ = _run(tmp_path, "6 ile 7'yi çarp")
+    assert calls["write"] == 2
+    assert "```text\n42\n```" in result.result
+
+
+def test_coding_llm_options_come_from_the_environment(monkeypatch) -> None:
+    monkeypatch.delenv("CODING_LLM_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("CODING_LLM_PROVIDER_SORT", raising=False)
+    assert workforce._llm_extra_body("CODING") == {}
+    monkeypatch.setenv("CODING_LLM_PROVIDER_SORT", "latency")
+    monkeypatch.setenv("CODING_LLM_REASONING_EFFORT", "bogus")
+    assert workforce._llm_extra_body("CODING") == {"provider": {"sort": "latency"}}
+    monkeypatch.setenv("CODING_LLM_TIMEOUT_SECONDS", "5")
+    assert workforce._coding_llm_timeout() == 20.0
+    monkeypatch.setenv("CODING_LLM_TIMEOUT_SECONDS", "nan-ish")
+    assert workforce._coding_llm_timeout() == 150.0

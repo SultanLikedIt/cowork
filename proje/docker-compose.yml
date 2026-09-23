@@ -118,6 +118,11 @@ services:
       # the model otherwise skips (2-3x slower) and "throughput" gained nothing.
       DOCUMENT_LLM_REASONING_EFFORT: ${DOCUMENT_LLM_REASONING_EFFORT:-}
       DOCUMENT_LLM_PROVIDER_SORT: ${DOCUMENT_LLM_PROVIDER_SORT:-}
+      # Same options for the Coding Agent, plus a per-call ceiling after which
+      # the call is cut and retried once (docs/coding-agent.md).
+      CODING_LLM_REASONING_EFFORT: ${CODING_LLM_REASONING_EFFORT:-}
+      CODING_LLM_PROVIDER_SORT: ${CODING_LLM_PROVIDER_SORT:-}
+      CODING_LLM_TIMEOUT_SECONDS: ${CODING_LLM_TIMEOUT_SECONDS:-150}
       # OpenBot remote-ag-ui bridge (POST /ag-ui, GET /health on the backend port).
       OPENBOT_AGUI_ENABLED: ${OPENBOT_AGUI_ENABLED:-false}
       OPENBOT_AGUI_TOKEN: ${OPENBOT_AGUI_TOKEN:-}

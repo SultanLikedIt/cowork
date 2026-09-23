@@ -34,14 +34,28 @@ and what it explains is fenced below it, verbatim.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable, Optional
 
 import untrusted_content
 
 stabilization_logger = logging.getLogger("agent_webapp.stabilization")
+
+# The child runs this same interpreter (code_exec uses sys.executable), so
+# what is importable here is what the program can import. Charts are only
+# offered when matplotlib is actually in the image.
+HAS_MATPLOTLIB = importlib.util.find_spec("matplotlib") is not None
+
+# One line per chart the program saved: "CHART: artifacts/x.png | Başlık".
+# The Document Agent embeds these in the report with the caption given here.
+_CHART_LINE_RE = re.compile(
+    r"(?im)^\s*CHART:\s*(?P<path>artifacts/[^\s|]+\.(?:png|jpe?g))\s*(?:\|\s*(?P<caption>.+?))?\s*$"
+)
+MAX_CHARTS = 6
 
 # Fix passes after the first run. Three runs in total: past that a model is
 # usually rewriting the same mistake, and MAX_EXECUTIONS_PER_RUN in code_exec
@@ -131,14 +145,33 @@ class CodeResult:
 # Prompts
 # --------------------------------------------------------------------------
 
+_CHART_RULES = (
+    "- matplotlib is installed (non-interactive Agg backend). When a chart "
+    "helps -- or the user asks for a graph -- save each one with "
+    "plt.savefig('artifacts/<short-descriptive-name>.png', dpi=150, "
+    "bbox_inches='tight') and plt.close(); never plt.show(). Title and label "
+    "the axes in the user's language. Right after saving each chart print "
+    "exactly one line: CHART: artifacts/<name>.png | <one-line caption in the "
+    "user's language>. At most 6 charts.\n"
+    if HAS_MATPLOTLIB
+    else "- There is no plotting library: do not produce charts or images.\n"
+)
+
 _ENVIRONMENT = (
     "EXECUTION ENVIRONMENT (for MODE: run):\n"
-    "- Python 3.11 with pandas, numpy, scipy and openpyxl installed. Nothing "
-    "else can be installed.\n"
+    "- Python 3.11 with pandas, numpy, scipy and openpyxl installed"
+    + (", and matplotlib" if HAS_MATPLOTLIB else "")
+    + ". Nothing else can be installed.\n"
+    + _CHART_RULES
+    + ""
     "- The working directory is this job's workspace. Files the user uploaded "
     "are under sources/ (paths are listed below when there are any).\n"
     "- Anything written under artifacts/ is delivered to the user as a "
     "downloadable file. Write nothing anywhere else.\n"
+    "- Never write PDF, Word or PowerPoint files yourself (no PdfPages, "
+    "reportlab, python-docx). When the user wants a report, a separate step "
+    "writes the designed document from what you PRINT and the charts you "
+    "save. Your files are data (xlsx, csv, json) and charts.\n"
     "- Network access is disabled. Standard input is empty.\n"
     f"- Each run is stopped after {RUN_TIMEOUT_SECONDS} seconds.\n"
     "- Only what the program PRINTS comes back. Print every number, table or "
@@ -462,6 +495,15 @@ async def run_code_task(
     draft = await write_code(
         request, notes=notes, data_context=data_context, complete=complete
     )
+    if draft is None and not stopped():
+        # One more try. The usual cause is not the request but the provider:
+        # a reasoning model that spent its whole budget thinking and returned
+        # empty text, which the next call (often another provider) does not.
+        stabilization_logger.warning("coding write returned no code; retrying once")
+        emit("coding", "kod yeniden isteniyor")
+        draft = await write_code(
+            request, notes=notes, data_context=data_context, complete=complete
+        )
     if draft is None:
         result.error = "no_code"
         return result
@@ -515,6 +557,25 @@ async def run_code_task(
 # --------------------------------------------------------------------------
 # Rendering
 # --------------------------------------------------------------------------
+
+
+def parse_charts(text: str) -> list[tuple[str, str]]:
+    """(artifacts path, caption) for every CHART line, in order, deduped.
+
+    Paths are only ever under artifacts/; whether the file really exists is
+    the caller's check (the Document Agent re-verifies against disk).
+    """
+    charts: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in _CHART_LINE_RE.finditer(text or ""):
+        path = match.group("path")
+        if ".." in PurePosixPath(path).parts or path in seen:
+            continue
+        seen.add(path)
+        charts.append((path, (match.group("caption") or "").strip()[:200]))
+        if len(charts) >= MAX_CHARTS:
+            break
+    return charts
 
 
 def _fence(body: str, language: str) -> str:

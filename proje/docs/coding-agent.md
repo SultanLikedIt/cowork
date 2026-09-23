@@ -69,9 +69,60 @@ Canlı ölçüm (deepseek-v4-flash): 200 satırlık 2 sayfalı xlsx'te bölge/he
 analizi 16 sn, 40 satırlık cp1254 CSV'de departman özeti 9,5 sn — ikisi de ilk
 çalıştırmada doğru dosya, sayfa ve ayraçla.
 
+## Grafikler
+
+İmajda matplotlib varsa (`backend/Dockerfile`, ayrı katman) Coding Agent'a
+grafik çizmesi söylenir; yoksa prompt "grafik üretme" der
+(`code_controller.HAS_MATPLOTLIB`). Kural:
+
+```python
+plt.savefig('artifacts/bolge-ciro.png', dpi=150, bbox_inches='tight'); plt.close()
+print('CHART: artifacts/bolge-ciro.png | Bölgelere göre ciro (bin TL)')
+```
+
+- **Sohbette** PNG/JPG çıktılar dosya listesinin üstünde önizleme olarak
+  görünür (`ChatExchange.jsx` `PREVIEW_KINDS`). Sunucu bunları `image/png` /
+  `image/jpeg` ile verir; SVG bilerek yok (script taşıyabilir).
+- **Rapora gömme:** "analiz et, grafikli PDF ver" → Coding sonra Document.
+  Document `CHART:` satırlarını notlardan okur, dosyayı diskte
+  (`artifacts/` altında) doğrular ve `ArtifactTools.leading_images` ile
+  PDF / Word / PowerPoint / HTML yazıcılarına verir. Modelden her grafik için
+  `{"type": "image"}` bloğunu ilgili paragrafın arkasına koyması istenir;
+  başlık `CHART:` satırından gelir.
+- Coding notları rapora **kod olarak basılmaz**: Document'a "gerçek çıktıyı
+  raporla, kaynak kodu koyma" denir; notları doğrudan dosyaya kopyalayan
+  kısayol ve "yazı çok kısa → ham notları koy" yedeği Coding işlerinde koddan
+  arındırılmış metinle çalışır.
+
+Canlı ölçüm (deepseek-v4-flash): 200 satırlık xlsx, "bölgelere ve aylara
+göre analiz et, grafikli pdf rapor hazırla" → 3 grafik, 3 sayfalık tasarımlı
+PDF (grafikler ilgili paragrafların arkasında, kod yok), 152 sn — bir düzeltme
+turu dahil; bunun ~66 sn'si Document.
+
+## Başarısızlık ve yavaş sağlayıcı
+
+- Coding sonuç üretemezse (kod gelmedi, 3 çalıştırma da hata verdi)
+  Document **atlanır**: hata hakkında cilalı bir PDF yazılmaz; cevap ne
+  olduğunu ve hatayı gösterir.
+- WRITE boş dönerse bir kez daha istenir.
+- OpenRouter'daki bir sağlayıcı (OpenInference) cevabın tamamını `reasoning`
+  alanına yazıp `content`'i boş bırakıyor. Coding'in WRITE/FIX çağrılarında
+  (`reasoning_fallback`) bu metin kullanılır — yalnız burada, çünkü kod
+  ayrıştırılıp doğrulanıyor; düz yazı cevaplarında düşünce metni cevap olmasın.
+- Model PDF/Word'ü kendisi yazmaz (prompt kuralı); yazsa bile rapor türleri
+  için Document yine çalışır.
+- Her Coding model çağrısı `CODING_LLM_TIMEOUT_SECONDS` (150) sonra kesilir.
+  Canlıda bir OpenRouter sağlayıcısı 8.192 token'ın tamamını düşünmeye
+  harcayıp 325 sn sonra boş döndü — iki kez üst üste.
+- `CODING_LLM_REASONING_EFFORT` / `CODING_LLM_PROVIDER_SORT` Document'takiyle
+  aynı anlamda; deepseek-v4-flash için boş bırakın (`low` düşünmeyi açıyor).
+
 ## Ortam ve sınırlar
 
-- Python 3.11 + pandas, numpy, scipy, openpyxl. Başka paket kurulamaz.
+- Python 3.11 + pandas, numpy, scipy, openpyxl, matplotlib. Başka paket kurulamaz.
+- **matplotlib için backend imajı yeniden build edilmeli**
+  (`docker compose up -d --build backend`); build edilmeden grafikler kapalı
+  kalır, geri kalan her şey çalışır.
 - Ağ yok (`code_exec._GUARD`). Ağ isteyen iş `MODE: write` ile kullanıcıya verilir.
 - İş başına en fazla 12 çalıştırma, makine genelinde aynı anda 4 (`code_exec`).
 - **Gerçek sandbox değildir** — süreç seviyesinde sınırlama. Kasıtlı olarak

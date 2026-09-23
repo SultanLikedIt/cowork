@@ -3148,6 +3148,12 @@ ARTIFACT_MEDIA_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".pdf": "application/pdf",
+    # Charts the Coding Agent saved. Served with their real type (and
+    # nosniff) so the chat can preview them; SVG is deliberately absent --
+    # it can carry script and would be an XSS vector opened from here.
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
 }
 
 

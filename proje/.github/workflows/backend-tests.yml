@@ -42,6 +42,8 @@ jobs:
           # modules fail at collection with ModuleNotFoundError and pytest
           # aborts before running anything.
           pip install "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
+          # Coding Agent charts; its own Dockerfile layer, same pin.
+          pip install "matplotlib==3.11.2"
           pip install --no-deps "psutil>=6.1.1"
           pip install pytest pytest-asyncio
 
