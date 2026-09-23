@@ -1,4 +1,4 @@
-"""Checks a rendered PDF/DOCX before it is handed to the user.
+"""Checks a rendered PDF/DOCX/PPTX before it is handed to the user.
 
 Why this module exists
 ----------------------
@@ -10,7 +10,8 @@ file that says "This job did not produce a final synthesized answer.", or a
 section the model wrote that never made it onto the page.
 
 So the file is reopened with an independent reader -- pypdfium2 for PDF (the
-engine Chrome uses, already installed with Docling), python-docx for Word --
+engine Chrome uses, already installed with Docling), python-docx for Word,
+python-pptx for slides (which also gets a layout check, see inspect_pptx) --
 and what it reads back is compared with what was supposed to be written.
 
 This never raises. A reader that is not installed or a file that will not
@@ -100,6 +101,89 @@ def extract_docx_text(data: bytes) -> str:
     return "\n".join(parts)
 
 
+# A text box may run this much past its frame before it counts as
+# overflowing: the line estimate is deliberately conservative, and a
+# descender brushing the edge is not a broken slide.
+_OVERFLOW_RATIO = 1.15
+_OVERFLOW_SLACK_IN = 0.1
+_EMU_PER_INCH = 914400
+
+
+def _paragraph_height(paragraph: Any, width_in: float) -> float:
+    """Estimated height of one pptx paragraph, in inches."""
+    import document_pptx
+
+    text = "".join(run.text for run in paragraph.runs) or paragraph.text or ""
+    sizes = [run.font.size.pt for run in paragraph.runs if run.font.size is not None]
+    size = max(sizes) if sizes else 18.0
+    bold = any(bool(run.font.bold) for run in paragraph.runs)
+    p_pr = paragraph._p.pPr
+    margin = int(p_pr.get("marL", "0")) / _EMU_PER_INCH if p_pr is not None else 0.0
+    lines = document_pptx.wrap_count(text, size, max(0.1, width_in - margin), bold=bold)
+    spacing = paragraph.line_spacing
+    if spacing is None:
+        pitch = size * 1.2
+    elif isinstance(spacing, float):
+        pitch = size * 1.2 * spacing
+    else:
+        pitch = spacing.pt
+    after = paragraph.space_after.pt if paragraph.space_after is not None else 0.0
+    return (lines * pitch + after) / 72
+
+
+def inspect_pptx(data: bytes) -> tuple[int, str, list[str]]:
+    """(slide count, slide text, layout problems) read back from a .pptx.
+
+    Layout problems are what a reader sees and a text dump does not: a text
+    box whose text runs past its frame (overlapping whatever is below it)
+    and a shape placed partly off the slide. Speaker notes are not slide
+    text and are left out. Raises if the file will not open.
+    """
+    from pptx import Presentation
+
+    prs = Presentation(io.BytesIO(data))
+    slide_w, slide_h = prs.slide_width, prs.slide_height
+    tolerance = int(0.02 * _EMU_PER_INCH)
+    parts: list[str] = []
+    problems: list[str] = []
+    for number, slide in enumerate(prs.slides, start=1):
+        for shape in slide.shapes:
+            if (
+                shape.left is not None
+                and shape.width is not None
+                and (
+                    shape.left < -tolerance
+                    or shape.top < -tolerance
+                    or shape.left + shape.width > slide_w + tolerance
+                    or shape.top + shape.height > slide_h + tolerance
+                )
+            ):
+                problems.append(f"slide {number}: a shape extends past the slide edge")
+            if getattr(shape, "has_table", False) and shape.has_table:
+                for row in shape.table.rows:
+                    parts.extend(cell.text for cell in row.cells)
+                continue
+            if not shape.has_text_frame:
+                continue
+            frame = shape.text_frame
+            parts.append(frame.text)
+            if not frame.text.strip() or shape.width is None or shape.height is None:
+                continue
+            if frame.word_wrap is False:
+                continue
+            margins = (frame.margin_left, frame.margin_right, frame.margin_top, frame.margin_bottom)
+            left, right, top, bottom = (m / _EMU_PER_INCH for m in margins)
+            width = shape.width / _EMU_PER_INCH - left - right
+            height = shape.height / _EMU_PER_INCH - top - bottom
+            needed = sum(_paragraph_height(p, width) for p in frame.paragraphs)
+            if needed > height * _OVERFLOW_RATIO + _OVERFLOW_SLACK_IN:
+                problems.append(
+                    f"slide {number}: text overflows its box "
+                    f"({needed:.2f}in of text in {height:.2f}in: {frame.text.strip()[:40]!r})"
+                )
+    return len(prs.slides), "\n".join(parts), problems
+
+
 def verify_document(
     kind: str,
     data: bytes,
@@ -121,6 +205,12 @@ def verify_document(
                 report.fail("PDF has no pages")
         elif kind == "docx":
             text = extract_docx_text(data)
+        elif kind == "pptx":
+            report.pages, text, layout_problems = inspect_pptx(data)
+            if report.pages < 2:
+                report.fail(f"deck has {report.pages} slide(s)")
+            for problem in layout_problems[:MAX_REPORTED_HEADINGS]:
+                report.fail(problem)
         else:
             return report
     except ImportError as exc:
@@ -181,6 +271,7 @@ __all__ = [
     "expects_sources",
     "extract_docx_text",
     "extract_pdf_text",
+    "inspect_pptx",
     "headings_of",
     "headings_of_markdown",
     "verify_document",

@@ -99,6 +99,12 @@ services:
       # backend/document_model.py. On, every narrative PDF/DOCX calls the
       # Document LLM. false = the previous markdown path, unchanged.
       DOCUMENT_BLOCKS: ${DOCUMENT_BLOCKS:-true}
+      # PowerPoint: the Document LLM returns typed slides (bullets, stats,
+      # table, chart, two_column, quote, section, takeaways + speaker notes)
+      # drawn by backend/document_pptx.py. false = the previous deck cut
+      # from the research notes (document_export.build_pptx), which also
+      # stays the fallback when a reply has no usable slides.
+      DOCUMENT_SLIDES: ${DOCUMENT_SLIDES:-true}
       # How typed-block PDFs are drawn: chromium = HTML/CSS printed by the
       # Playwright Chromium already in this image (backend/document_html.py);
       # reportlab = the previous renderer. Chromium falls back to reportlab
