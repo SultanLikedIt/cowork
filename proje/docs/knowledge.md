@@ -11,7 +11,68 @@ modele yalnız prompt'un ilk `workspace.MAX_CONTEXT_CHARS` (60.000) karakteri
 olarak ulaşıyordu; 40. sayfadan sonrası görünmüyordu. Sohbetin dosya çantası
 da (`conversation_files`) 10 dosyada en eskisini düşürüyor.
 
-## Nasıl çalışır
+## Basit anlatım: vektör veritabanı olmadan nasıl çalışıyor
+
+**Tek cümleyle:** Her pasajı sayılara çevirip "yakınlığa" göre aramak yerine
+(vektör veritabanının yaptığı), pasajları **anahtar sözcük dizininde bulur,
+sonra küçük bir yapay zekâ modeline en iyi adayları okutup soruyu gerçekten
+cevaplayanları seçtirir.** Yani bu da bir RAG (önce bul, sonra cevapla);
+yalnızca "bulma" kısmı farklı.
+
+**Benzetme:** Vektör veritabanı, her sayfanın özünü ezberlemiş bir
+kütüphaneci gibidir: ne istediğinizi hangi sözcüklerle anlatırsanız anlatın
+bulur. Bu sistem ise kitabın arkasındaki **dizine** bakıp 40 kadar aday
+sayfayı çeken, sonra her birini sorunuzla yan yana **dikkatle okuyup**
+gerçekten cevap verenleri ayıran bir kütüphanecidir. İkisi de anlama göre
+bulur; işi farklı bölüştürürler.
+
+### 1. Belge yüklenince (hazırlık)
+
+- Belge küçük parçalara (pasaj, yaklaşık bir paragraf) bölünür. Her pasaj
+  hangi dosyadan, hangi sayfadan ve hangi başlığın altından geldiğini bilir.
+- Yazım farkları önemsiz olsun diye metin sadeleştirilir: küçük harf,
+  `ı → i`, `ş → s`, `ğ → g`, "Wi-Fi" → "wifi". Bu, taranmış belgelerde OCR'ın
+  "ı" yerine "i" okuma hatasını da etkisiz kılar.
+- Pasajlar uygulamanın zaten kullandığı SQLite içinde aranabilir bir dizine
+  yazılır. Dizin her sözcüğü 3 harflik parçalara ayırır; bu sayede sözcüğün
+  bir kısmı da eşleşir: "sözleşme" araması "sözleşmesinde"yi bulur (Türkçe
+  ekler için önemli).
+
+### 2. Soru gelince
+
+| Adım | Ne olur | Neden |
+| --- | --- | --- |
+| **a. Anahtar sözcük araması** | Sorudaki sözcükler köklerine kısaltılır ("harcandı" → "harca"), eşleşen en fazla 40 pasaj çekilir. Nadir sözcükler sık olanlardan fazla sayılır. | Hızlı (milisaniye) ve ucuz. Aday bulur ama anlamı bilmez. |
+| **b. Yeniden sıralama** | Küçük bir yapay zekâ modeli (web aramasında zaten kullanılan BGE cross-encoder) soruyu ve her adayı **birlikte** okuyup 0–1 arası alaka puanı verir. En iyi ~8 pasaj kalır. | Anlam burada devreye girer: farklı ifadeyi tanır, Türkçe ile İngilizce arasında çalışır. |
+| **c. Güvenlik ağı** | En iyi puan zayıfsa (0,5'in altında) ana yapay zekâ modeli soruyu Türkçe ve İngilizce arama sözcüklerine çevirir; a–b tekrar çalışır. | Cevapla ortak sözcüğü olmayan soruları kurtarır: "evden çıkmak" ↔ "fesih", Türkçe belgeye İngilizce soru. |
+| **d. Bağlam** | Her bulunan pasajın hemen öncesi ve sonrası eklenir; her sonuç bir etiket alır: [K1], [K2]… | Cevap çoğu zaman eşleşen sözcüklerin hemen yanındadır. |
+| **e. Cevap** | Yapay zekâ etiketlere atıf yapan kısa bir özet yazar; son cevap bundan yazılır ve uygulama kaynak listesini (dosya, sayfa, bölüm) ekler. | Her iddia kaynağına kadar izlenebilir. |
+
+### Neden vektör veritabanı yok
+
+| | Vektör veritabanı | Bu yaklaşım |
+| --- | --- | --- |
+| Ek model | Bir embedding modeli (~2,2 GB RAM) | Yok; zaten yüklü sıralama modeli kullanılıyor |
+| Yükleme maliyeti | Her pasaj modelden geçer (büyük dosyada dakikalar) | Düz metin dizinleme (25 dosya 0,2 sn) |
+| Ek servis | Genellikle ayrı bir veritabanı | Yeni bir şey yok; silinirse kendini yeniden kuran bir dosya (`knowledge.db`) |
+| Alakayı yargılama | Önceden hesaplanmış "anlam özetlerini" karşılaştırır | Soruyla pasajı birlikte okur; pasaj başına daha isabetli |
+
+Sıralama modeli, tek bir pasajı yargılamakta vektör aramasından daha
+isabetlidir; ama her pasaja çalıştırılamayacak kadar yavaştır (pasaj başına
+~0,2–0,35 sn). Bu yüzden önce anahtar sözcük dizini adayları daraltır.
+
+### Dürüst bedeli
+
+- **Zayıf nokta:** Bir pasajın ne soruyla ne de yapay zekânın yeniden
+  yazdığı sorgularla ortak bir sözcüğü/kökü yoksa, anahtar sözcük adımı onu
+  hiç bulamaz; sıralama modeli de onu hiç görmez.
+- **Ölçüm:** Test setinde yalnız anahtar sözcük araması cevabı %81 oranında
+  buldu; yeniden yazma güvenlik ağıyla %96.
+- **Not:** Bu test sentetik belgelerle yapıldı. Gerçek şirket belgeleriyle
+  yapılan test kaçan cevaplar gösterirse vektör araması **ek bir aday bulma
+  yolu** olarak eklenir; sistemin geri kalanı değişmez.
+
+## Nasıl çalışır (teknik)
 
 ```text
 upload ─► parse_document (Docling) ─► chunks.jsonl (zaten vardı)
@@ -31,15 +92,15 @@ submit_job ─► workspace_documents (kütüphane üyeliği, migration 0012)
 | `execution/langgraph_runtime/workforce.py` | `ROLE_KNOWLEDGE`, `_run_knowledge`, `_append_document_sources` |
 | `frontend/src/components/LibraryPanel.jsx` | Ana sayfadaki **Documents** listesi (Workforce modunda) |
 
-### RAG mı?
+### Arama ayrıntıları
 
-Evet, ama vektör veritabanı yok. Arama **sözcüksel** (SQLite FTS5, trigram):
-iç eşleşme Türkçe ekleri karşılar ("sözleşme" → "sözleşmesinde"). Uzun sorgu
-sözcükleri 5 ve 7 karakterlik iki önekle aranır ("harcandı" → "harcadığını").
-Anlam düzeyindeki sıralamayı zaten uygulamada olan **BGE cross-encoder**
-(`reranker.py`) yapar; çok dilli olduğu için İngilizce soru Türkçe pasajı
-bulabilir. Soru dili ile belge dili farklıysa **PLAN** çağrısı TR/EN sorgu
-varyantları yazar.
+Sade anlatımın teknik karşılıkları: dizin SQLite FTS5 `trigram`
+tokenizer'ı, metin önce `knowledge_index.fold` ile sadeleştirilir. Uzun
+sorgu sözcükleri 5 ve 7 karakterlik iki önekle aranır (kısa önek bulmayı,
+uzun önek tam biçimi öne çıkarır). Sorgu varyantlarının sonuçları reciprocal
+rank fusion (RRF) ile birleştirilir, sıralamayı `reranker.score_batched`
+yapar. Eşikler: `MIN_RELEVANCE` 0,03, `CONFIDENT_RELEVANCE` 0,5
+(`knowledge_controller.py`).
 
 ### Uyarlanabilir PLAN
 
