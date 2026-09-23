@@ -4214,6 +4214,17 @@ def _table_from_prose(body: str) -> tuple[list[str], list[list[str]]]:
     return [], []
 
 
+def _payload_slides_json(payload: dict[str, Any]) -> str:
+    """Typed slides as JSON, when the Document reply designed the deck and
+    `content` was not replaced afterwards; otherwise ""."""
+    import slide_model
+
+    deck = slide_model.resolve_payload_deck(payload)
+    if deck is None:
+        return ""
+    return json.dumps([slide.model_dump() for slide in deck.slides], ensure_ascii=False)
+
+
 def _write_artifact(
     artifact: Any,
     *,
@@ -4235,15 +4246,20 @@ def _write_artifact(
     # Typed blocks, when the Document reply had them and `content` was not
     # replaced afterwards; otherwise "" and the markdown writers run.
     blocks_json = ""
-    if kind in {"pdf", "docx"}:
+    slides_json = _payload_slides_json(payload) if kind == "pptx" else ""
+    if kind in {"pdf", "docx", "pptx"}:
         import document_model
 
-        block_document = document_model.resolve_payload_document(payload)
+        # A .pptx beside a block-built .docx/.pdf is drawn from the same
+        # blocks, one slide per section.
+        block_document = (
+            document_model.resolve_payload_document(payload) if not slides_json else None
+        )
         if block_document is not None:
             blocks_json = json.dumps(block_document.blocks_as_dicts(), ensure_ascii=False)
         document_logger.info(
             "document path=%s kind=%s file=%s",
-            "blocks" if blocks_json else "markdown",
+            "slides" if slides_json else "blocks" if blocks_json else "markdown",
             kind,
             filename,
         )
@@ -4347,6 +4363,9 @@ def _write_artifact(
             data=data_json,
             columns=columns_json,
             image_query=image_query,
+            slides=slides_json,
+            subtitle=str(payload.get("subtitle") or ""),
+            blocks=blocks_json,
         )
     if kind == "code":
         # Best-effort: write a text/code bundle via text artifact if bundle
@@ -4380,6 +4399,64 @@ def _write_artifact(
         columns=columns_json,
         sheet_name="Data",
     )
+
+
+# The Document reply for a .pptx (slide_model / document_pptx). The server
+# adds the title slide, agenda and sources, sizes every text to fit and
+# continues long tables and lists on extra slides -- so the model is told to
+# give whole tables and whole sentences, never to trim for space.
+_SLIDES_SHAPE = (
+    "Return ONLY JSON with keys: filename, title, subtitle, slides.\n"
+    "title: the deck's topic in 2-6 words (e.g. 'Türkiye Altın Fiyatları "
+    "2026'), never the user's request and never a bullet line. subtitle: one "
+    "sentence saying what the deck covers.\n"
+    "slides: the presentation as an ordered array, usually 6-14 slides (more "
+    "only when the notes carry that much). Do NOT add a title slide, an "
+    "agenda or a sources slide -- the server adds them. Every slide has "
+    '"layout", "title" and "notes", plus the keys of its layout:\n'
+    '{"layout": "bullets", "title": "...", "bullets": ["...", {"text": "...", '
+    '"items": ["...", "..."]}]} -- 3-6 bullets, each ONE idea in one sentence '
+    "of at most ~20 words; a sub-list goes in items\n"
+    '{"layout": "stats", "title": "...", "stats": [{"value": "5,5 m", '
+    '"label": "yetişkin erkek boyu", "detail": "..."}]} -- 2-4 headline '
+    "figures; value is the figure exactly as the notes give it, short, with "
+    "its unit\n"
+    '{"layout": "table", "title": "...", "columns": ["..."], "rows": '
+    '[["...", "..."]]} -- comparable facts from the notes, at most 8 columns; '
+    "include EVERY row the notes give, the server continues a long table on "
+    "extra slides\n"
+    '{"layout": "chart", "title": "...", "chart": {"type": "line", '
+    '"categories": ["..."], "series": [{"name": "...", "values": [1.5, 2]}], '
+    '"unit": "TL"}, "bullets": ["..."]} -- only for a numeric series the '
+    "notes actually give: a trend over time -> line, comparing items -> "
+    "column or bar, shares of a whole -> pie; values are plain numbers "
+    "copied from the notes, one per category; up to 3 short bullets on what "
+    "the chart shows\n"
+    '{"layout": "two_column", "title": "...", "left": {"heading": "...", '
+    '"bullets": ["..."]}, "right": {"heading": "...", "bullets": ["..."]}} '
+    "-- a comparison, before/after, pros/cons\n"
+    '{"layout": "quote", "text": "...", "attribution": "..."} -- a statement '
+    "the notes actually contain, in their words, credited to whom the notes "
+    "credit it; at most one per deck, none if the notes quote no one\n"
+    '{"layout": "section", "title": "...", "subtitle": "..."} -- a divider, '
+    "only in decks of 10+ slides with clearly separate parts\n"
+    '{"layout": "takeaways", "title": "...", "bullets": ["..."]} -- 3-5 '
+    "conclusions; the LAST slide\n"
+    'Any slide may add "subtitle": its key message in one line.\n'
+    "A slide title says what the slide shows in at most ~8 words; prefer a "
+    "statement ('Gram altın Ocak'ta %26 yükseldi') to a label ('Fiyatlar'). "
+    '"notes" are the speaker notes: 2-4 sentences the presenter says on '
+    "that slide, carrying the detail and context that did not fit on it.\n"
+    "Pick each slide's layout from its content -- figures -> stats, a "
+    "numeric series -> chart (optionally followed by a table with the same "
+    "data), rows of comparable facts -> table, a contrast -> two_column -- "
+    "and do not give every slide the same layout. Write in the language of "
+    "the request. Use only facts and numbers from the research notes: do not "
+    "round, convert or compute new figures. Cover every main section of the "
+    "notes. Inside text you may mark a key figure as **bold**; write no "
+    "other markup (no #, no leading - or 1., no | tables). "
+    "filename must end with .pptx."
+)
 
 
 async def _run_document_worker(
@@ -4492,6 +4569,17 @@ async def _run_document_worker(
         and primary in {"pdf", "docx"}
         and not (needs_table or keep_docx_table or wants_template_match or wants_interactive_app)
     )
+    import slide_model
+
+    # Typed slides for a deck asked for as .pptx: the model designs each
+    # slide (layout, table, chart, speaker notes) instead of the server
+    # cutting research prose into bullets. A deck paired with a spreadsheet
+    # keeps the tabular shape below.
+    use_slides = (
+        slide_model.slides_enabled()
+        and primary == "pptx"
+        and not (needs_table or wants_template_match or wants_interactive_app)
+    )
     if needs_table or keep_docx_table:
         if keep_docx_table:
             shape = (
@@ -4582,6 +4670,8 @@ async def _run_document_worker(
             "the server builds the HTML deck from title/summary/content. "
             "filename must end with .html."
         )
+    elif use_slides:
+        shape = _SLIDES_SHAPE
     elif primary == "pptx":
         # PPTX-only: outline for slides — do not change DOCX/PDF narrative shape.
         shape = (
@@ -4743,11 +4833,31 @@ async def _run_document_worker(
         "build a PDF themselves. "
         + shape
         + " Use prior research notes as the source of truth; do not invent "
-        "numbers. Keep columns/rows compact"
-        + (" (max ~40 rows)." if keep_docx_table else " (max ~12 rows).")
+        "numbers."
+        + (
+            ""
+            if use_slides
+            else " Keep columns/rows compact"
+            + (" (max ~40 rows)." if keep_docx_table else " (max ~12 rows).")
+        )
         + " If a value is missing, use an empty string — do not invent clubs "
         "or scores. When the user asked for Takım/Team and notes name the "
         "club, you MUST include it."
+        + (
+            (
+                " For PowerPoint: carry every section, figure and caveat of "
+                "the notes onto slides -- in slide-sized pieces, as bullets, "
+                "tables and charts -- rather than a summary that drops "
+                "findings. "
+                "CROSS-SECTION CONSISTENCY: when the notes give the same "
+                "metric different values at different dates, use the most "
+                "recent value on every slide, and never let two slides "
+                "contradict each other. Carry over the notes' own gap "
+                "disclosures instead of smoothing them into confident text."
+            )
+            if use_slides and not thin_notes
+            else ""
+        )
         + (
             (
                 " For Word/PDF/PowerPoint: put the FULL research narrative in "
@@ -4776,15 +4886,21 @@ async def _run_document_worker(
             if (needs_narrative or paged or primary in {"pdf", "docx", "pptx"})
             and not thin_notes
             and not keep_docx_table
+            and not use_slides
             else ""
         )
         + source_rule
         + " Write summary/content as clean report prose only: no chat "
         "openers (Elbette/Sure), no echoing the user prompt, "
-        + ("" if use_blocks else "no markdown bold markers, ")
+        + ("" if use_blocks or use_slides else "no markdown bold markers, ")
         + "no MACHINE blocks, no 'I cannot create PDF' lines. "
         + (
-            " When research notes contain verified figures, write a REAL "
+            " When research notes contain verified figures, build the deck "
+            "on those numbers. Do NOT pad it with slides about how to make "
+            "a presentation, suggested visuals, or filler that invents "
+            "extra numbers."
+            if not thin_notes and use_slides
+            else " When research notes contain verified figures, write a REAL "
             "report (intro + findings with those numbers + short conclusion). "
             "Do NOT pad with 'suggested outline', 'how to structure a report', "
             "or filler sector essays that invent extra numbers."
@@ -4836,9 +4952,10 @@ async def _run_document_worker(
             # uploaded.
             source_text=content if _workspace_has_uploaded_sources(workspace_root) else "",
         )
-        if use_blocks:
+        if use_blocks or use_slides:
             # Block JSON carries ~15% more syntax than the same markdown, and
             # a reasoning model needs room to think before it writes any.
+            # Slides are the same kind of reply: one large JSON document.
             doc_max_tokens = min(
                 _DOC_MAX_TOKENS_CEILING,
                 int(doc_max_tokens * 1.15) + _DOC_BLOCKS_REASONING_HEADROOM,
@@ -4873,8 +4990,9 @@ async def _run_document_worker(
                 "content": fail_body[:4000],
             }
         # With typed blocks on, PDF/DOCX always go through the Document LLM:
-        # copying the notes straight in would leave no blocks to render.
-        elif not use_blocks and _notes_ready_for_direct_deliverable(
+        # copying the notes straight in would leave no blocks to render. The
+        # same for typed slides: the notes are not a deck.
+        elif not use_blocks and not use_slides and _notes_ready_for_direct_deliverable(
             notes,
             primary=primary,
             kinds=kinds,
@@ -4913,10 +5031,11 @@ async def _run_document_worker(
                 "content": body if primary != "pptx" else body[:12000],
             }
         else:
-            if use_blocks:
+            if use_blocks or use_slides:
                 document_logger.info(
-                    "document path: calling Document LLM for typed blocks "
+                    "document path: calling Document LLM for typed %s "
                     "(kind=%s, notes=%d chars, max_tokens=%d)",
+                    "slides" if use_slides else "blocks",
                     primary,
                     len(notes),
                     doc_max_tokens,
@@ -4939,12 +5058,12 @@ async def _run_document_worker(
                         retry_on_truncation=True,
                         # Blocks are one large JSON document: ask the
                         # provider to guarantee it is well-formed.
-                        json_mode=use_blocks,
+                        json_mode=use_blocks or use_slides,
                         extra_body=_document_llm_extra_body() or None,
                     ),
                     # The wait covers that retry, so it can actually finish.
                     timeout=_document_llm_timeout(
-                        doc_max_tokens * 2 if use_blocks else doc_max_tokens
+                        doc_max_tokens * 2 if use_blocks or use_slides else doc_max_tokens
                     ),
                 )
             except asyncio.TimeoutError:
@@ -5043,6 +5162,11 @@ async def _run_document_worker(
                 if extracted:
                     payload["html"] = extracted
         filename = str(payload.get("filename") or f"deliverable.{primary}")
+        # Kept before sanitizing: that re-derives the title from title +
+        # body together, and on a deck the body's headings are slide titles
+        # -- a giraffe deck came out titled "Dolaşım Sistemi Uyumları", one
+        # of its sections, over the model's own "Zürafalar".
+        model_title = str(payload.get("title") or "").strip()
         _sanitize_document_payload(payload, keep_bold=wants_template_match)
         # Strip any leftover "cannot create PDF / suggested outline" prose
         # the Document LLM may have copied from research notes.
@@ -5066,7 +5190,37 @@ async def _run_document_worker(
                 document_logger.warning(
                     "document path: blocks were unusable -> markdown fallback"
                 )
-        elif use_blocks:
+        elif use_slides and payload.get("slides") is not None:
+            deck = slide_model.attach_slides_to_payload(
+                payload, text_filter=_strip_capability_refusals
+            )
+            if deck is not None:
+                # Stat cards and charts must show the notes' own figures.
+                # Uploaded material counts as notes: it arrives in `content`.
+                grounding = notes + (
+                    "\n" + content if _workspace_has_uploaded_sources(workspace_root) else ""
+                )
+                deck = slide_model.ground_deck(
+                    deck,
+                    grounding,
+                    log=lambda message: document_logger.warning("document slides: %s", message),
+                )
+                if len(deck.content_slides()) >= slide_model.MIN_CONTENT_SLIDES:
+                    slide_model.set_payload_deck(payload, deck)
+                    progress("building", "typed_slides")
+                    document_logger.info(
+                        "document path: received %d typed slides (%s)",
+                        len(deck.slides),
+                        ", ".join(sorted({s.layout for s in deck.slides})),
+                    )
+                else:
+                    payload.pop("slides", None)
+                    deck = None
+            if deck is None:
+                document_logger.warning(
+                    "document path: slides were unusable -> notes-driven deck"
+                )
+        elif use_blocks or use_slides:
             if not (raw or "").strip():
                 document_logger.warning(
                     "document path: Document LLM returned an EMPTY reply (output "
@@ -5075,8 +5229,9 @@ async def _run_document_worker(
                 )
             else:
                 document_logger.warning(
-                    "document path: Document LLM reply had no blocks key -> markdown "
+                    "document path: Document LLM reply had no %s key -> markdown "
                     "fallback (reply=%d chars, starts=%r)",
+                    "slides" if use_slides else "blocks",
                     len(raw),
                     raw[:80],
                 )
@@ -5108,7 +5263,11 @@ async def _run_document_worker(
             notes_body = _strip_kaynaklar_section(
                 _strip_capability_refusals(notes or "")
             ).strip()
-            if notes_body and (
+            # Typed slides are a designed deck, not an outline to be judged
+            # by length against the notes: a twelve-slide deck with a table
+            # and a chart is always shorter than the brief it came from, and
+            # replacing it put the notes back through the bullet cutter.
+            if not payload.get("slides") and notes_body and (
                 _pptx_outline_too_thin(body) or len(notes_body) > len(body) + 200
             ):
                 body = notes_body
@@ -5117,7 +5276,7 @@ async def _run_document_worker(
                 payload["summary"] = summary
             payload["title"] = document_export.resolve_presentation_title(
                 original_request or content or "",
-                document_title=title or "",
+                document_title=(model_title if payload.get("slides") else "") or title or "",
                 body=body or notes_body,
                 fallback="Sunum",
             )
@@ -5225,7 +5384,8 @@ async def _run_document_worker(
 
                 payload["title"] = document_export.resolve_presentation_title(
                     original_request or content or "",
-                    document_title=str(payload.get("title") or title or ""),
+                    document_title=(model_title if payload.get("slides") else "")
+                    or str(payload.get("title") or title or ""),
                     body=body or summary,
                     fallback="Sunum",
                 )

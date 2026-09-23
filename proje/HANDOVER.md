@@ -595,7 +595,7 @@ birbirini ezmez.
 | --- | --- |
 | PDF | Tipli bloklar → `document_html` (HTML/CSS, Chromium); yedek: reportlab (`document_model` / `document_export`) |
 | DOCX | Tipli bloklar → `document_docx` (PDF ile aynı tasarım; yedek `document_model`); yüklenen şablon: `document_export` doldurma / düzenleme |
-| PPTX | python-pptx / `document_export.build_pptx` |
+| PPTX | Tipli slaytlar (`slide_model`) → `document_pptx` (tablo, grafik, konuşmacı notu, sığdırma); yedek: `document_export.build_pptx` |
 | XLSX / CSV / JSON | openpyxl / pandas; düzyazıdaki markdown tablo tercih edilir |
 | HTML sunum | Tipli bloklar varsa `document_html.render_deck` (rapor ile aynı tasarım); yoksa `workforce._html_deck_from_payload` |
 
@@ -690,6 +690,8 @@ agent-webapp-langgraph/
 | `document_model.py` | Tipli belge blokları + DOCX / reportlab PDF çizici |
 | `document_html.py` | Blokları HTML/CSS'e çevirir, Chromium ile PDF basar; HTML sunum destesi |
 | `document_docx.py` | Blokları PDF ile aynı tasarımda Word'e çizer |
+| `slide_model.py` | PPTX tipli slaytları: ayrıştırma, sadeleştirme, rakam/alıntı doğrulama |
+| `document_pptx.py` | Slaytları .pptx'e çizer; yazıyı ölçüp sığdırır, uzun tablo/listeyi dengeli böler |
 | `document_verify.py` | Üretilen PDF/DOCX'i teslimden önce yeniden açıp kontrol eder |
 | `workspace.py` | sources/artifacts sınırları, dosya araçları |
 | `code_exec.py` | Sınırlı Python |

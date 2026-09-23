@@ -48,8 +48,8 @@ Parsing is lenient (`ul`, `h2`, `bullets`, row objects, bare strings are all
 accepted); a block that cannot be understood is dropped on its own.
 
 Used for narrative PDF/DOCX only. Table/ranking requests, uploaded-template
-edits (`edit_docx_template`, `create_docx_from_template`), interactive HTML
-and PPTX keep their own payload shapes.
+edits (`edit_docx_template`, `create_docx_from_template`) and interactive
+HTML keep their own payload shapes; PPTX has typed slides (next section).
 
 If the reply has no usable blocks, or the worker replaces the write-up with
 the research notes (write-up < 60% of the notes), the markdown writers in
@@ -82,6 +82,61 @@ List*) with the theme fonts removed, so the navigation pane and Word's own
 TOC keep working. If it raises, or its file fails verification, the plain
 `document_model.build_docx` redraws the same blocks.
 
+## PowerPoint (typed slides)
+
+A .pptx ask gets its own Document reply: `{filename, title, subtitle,
+slides: [...]}` (`workforce._SLIDES_SHAPE`). The model designs the deck; the
+server draws it. `backend/slide_model.py` validates it, `backend/document_pptx.py`
+renders it.
+
+| layout | keys | drawn as |
+|---|---|---|
+| `bullets` | `bullets` (strings, or `{text, items}` for one sub-level) | real bullets with a hanging indent |
+| `stats` | `stats`: 2-4 `{value, label, detail}` | big-number cards |
+| `table` | `columns`, `rows` (max 8 columns, every row) | native table, header repeated on continuation slides |
+| `chart` | `chart`: `{type: line/column/bar/pie, categories, series, unit}`, up to 3 side bullets | native, editable chart |
+| `two_column` | `left` / `right`: `{heading, bullets}` | two cards |
+| `quote` | `text`, `attribution` | one large statement |
+| `section` | `title`, `subtitle` | divider (numbered when there are several) |
+| `takeaways` | `bullets` | numbered cards, the last slide |
+
+Every slide may carry `subtitle` (a one-line key message) and `notes`
+(speaker notes). The server adds the title slide (with the topic photo as a
+right-hand panel when one was fetched), an agenda when there are 3+ distinct
+slide titles, the page footer and a clickable sources slide.
+
+**Fitting, not clipping.** Every text box is measured before it is drawn
+(Calibri advance widths, `document_pptx.wrap_count`) and gets the largest
+font size from a ladder that fits (bullets 24→16 pt, tables 16→11 pt). When
+even the smallest does not fit, the slide is split into parts of balanced
+height: tables by rows with the header repeated, bullets by whole groups (a
+sub-bullet never leaves its parent), so no continuation slide carries one
+leftover line. Text is never cut with "…". A layout that cannot fit
+(an overlong two-column or quote) is redrawn as bullets.
+
+**Lenient parsing.** Layout aliases (`kpi`, `comparison`, `graph`, …),
+numbers written `6.842,40` or `1,200`, table rows as objects. A slide that
+lost its content degrades on its own: a chart without usable numbers
+becomes bullets, a single stat becomes a bullet, a half two-column becomes a
+list. Fewer than two content slides means the reply is not a deck.
+
+**Grounding.** Stat cards and charts turn a number into a headline, so their
+figures are checked against the research notes (plus uploaded material):
+a stat whose value is not in the notes is dropped, and a chart with more than
+20% of its values missing from the notes is dropped (`slide_model.ground_deck`,
+logged as `document slides: ...`). Bullets and tables carry the notes' own
+wording and are not checked. With no notes at all nothing is checked.
+
+**Fallbacks.** No usable slides (empty reply, timeout, no `slides` key,
+unparseable JSON) → the notes-driven deck, `document_export.build_pptx`, as
+before. A slide renderer crash, or a file that fails verification → the same
+legacy deck, kept if it passes. `DOCUMENT_SLIDES=false` turns the whole
+path off.
+
+A .pptx written beside a typed-block PDF/DOCX ("Word ve PowerPoint") is
+drawn from those blocks through the same renderer, one slide per section
+(`slide_model.deck_from_document`), with no extra model call.
+
 ## HTML deck
 
 "Word + HTML sunum" jobs also write an HTML deck. When the reply carried
@@ -94,14 +149,16 @@ each slide is one landscape page. Without blocks the previous
 
 ## Verification
 
-`document_verify.verify_document` reopens every PDF/DOCX (pypdfium2 /
-python-docx) and fails it when:
+`document_verify.verify_document` reopens every PDF/DOCX/PPTX (pypdfium2 /
+python-docx / python-pptx) and fails it when:
 
-- the file does not open or has no pages
+- the file does not open or has no pages (a deck: fewer than 2 slides)
 - there is almost no text, or only the "no final answer" placeholder
 - markup leaked into the text (`**`, `## `, `|---|`, raw JSON, `\n`)
-- a heading that should be there is missing
+- a heading that should be there is missing (a deck: a slide title)
 - an expected sources section is missing
+- PPTX only: a text box's text runs past its frame (more than 15%), or a
+  shape extends past the slide edge (`inspect_pptx`)
 
 A failing file is redrawn with the fallback writer (PDF: Chromium ->
 reportlab blocks -> markdown; DOCX: styled -> plain blocks -> markdown). If nothing passes, the first file is delivered and the
@@ -112,6 +169,7 @@ problems are logged and returned in the tool result's `verification` field.
 | variable | default | meaning |
 |---|---|---|
 | `DOCUMENT_BLOCKS` | `true` (compose) | request typed blocks for narrative PDF/DOCX; `false` = markdown path |
+| `DOCUMENT_SLIDES` | `true` | request typed slides for PPTX; `false` = the notes-driven deck |
 | `DOCUMENT_PDF_ENGINE` | `chromium` | `reportlab` skips Chromium |
 | `DOCUMENT_PDF_TIMEOUT_SECONDS` | `45` | Chromium print timeout |
 | `DOCUMENT_LLM_REASONING_EFFORT` | empty | OpenRouter `reasoning.effort` for the Document call: `low` / `medium` / `high` |
@@ -134,6 +192,20 @@ document pdf engine=chromium (0.4s, ... bytes)
 document verify ok=True kind=pdf pages=2 ... path=blocks
 document html deck from N typed blocks        (only when an HTML deck was also asked for)
 ```
+
+A healthy PowerPoint run:
+
+```
+document path: calling Document LLM for typed slides (kind=pptx, ...)
+document path: received N typed slides (bullets, chart, stats, table, ...)
+document path=slides kind=pptx file=...
+document pptx path=slides slides_in=N (0.1s, ... bytes)
+document verify ok=True kind=pptx pages=M ... path=slides
+```
+
+`document slides: ... dropped` lines name stat cards, charts or quotes the
+notes did not back; `slides were unusable -> notes-driven deck` and
+`path=legacy_pptx` mean the old deck was used.
 
 Every non-streaming model call logs one `llm stage=` line, so a slow job
 shows which stage, provider and token split cost the time.

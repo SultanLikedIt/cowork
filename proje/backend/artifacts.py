@@ -51,6 +51,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import document_verify
 import image_fetch as _image_fetch
+import slide_model
 from workspace import WorkspaceSecurityError, _safe_child, safe_filename
 
 # Same logger as the Document worker's path lines, so one grep shows the
@@ -117,6 +118,24 @@ def _blocks_memo_part(blocks: Any) -> str:
     if isinstance(blocks, str):
         return blocks
     return json.dumps(blocks, ensure_ascii=False, default=str)
+
+
+def _deck_for(title: str, *, slides: Any, blocks: Any, subtitle: str = "") -> Optional[Any]:
+    """The slide_model.Deck a PPTX call describes, or None for the legacy deck.
+
+    Typed slides first (the Document LLM designed the deck); typed blocks
+    next (a "Word + PowerPoint" job: the .pptx carries the same report as
+    the .docx, one slide per section).
+    """
+    if _has_blocks(slides):
+        return slide_model.deck_from_slides(title, slides, subtitle=subtitle)
+    if _has_blocks(blocks):
+        import document_model
+
+        document = document_model.document_from_blocks(title, blocks)
+        if document is not None:
+            return slide_model.deck_from_document(document, subtitle=subtitle)
+    return None
 
 
 def _table_truncation_notes(header: list[str], rows: list[list[Any]], kind: str) -> list[str]:
@@ -1061,6 +1080,8 @@ class ArtifactTools:
         from_path: str,
         image_query: str = "",
         blocks: Any = "",
+        slides: Any = "",
+        subtitle: str = "",
     ) -> dict[str, Any]:
         """Shared DOCX / PPTX render path.
 
@@ -1070,9 +1091,9 @@ class ArtifactTools:
 
         DOCX renders typed blocks through document_model when the caller
         supplies them, otherwise the markdown writer in document_export, so
-        long narrative reports get real headings, lists and tables. PPTX uses
-        python-pptx via document_export for a structured deck (title +
-        section slides + optional table).
+        long narrative reports get real headings, lists and tables. PPTX
+        draws typed slides through document_pptx (or slides derived from
+        typed blocks), otherwise document_export's notes-driven deck.
         """
         memo_key = self._memo_key(
             f"create_{kind}_artifact",
@@ -1084,6 +1105,8 @@ class ArtifactTools:
             from_path,
             image_query,
             _blocks_memo_part(blocks),
+            _blocks_memo_part(slides),
+            subtitle,
         )
         cached = self._memoized(memo_key)
         if cached is not None:
@@ -1217,18 +1240,57 @@ class ArtifactTools:
                 list(row)[: MAX_OFFICE_TABLE_COLUMNS]
                 for row in list(rows)[: document_export.MAX_PPTX_TABLE_ROWS]
             ]
-            try:
-                body = document_export.build_pptx(
-                    str(payload.get("title") or clean_title or "Sunum"),
+            deck_title = str(payload.get("title") or clean_title or "Sunum")
+
+            def legacy_deck() -> bytes:
+                return document_export.build_pptx(
+                    deck_title,
                     prose,
                     header=bounded_header,
                     rows=bounded_rows,
                     images=images,
                 )
-            except Exception as exc:  # noqa: BLE001
-                raise ArtifactError(
-                    f"Could not create the PPTX artifact: {exc}"
-                ) from exc
+
+            deck = _deck_for(deck_title, slides=slides, blocks=blocks, subtitle=subtitle)
+            sources = slide_model.sources_from_text(summary or "")
+            body = b""
+            if deck is not None:
+                import document_pptx
+
+                started = time.monotonic()
+                try:
+                    body = document_pptx.build_pptx(deck, images=images, sources=sources)
+                except Exception as exc:  # noqa: BLE001 - the legacy deck is the answer
+                    document_logger.warning(
+                        "document pptx slide renderer FAILED (%s: %s) -> legacy deck",
+                        type(exc).__name__,
+                        str(exc)[:200],
+                    )
+                else:
+                    document_logger.info(
+                        "document pptx path=slides slides_in=%d (%.1fs, %d bytes)",
+                        len(deck.slides),
+                        time.monotonic() - started,
+                        len(body),
+                    )
+            if body:
+                body, verification = self._verify_render(
+                    "pptx",
+                    body,
+                    path="slides",
+                    headings=deck.slide_titles() if deck is not None else (),
+                    expect_sources=bool(sources),
+                    fallback=legacy_deck,
+                    fallback_label="legacy_pptx",
+                )
+            else:
+                try:
+                    body = legacy_deck()
+                except Exception as exc:  # noqa: BLE001
+                    raise ArtifactError(
+                        f"Could not create the PPTX artifact: {exc}"
+                    ) from exc
+                body, verification = self._verify_render("pptx", body, path="legacy_pptx")
 
         record = self._write(
             self._target(filename, kind), body, kind, producer=f"create_{kind}_artifact"
@@ -1433,13 +1495,20 @@ class ArtifactTools:
         columns: str = "",
         from_path: str = "",
         image_query: str = "",
+        slides: str = "",
+        subtitle: str = "",
+        blocks: str = "",
     ) -> dict[str, Any]:
         """Create a real, editable .pptx presentation.
 
-        Renders `title`, `summary`, and a data table into slides server-side
-        (python-pptx) -- never generated as text or base64 by a model. The data table is bounded to a single
-        slide's worth of rows on purpose; for a full dataset use
-        create_xlsx_artifact or create_csv_artifact instead.
+        Renders the deck server-side (python-pptx) -- never generated as
+        text or base64 by a model. Best with `slides`: typed slides, each
+        drawn in its own layout with real tables, charts and speaker notes,
+        text sized to fit and long tables/lists continued on extra slides.
+        Without `slides`, `title`, `summary` and a data table are turned into
+        bullet slides; that data table is bounded to a single slide's worth
+        of rows on purpose; for a full dataset use create_xlsx_artifact or
+        create_csv_artifact instead.
 
         Supply EITHER `data` OR `from_path`. Prefer `from_path` whenever the
         rows already exist as a JSON file in the workspace.
@@ -1459,12 +1528,39 @@ class ArtifactTools:
             image_query (str): Search term for a royalty-free image to embed
                 in the presentation (e.g. "polar bear arctic"). Fetched from
                 Wikimedia Commons; no API key. (default: "")
+            slides (str): Optional JSON array of typed slides; each has a
+                `layout` and a `title` plus that layout's keys:
+                bullets {"bullets": ["...", {"text", "items": [...]}]},
+                stats {"stats": [{"value", "label", "detail"}]} (2-4),
+                table {"columns": [...], "rows": [[...]]},
+                chart {"chart": {"type": "line|bar|column|pie",
+                "categories": [...], "series": [{"name", "values": [...]}],
+                "unit"}}, two_column {"left"/"right": {"heading",
+                "bullets"}}, quote {"text", "attribution"}, section
+                {"subtitle"}, takeaways {"bullets"}. Any slide may carry
+                "subtitle" (one-line key message) and "notes" (speaker
+                notes). **bold** is allowed in text. (default: "")
+            subtitle (str): One-sentence line under the title on the title
+                slide. (default: "")
+            blocks (str): Optional typed document blocks (as for
+                create_docx_artifact); drawn as one slide per section when
+                no `slides` are given. (default: "")
 
         Returns:
             Dict[str, Any]: The created file's path, size, and row/column counts.
         """
         return self._create_office_artifact(
-            "pptx", filename, title, summary, data, columns, from_path, image_query
+            "pptx",
+            filename,
+            title,
+            summary,
+            data,
+            columns,
+            from_path,
+            image_query,
+            blocks,
+            slides=slides,
+            subtitle=subtitle,
         )
 
     def create_pdf_artifact(
