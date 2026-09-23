@@ -56,6 +56,7 @@ FLAG_TYPES: dict[str, type] = {
     "reads_social": bool,
     "reads_jira": bool,
     "reads_github": bool,
+    "reads_documents": bool,
 }
 ARTIFACT_TYPES = {"xlsx", "csv", "json", "docx", "pptx", "html", "pdf", "code", "none"}
 ROLE_NAMES = {
@@ -67,6 +68,7 @@ ROLE_NAMES = {
     "Social Agent",
     "Jira Agent",
     "GitHub Agent",
+    "Knowledge Agent",
 }
 
 Classify = Callable[..., Awaitable[Any]]
@@ -84,6 +86,9 @@ class Case:
     expect: dict[str, Any]
     expect_roles: Optional[tuple[str, ...]] = None
     attachments: tuple[str, ...] = ()
+    # File names in the workspace's document library, as the classifier is
+    # shown them (artifact_intent: WORKSPACE DOCUMENTS).
+    library: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     note: str = ""
 
@@ -135,6 +140,7 @@ def parse_cases(raw: Any) -> list[Case]:
                 expect=dict(expect),
                 expect_roles=tuple(roles) if roles is not None else None,
                 attachments=tuple(str(a) for a in item.get("attachments") or []),
+                library=tuple(str(a) for a in item.get("library") or []),
                 tags=tuple(str(t) for t in item.get("tags") or []),
                 note=str(item.get("note") or ""),
             )
@@ -155,7 +161,12 @@ def _file_kinds(attachments: tuple[str, ...]) -> list[str]:
     return [Path(name).suffix.lstrip(".").lower() for name in attachments if Path(name).suffix]
 
 
-def roles_for(intent: Any, text: str, attachments: tuple[str, ...] = ()) -> list[str]:
+def roles_for(
+    intent: Any,
+    text: str,
+    attachments: tuple[str, ...] = (),
+    library: tuple[str, ...] = (),
+) -> list[str]:
     """The workers the app would schedule for this intent, every integration on.
 
     Mirrors ``main._routing_for_workforce`` (structural floor + intent ->
@@ -168,6 +179,8 @@ def roles_for(intent: Any, text: str, attachments: tuple[str, ...] = ()) -> list
 
     kinds = _file_kinds(attachments)
     has_files = bool(attachments)
+    # main grants document search only when there are documents to search.
+    reads_documents = bool(intent.reads_documents) and bool(attachments or library)
     if intent.opens_on_user_computer and not intent.wants_artifact:
         return [workforce.ROLE_GENERAL]
     base = capabilities.expand(
@@ -185,6 +198,7 @@ def roles_for(intent: Any, text: str, attachments: tuple[str, ...] = ()) -> list
         reads_social=intent.reads_social,
         reads_jira=intent.reads_jira,
         reads_github=intent.reads_github,
+        reads_documents=reads_documents,
     )
     return workforce._select_roles(
         job_capabilities=effective,
@@ -196,6 +210,7 @@ def roles_for(intent: Any, text: str, attachments: tuple[str, ...] = ()) -> list
         reads_social=intent.reads_social,
         reads_jira=intent.reads_jira,
         reads_github=intent.reads_github,
+        reads_documents=reads_documents,
     )
 
 
@@ -226,7 +241,10 @@ async def run_case(case: Case, *, classify: Classify, tracker_factory: Callable[
     run = Run()
     try:
         intent = await classify(
-            case.text, tracker_factory(), attachment_names=list(case.attachments) or None
+            case.text,
+            tracker_factory(),
+            attachment_names=list(case.attachments) or None,
+            library_names=list(case.library) or None,
         )
     except Exception as exc:  # noqa: BLE001 - a crashed call is an error, not a verdict
         run.error = f"{type(exc).__name__}: {exc}"[:300]
@@ -240,7 +258,11 @@ async def run_case(case: Case, *, classify: Classify, tracker_factory: Callable[
         # would blame the prompt for an outage.
         run.error = f"classifier did not answer (source={source or '?'})"
         return run
-    roles = roles_for(intent, case.text, case.attachments) if case.expect_roles is not None else None
+    roles = (
+        roles_for(intent, case.text, case.attachments, case.library)
+        if case.expect_roles is not None
+        else None
+    )
     run.roles = list(roles or [])
     run.mismatches = score(case, intent, roles)
     run.ok = not run.mismatches

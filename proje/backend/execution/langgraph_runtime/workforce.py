@@ -50,6 +50,7 @@ ROLE_MAIL = "Mail Agent"
 ROLE_SOCIAL = "Social Agent"
 ROLE_JIRA = "Jira Agent"
 ROLE_GITHUB = "GitHub Agent"
+ROLE_KNOWLEDGE = "Knowledge Agent"
 
 WORKER_IDS = {
     ROLE_RESEARCH: "lg-research",
@@ -60,12 +61,15 @@ WORKER_IDS = {
     ROLE_SOCIAL: "lg-social",
     ROLE_JIRA: "lg-jira",
     ROLE_GITHUB: "lg-github",
+    ROLE_KNOWLEDGE: "lg-knowledge",
 }
 
 # Workers that gather evidence and never write the user-facing answer. Their
 # output is notes for the next worker (quoted or summarized source material),
 # so a job made only of these needs the Assistant appended to answer.
-_GATHER_ONLY_ROLES = frozenset({ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA, ROLE_GITHUB})
+_GATHER_ONLY_ROLES = frozenset(
+    {ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA, ROLE_GITHUB, ROLE_KNOWLEDGE}
+)
 
 
 class CancellableWorkforce:
@@ -390,6 +394,7 @@ def _select_roles(
     reads_social: bool = False,
     reads_jira: bool = False,
     reads_github: bool = False,
+    reads_documents: bool = False,
 ) -> list[str]:
     """Pick workers for this job.
 
@@ -404,6 +409,10 @@ def _select_roles(
     """
     roles: list[str] = []
     caps = set(capabilities.expand(job_capabilities or frozenset()))
+    # The user's own uploaded documents: the SOURCE, gathered first, like
+    # every reader below.
+    if reads_documents or capabilities.DOCUMENTS_READ in caps:
+        roles.append(ROLE_KNOWLEDGE)
     # The mailbox is the SOURCE for this job, so it is read before anything
     # else runs and its notes flow into whatever comes next -- the same
     # position Research holds for the web. Placed ahead of the fast-path
@@ -2676,6 +2685,149 @@ async def _run_github(
         started=started,
     )
     return notes
+
+
+async def _run_knowledge(
+    *,
+    content: str,
+    original_request: str,
+    tracker: UsageTracker,
+    callback: Any,
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+    files: Sequence[tuple[str, str]],
+    deep_research: bool = False,
+    sources_out: Optional[dict[str, Any]] = None,
+) -> str:
+    """Knowledge Agent: search the workspace's uploaded documents.
+
+    Same structure as ``_run_jira``: a fixed phase sequence in
+    knowledge_controller, not a tool the model may call, and the return value
+    is notes for the next worker -- never the user-facing answer (see
+    _GATHER_ONLY_ROLES). ``files`` is the library main resolved for this job;
+    nothing outside it is searched. ``sources_out["documents"]`` receives
+    label -> source line, for the list appended to the final answer.
+    """
+    import knowledge_controller
+
+    worker_id = WORKER_IDS[ROLE_KNOWLEDGE]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_KNOWLEDGE,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description="Workspace belgelerinde ara",
+    )
+    _emit_activity(callback, unit_task_id, "searching", f"{len(files)} belgede aranıyor")
+
+    complete = await _make_complete(
+        tracker, deep_research=deep_research, stage_prefix="knowledge"
+    )
+    try:
+        result = await knowledge_controller.acquire_knowledge_evidence(
+            original_request or content,
+            files=files,
+            complete=complete,
+            deep_research=deep_research,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failure is an answer, not a crash
+        stabilization_logger.exception("knowledge acquisition failed")
+        _lifecycle_done(
+            callback,
+            worker_id=worker_id,
+            unit_task_id=unit_task_id,
+            result_summary="Belgeler aranamadı",
+            started=started,
+        )
+        return knowledge_controller.render_notes(
+            knowledge_controller.KnowledgeResult(
+                error=f"{type(exc).__name__}: {exc}", error_code="knowledge_failed"
+            )
+        )
+
+    if tool_call_recorder is not None:
+        # Recorded like any other real action: which queries ran over how
+        # many documents, and what came back.
+        try:
+            tool_call_recorder.record(
+                "search_documents",
+                {
+                    "queries": list(result.queries),
+                    "planned": result.planned,
+                    "files": result.searched_files,
+                    "timings": dict(result.timings),
+                },
+                result=(
+                    f"{len(result.excerpts)} excerpt(s) from "
+                    f"{result.candidates} candidate passage(s)"
+                    if result.ok
+                    else None
+                ),
+                error=None if result.ok else str(result.error_code or "knowledge_failed"),
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the run
+            stabilization_logger.warning("could not record search_documents", exc_info=True)
+
+    if handle.cancelled:
+        return knowledge_controller.render_notes(result)
+
+    if result.ok and result.excerpts:
+        _emit_activity(
+            callback,
+            unit_task_id,
+            "reading",
+            f"{len(result.excerpts)} belge bölümü okundu",
+        )
+        # A weak result is "the closest the documents come", which is not
+        # something to cite as the source of an answer.
+        if sources_out is not None and not result.weak:
+            sources_out["documents"] = {
+                excerpt.label: excerpt.source_line() for excerpt in result.excerpts
+            }
+
+    notes = knowledge_controller.render_notes(result)
+    if not result.ok:
+        summary = f"aranamadı ({result.error_code})"
+    elif not result.excerpts:
+        summary = f"{result.searched_files} belgede eşleşme yok"
+    else:
+        summary = f"{result.searched_files} belgede {len(result.excerpts)} bölüm bulundu"
+        if result.findings:
+            summary += " (yönlendirme denemesi içeren içerik var)"
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return notes
+
+
+_DOCUMENT_LABEL_RE = re.compile(r"\[(K\d+)\]")
+
+
+def _append_document_sources(text: str, sources: Optional[dict[str, str]]) -> str:
+    """Add 'Belge kaynakları' for the [K#] labels the answer actually cites.
+
+    The Knowledge Agent's brief cites [K1], [K2] ...; this maps them back to
+    file and page. An answer that cites none (a Document Agent file notice,
+    or a worker that dropped the labels) gets every excerpt listed, so the
+    provenance is never lost.
+    """
+    if not sources:
+        return text
+    cited = [
+        label
+        for label in dict.fromkeys(_DOCUMENT_LABEL_RE.findall(text or ""))
+        if label in sources
+    ]
+    lines = [sources[label] for label in (cited or list(sources))]
+    return f"{(text or '').rstrip()}\n\nBelge kaynakları:\n" + "\n".join(
+        f"- {line}" for line in lines
+    )
 
 
 async def _run_llm_worker(
@@ -5276,6 +5428,8 @@ def _build_graph(
     # evaluated it -- research jobs passed, and an attached document ("bu
     # pdf'i özetle") died instantly.
     opens_on_user_computer: Optional[bool] = None,
+    knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
+    sources_out: Optional[dict[str, Any]] = None,
 ) -> Any:
     async def run_next(state: WorkforceState) -> dict[str, Any]:
         if handle.cancelled:
@@ -5306,6 +5460,19 @@ def _build_graph(
             # and the model never enters the loop for this step.
             text = _open_local_file_step(
                 workspace_root=workspace_root, conversation_id=conversation_id
+            )
+        elif role == ROLE_KNOWLEDGE:
+            text = await _run_knowledge(
+                content=content,
+                original_request=request,
+                tracker=tracker,
+                callback=callback,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+                files=list(knowledge_files or ()),
+                deep_research=deep_research,
+                sources_out=sources_out,
             )
         elif role == ROLE_MAIL:
             text = await _run_mail(
@@ -5515,6 +5682,8 @@ async def _run_workforce_async(
     reads_social: Optional[bool] = None,
     reads_jira: Optional[bool] = None,
     reads_github: Optional[bool] = None,
+    reads_documents: Optional[bool] = None,
+    knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -5569,12 +5738,17 @@ async def _run_workforce_async(
             reads_social=bool(reads_social),
             reads_jira=bool(reads_jira),
             reads_github=bool(reads_github),
+            # Only with documents to search: main resolves the library.
+            reads_documents=bool(reads_documents) and bool(knowledge_files),
         )
     )
     seeded_notes = (
         _last_assistant_excerpt(content or "") if skip_web_research else ""
     )
 
+    # Filled by the Knowledge Agent (label -> file and page) and appended to
+    # the final answer below.
+    sources_out: dict[str, Any] = {}
     app = _build_graph(
         callback=callback,
         tracker=tracker,
@@ -5590,6 +5764,8 @@ async def _run_workforce_async(
         conversation_id=conversation_id,
         reuses_uploaded_document=reuses_uploaded_document,
         opens_on_user_computer=opens_on_user_computer,
+        knowledge_files=knowledge_files,
+        sources_out=sources_out,
     )
 
     final_state = await app.ainvoke(
@@ -5686,7 +5862,10 @@ async def _run_workforce_async(
     return execution_result(
         task_id=task_id,
         content=content,
-        result=_present_workforce_answer(final_answer or ""),
+        result=_append_document_sources(
+            _present_workforce_answer(final_answer or ""),
+            sources_out.get("documents"),
+        ),
         state="DONE" if not handle.cancelled else "FAILED",
     )
 
@@ -5713,6 +5892,8 @@ def run_workforce_in_thread(
     reads_social: Optional[bool] = None,
     reads_jira: Optional[bool] = None,
     reads_github: Optional[bool] = None,
+    reads_documents: Optional[bool] = None,
+    knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
 ) -> Any:
     """Sync entrypoint matching ``camel_service.run_workforce_in_thread``."""
     handle = CancellableWorkforce()
@@ -5744,6 +5925,8 @@ def run_workforce_in_thread(
                 reads_social=reads_social,
                 reads_jira=reads_jira,
                 reads_github=reads_github,
+                reads_documents=reads_documents,
+                knowledge_files=knowledge_files,
             )
         )
     finally:

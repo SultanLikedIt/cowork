@@ -143,3 +143,33 @@ def test_missing_library_files_are_queued(tmp_path: Path, monkeypatch: pytest.Mo
     for future in ki.pending(["f3"]):
         future.result(timeout=10)
     assert ki.file_statuses(["f3"])["f3"].status == ki.STATUS_INDEXED
+
+
+def test_uploading_straight_into_the_library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import main
+
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "app.db")
+    monkeypatch.setattr(ki, "DB_PATH", tmp_path / "knowledge.db")
+    db.run_migrations()
+    db.create_workspace("ws", "W", time.time())
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/workspaces/ws/documents",
+        files=[("files", ("notlar.md", CONTRACT.encode("utf-8"), "text/markdown"))],
+    )
+    assert response.status_code == 201
+    [doc] = response.json()["documents"]
+    assert doc["filename"] == "notlar.md"
+    assert doc["status"] in {"pending", "indexed"}
+    for future in ki.pending([doc["file_id"]]):
+        future.result(timeout=10)
+    listed = client.get("/workspaces/ws/documents").json()["documents"]
+    assert listed[0]["status"] == "indexed"
+
+    missing = client.post(
+        "/workspaces/nope/documents",
+        files=[("files", ("a.md", b"x", "text/markdown"))],
+    )
+    assert missing.status_code == 404

@@ -441,3 +441,22 @@ def test_score_batched_without_a_model_is_none(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(reranker, "_get_model", lambda: None)
     assert reranker.score_batched("q", ["p"]) is None
     assert reranker.score_batched("q", []) == []
+
+
+def test_an_excerpt_is_named_after_the_sections_that_matched() -> None:
+    def hit(ordinal: int, heading: str, score: float = 0.0) -> ki.Hit:
+        return ki.Hit(200 + ordinal, "a", "s.pdf", ordinal, heading, ordinal, ordinal, f"t{ordinal}", score)
+
+    chosen = [hit(5, "Madde 11 - Fesih", 0.9)]
+    expanded = [hit(4, "Madde 7 - Ödeme"), chosen[0], hit(6, "Madde 12 - Diğer")]
+    [excerpt] = kc.build_excerpts(chosen, expanded)
+    assert excerpt.heading == "Madde 11 - Fesih"
+    assert excerpt.pages == "s. 4–6"
+
+
+def test_the_brief_and_the_notes_ask_for_the_request_language() -> None:
+    assert "SAME language as the request" in kc.ANSWER_SYSTEM_PROMPT
+    result = kc.KnowledgeResult(
+        excerpts=[kc.Excerpt("K1", "a", "a.md", None, None, "", "x", 1.0)], brief="b [K1]"
+    )
+    assert "aynı dilde" in kc.render_notes(result)
