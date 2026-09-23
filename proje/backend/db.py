@@ -636,6 +636,93 @@ def add_conversation_files(
             )
 
 
+# --------------------------------------------------------------------------
+# Workspace document library (knowledge_index.py searches these files)
+# --------------------------------------------------------------------------
+
+
+def add_workspace_documents(
+    workspace_id: str,
+    files: list[dict[str, Any]],
+    added_at: float,
+) -> None:
+    """Idempotent insert. Unlike the conversation bag, nothing is dropped."""
+    if not files:
+        return
+    with _write_lock, _connect() as conn:
+        for item in files:
+            file_id = str(item.get("file_id") or "").strip()
+            filename = str(item.get("filename") or "").strip() or file_id
+            if not file_id:
+                continue
+            conn.execute(
+                """
+                INSERT INTO workspace_documents (
+                    workspace_id, file_id, filename, added_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, file_id) DO NOTHING
+                """,
+                (workspace_id, file_id, filename, added_at),
+            )
+
+
+def list_workspace_documents(workspace_id: str) -> list[dict[str, Any]]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT file_id, filename, added_at
+            FROM workspace_documents
+            WHERE workspace_id = ?
+            ORDER BY added_at ASC
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def remove_workspace_document(workspace_id: str, file_id: str) -> bool:
+    with _write_lock, _connect() as conn:
+        cursor = conn.execute(
+            "DELETE FROM workspace_documents WHERE workspace_id = ? AND file_id = ?",
+            (workspace_id, file_id),
+        )
+        return cursor.rowcount > 0
+
+
+def all_workspace_document_ids() -> list[str]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT file_id FROM workspace_documents"
+        ).fetchall()
+        return [row["file_id"] for row in rows]
+    finally:
+        conn.close()
+
+
+def unreferenced_document_ids(file_ids: list[str]) -> list[str]:
+    """Those of ``file_ids`` that no workspace library holds any more."""
+    ids = [str(fid) for fid in dict.fromkeys(file_ids) if fid]
+    if not ids:
+        return []
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT file_id FROM workspace_documents
+            WHERE file_id IN ({','.join('?' * len(ids))})
+            """,
+            ids,
+        ).fetchall()
+    finally:
+        conn.close()
+    held = {row["file_id"] for row in rows}
+    return [fid for fid in ids if fid not in held]
+
+
 def insert_message(
     workspace_id: str,
     conversation_id: str,

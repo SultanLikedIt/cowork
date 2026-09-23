@@ -64,6 +64,7 @@ import github_api
 import github_client
 import jira_api
 import jira_client
+import knowledge_index
 import social_api
 from social import health as social_health
 from execution.adapter import (
@@ -279,6 +280,31 @@ def _load_upload_record(file_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"Unknown file_id: {file_id}")
 
 
+def _index_missing_documents(file_ids: list[str]) -> int:
+    """Queue indexing for files with no current entry in the document index.
+
+    Covers uploads from before the index existed, files indexed by an older
+    knowledge_index.SCHEMA_VERSION, and a knowledge.db that was deleted.
+    Blocking (SQLite + file reads): call through asyncio.to_thread.
+    """
+    if not knowledge_index.enabled() or not file_ids:
+        return 0
+    statuses = knowledge_index.file_statuses(file_ids)
+    queued = 0
+    for file_id in dict.fromkeys(file_ids):
+        status = statuses.get(file_id)
+        if (status is not None and status.current) or knowledge_index.is_pending(file_id):
+            continue
+        try:
+            record = _load_upload_record(file_id)
+        except HTTPException:
+            # The upload is gone from disk; there is nothing left to index.
+            continue
+        knowledge_index.submit(record)
+        queued += 1
+    return queued
+
+
 def _delete_new_upload(record: dict[str, Any]) -> None:
     file_id = str(record["file_id"])
     targets = [Path(str(record["path"])), _metadata_path(file_id), _extracted_path(file_id)]
@@ -423,6 +449,9 @@ async def _store_upload(filename: str, content: bytes) -> UploadResponse:
         record["docling_dir"] = str(docling_dir)
         record["docling_manifest"] = docling_manifest
     _save_upload_record(record)
+    # Off the request path: the upload answers now, and the file becomes
+    # searchable a moment later (knowledge_index runs one writer thread).
+    knowledge_index.submit(record)
     return UploadResponse(
         file_id=file_id,
         filename=display_name,
@@ -1003,6 +1032,28 @@ def _rehydrate_from_db() -> None:
         _JOBS[job["job_id"]] = job
 
     camel_service.load_manual_workers(db.load_manual_workers())
+
+
+@app.on_event("startup")
+def _backfill_document_index() -> None:
+    # Registered after _rehydrate_from_db, so the workspace_documents
+    # migration has run. In a thread: a first run indexes every library file.
+    if not knowledge_index.enabled():
+        return
+
+    def backfill() -> None:
+        try:
+            queued = _index_missing_documents(db.all_workspace_document_ids())
+            if queued:
+                logging.getLogger("agent_webapp.knowledge").info(
+                    "Queued %d library file(s) for indexing", queued
+                )
+        except Exception:  # noqa: BLE001 - search degrades, the app does not
+            logging.getLogger("agent_webapp.knowledge").warning(
+                "document index backfill failed", exc_info=True
+            )
+
+    threading.Thread(target=backfill, name="knowledge-backfill", daemon=True).start()
 
 
 @app.on_event("startup")
@@ -2878,6 +2929,21 @@ async def submit_job(
         ],
         job["created_at"],
     )
+    # The workspace library keeps every file ever attached here, which the
+    # conversation bag above does not (it drops its oldest past ten).
+    library_files = [
+        {
+            "file_id": str(record.get("file_id") or ""),
+            "filename": str(record.get("filename") or record.get("file_id") or ""),
+        }
+        for record in records
+    ]
+    await asyncio.to_thread(
+        db.add_workspace_documents, workspace_id, library_files, job["created_at"]
+    )
+    await asyncio.to_thread(
+        _index_missing_documents, [item["file_id"] for item in library_files]
+    )
 
     control.task = asyncio.create_task(_run_job(job_id, content, req.mode))
     # The callback receives only the Task, so the job id rides along on it.
@@ -3300,9 +3366,14 @@ def _purge_jobs_from_memory(job_ids: list[str]) -> None:
 @app.delete("/workspaces/{workspace_id}")
 def delete_workspace_endpoint(workspace_id: str):
     """Delete a workspace, its conversations, jobs, and on-disk job folders."""
+    library = [item["file_id"] for item in db.list_workspace_documents(workspace_id)]
     job_ids = db.delete_workspace(workspace_id)
     if job_ids is None:
         raise HTTPException(status_code=404, detail=f"Unknown workspace_id: {workspace_id}")
+    # The library rows went with the workspace (ON DELETE CASCADE); passages
+    # of files no other workspace holds are dropped from the index. The
+    # uploads themselves stay on disk, as they always have.
+    knowledge_index.drop_files(db.unreferenced_document_ids(library))
     _purge_jobs_from_memory(job_ids)
     for job_id in job_ids:
         root = WORKSPACE_DIR / job_id
