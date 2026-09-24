@@ -83,6 +83,7 @@ from scheduling.api import build_router as build_scheduling_router
 from scheduling.runner import Scheduler, SubmittedJob
 from tool_call_log import ToolCallRecorder
 import turn_resolution
+from workforce.events import ActivityStage
 from workforce_callback import QueueWorkforceCallback
 from workspace import (
     MAX_BATCH_UPLOAD_BYTES,
@@ -848,9 +849,9 @@ class ActivityStatus(BaseModel):
     """Latest factual execution activity; never model reasoning."""
 
     task_id: str = ""
-    stage: Literal[
-        "searching", "opening", "browsing", "reading", "building", "done"
-    ]
+    # Shared with ActivityEvent: a stage one side knows and the other does
+    # not fails every snapshot of that job.
+    stage: ActivityStage
     detail: str = ""
     timestamp: Optional[str] = None
 

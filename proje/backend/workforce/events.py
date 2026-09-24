@@ -7,6 +7,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# The one list of activity stages. main.ActivityStatus -- the shape every job
+# snapshot and SSE frame is validated against -- imports this instead of
+# keeping its own copy: when "coding" was added here only, every snapshot of
+# a Coding job failed validation and the UI showed nothing for the whole run.
+ActivityStage = Literal[
+    "searching", "opening", "browsing", "reading", "building", "coding", "done"
+]
+
+
 class ActivityEvent(BaseModel):
     """A real execution step, for the UI's status line.
 
@@ -24,9 +33,7 @@ class ActivityEvent(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     event_type: Literal["activity"] = "activity"
     task_id: str
-    stage: Literal[
-        "searching", "opening", "browsing", "reading", "building", "coding", "done"
-    ]
+    stage: ActivityStage
     detail: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
