@@ -282,3 +282,73 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+class _FlakyAgent:
+    """Fails (or answers with no JSON) until ``fail_times`` calls are used up."""
+
+    calls = 0
+    fail_times = 1
+    failure: object = TimeoutError("step timed out")
+    parsed = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def astep(self, prompt, response_format=None):
+        _FlakyAgent.calls += 1
+        if _FlakyAgent.calls <= _FlakyAgent.fail_times:
+            if isinstance(_FlakyAgent.failure, BaseException):
+                raise _FlakyAgent.failure
+            return _Response(None, "no json here")
+        return _Response(_FlakyAgent.parsed, "")
+
+
+def _classify_flaky(topic: str, *, fail_times: int, failure=TimeoutError("t/o")):
+    _FlakyAgent.calls = 0
+    _FlakyAgent.fail_times = fail_times
+    _FlakyAgent.failure = failure
+    _FlakyAgent.parsed = artifact_intent.ArtifactIntentResult(
+        wants_artifact=True, artifact_type="xlsx", needs_code_execution=True
+    )
+    with patch("camel.agents.ChatAgent", _FlakyAgent), patch(
+        "model_config.get_model", lambda *a, **k: None
+    ):
+        return asyncio.run(artifact_intent.classify_artifact_intent(topic, UsageTracker()))
+
+
+def test_a_timed_out_classifier_is_retried_before_the_fallback() -> None:
+    intent = _classify_flaky("faiz tablosu excel", fail_times=1)
+    assert _FlakyAgent.calls == 2
+    assert intent.source == "llm" and intent.needs_code_execution is True
+
+
+def test_a_reply_without_json_is_retried_too() -> None:
+    intent = _classify_flaky("faiz tablosu excel", fail_times=1, failure=None)
+    assert _FlakyAgent.calls == 2 and intent.source == "llm"
+
+
+def test_two_failures_reach_the_regex_fallback() -> None:
+    intent = _classify_flaky("faiz tablosu excel", fail_times=2)
+    assert _FlakyAgent.calls == artifact_intent.INTENT_ATTEMPTS == 2
+    assert intent.source == "regex_fallback"
+
+
+def test_the_fallback_sends_arithmetic_on_given_numbers_to_code_not_the_web() -> None:
+    intent = artifact_intent.fallback_from_regex(
+        "aylık %3 faizle 100.000 TL 24 ayda ne olur, ay ay tablo olarak excel ver"
+    )
+    assert intent.needs_code_execution is True
+    assert intent.needs_web_research is False
+    assert intent.wants_artifact is True and intent.artifact_type == "xlsx"
+
+    stats = artifact_intent.fallback_from_regex("12, 15, 9, 22 sayılarının ortalaması")
+    assert stats.needs_code_execution is True and stats.needs_web_research is False
+
+
+def test_the_fallback_still_searches_for_current_rates_and_plain_questions() -> None:
+    live = artifact_intent.fallback_from_regex("güncel kredi faizleri 2026 ne kadar")
+    assert live.needs_web_research is True and live.needs_code_execution is False
+
+    no_numbers = artifact_intent.fallback_from_regex("bileşik faiz nedir")
+    assert no_numbers.needs_web_research is True and no_numbers.needs_code_execution is False

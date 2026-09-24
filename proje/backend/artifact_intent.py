@@ -22,6 +22,8 @@ stabilization_logger = logging.getLogger("agent_webapp.stabilization")
 # and then hit LengthFinishReasonError (no JSON). Keep headroom for the label.
 INTENT_MAX_TOKENS = 2048
 INTENT_TIMEOUT_SECONDS = 30
+# Model calls before the regex fallback (see classify_artifact_intent).
+INTENT_ATTEMPTS = 2
 
 ArtifactType = Literal[
     "xlsx", "csv", "json", "docx", "pptx", "html", "pdf", "code", "none"
@@ -443,6 +445,19 @@ def _recover_intent(response_text: Any) -> Optional[ArtifactIntentResult]:
         return None
 
 
+_CALCULATION_RE = re.compile(
+    r"(faiz|taksit|kredi|ödeme plan|odeme plan|amortisman|toplam|ortalama|"
+    r"medyan|standart sapma|hesapla|interest|loan|installment|amortization|"
+    r"average|median|standard deviation|sum of|calculate)",
+    re.IGNORECASE,
+)
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_LIVE_DATA_RE = re.compile(
+    r"\b(güncel|guncel|bugün|bugun|şu an|su an|şimdiki|simdiki|current|latest|today)\b",
+    re.IGNORECASE,
+)
+
+
 def fallback_from_regex(topic: str) -> ArtifactIntent:
     """Minimal fallback when the classifier call fails entirely."""
     wants = capabilities.ARTIFACTS in capabilities.detect_artifact_request(topic)
@@ -479,6 +494,17 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         re.IGNORECASE,
     )
     needs_code = bool(_CODE_RE.search(body))
+    # A calculation on numbers the user gave: the classifier's own rule
+    # (needs_code_execution covers exact calculations) in pattern form, so a
+    # timed-out classifier does not turn "aylık %3 faizle 100.000 TL 24 ayda
+    # ne olur" into a web search. Needs two numbers and no "current" word:
+    # "güncel kredi faizleri" is a lookup, not arithmetic.
+    calculation = (
+        bool(_CALCULATION_RE.search(body))
+        and len(_NUMBER_RE.findall(body)) >= 2
+        and not _LIVE_DATA_RE.search(body)
+    )
+    needs_code = needs_code or calculation
     recipients = addresses_in_text(topic or "")
     # Only with an address AND a sending verb: "mail adresimi degistir" and
     # "email pazarlamasi arastir" are not requests to send anything.
@@ -489,8 +515,11 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
             re.IGNORECASE,
         )
     )
-    # Degraded path: prefer external lookup over skipping Research entirely.
-    needs_web = True
+    # Degraded path: prefer external lookup over skipping Research entirely --
+    # except for arithmetic on the user's own numbers, where a search only
+    # finds calculator sites and, when its notes come back thin, also drops
+    # the file that was asked for.
+    needs_web = not calculation
     return ArtifactIntent(
         wants_artifact=wants,
         artifact_type=kind,
@@ -577,65 +606,79 @@ async def classify_artifact_intent(
     from camel.messages import BaseMessage
     from model_config import get_model
 
-    agent = ChatAgent(
-        system_message=BaseMessage.make_assistant_message(
-            role_name="Artifact intent",
-            content=INTENT_SYSTEM_PROMPT,
-        ),
-        model=get_model(
-            tracker,
-            stage="artifact_intent",
-            temperature=0,
-            max_tokens=INTENT_MAX_TOKENS,
-        ),
-        max_iteration=1,
-        retry_attempts=1,
-        step_timeout=INTENT_TIMEOUT_SECONDS,
+    names = [str(n).strip() for n in (attachment_names or []) if str(n).strip()]
+    attached_line = (
+        "ATTACHED FILES: " + ", ".join(names[:10])
+        if names
+        else "ATTACHED FILES: (none)"
     )
-    try:
-        names = [str(n).strip() for n in (attachment_names or []) if str(n).strip()]
-        attached_line = (
-            "ATTACHED FILES: " + ", ".join(names[:10])
-            if names
-            else "ATTACHED FILES: (none)"
-        )
-        library = [
-            str(n).strip()
-            for n in (library_names or [])
-            if str(n).strip() and str(n).strip() not in names
-        ]
-        library_line = (
-            f"WORKSPACE DOCUMENTS ({len(library)}): "
-            + ", ".join(library[:10])
-            + (" ..." if len(library) > 10 else "")
-            if library
-            else "WORKSPACE DOCUMENTS: (none)"
-        )
-        response = await agent.astep(
-            f"{attached_line}\n{library_line}\nREQUEST: {topic}",
-            response_format=ArtifactIntentResult,
-        )
-    except Exception:  # noqa: BLE001 - fallback must never fail the job
-        stabilization_logger.warning(
-            "Artifact intent failed; using regex fallback",
-            exc_info=True,
-        )
-        return fallback_from_regex(topic)
+    library = [
+        str(n).strip()
+        for n in (library_names or [])
+        if str(n).strip() and str(n).strip() not in names
+    ]
+    library_line = (
+        f"WORKSPACE DOCUMENTS ({len(library)}): "
+        + ", ".join(library[:10])
+        + (" ..." if len(library) > 10 else "")
+        if library
+        else "WORKSPACE DOCUMENTS: (none)"
+    )
+    prompt = f"{attached_line}\n{library_line}\nREQUEST: {topic}"
 
-    parsed = response.msg.parsed if response.msg else None
-    if isinstance(parsed, ArtifactIntentResult):
-        result = parsed
-    elif isinstance(parsed, dict):
-        try:
-            result = ArtifactIntentResult.model_validate(parsed)
-        except ValidationError:
-            result = None
-    else:
-        result = _recover_intent(response.msg.content if response.msg else None)
-    if result is None:
-        stabilization_logger.warning(
-            "Artifact intent returned no valid structured content; regex fallback"
+    async def attempt() -> Optional[ArtifactIntentResult]:
+        agent = ChatAgent(
+            system_message=BaseMessage.make_assistant_message(
+                role_name="Artifact intent",
+                content=INTENT_SYSTEM_PROMPT,
+            ),
+            model=get_model(
+                tracker,
+                stage="artifact_intent",
+                temperature=0,
+                max_tokens=INTENT_MAX_TOKENS,
+            ),
+            max_iteration=1,
+            retry_attempts=1,
+            step_timeout=INTENT_TIMEOUT_SECONDS,
         )
+        response = await agent.astep(prompt, response_format=ArtifactIntentResult)
+        parsed = response.msg.parsed if response.msg else None
+        if isinstance(parsed, ArtifactIntentResult):
+            return parsed
+        if isinstance(parsed, dict):
+            try:
+                return ArtifactIntentResult.model_validate(parsed)
+            except ValidationError:
+                return None
+        return _recover_intent(response.msg.content if response.msg else None)
+
+    # A second attempt before the regex fallback. The usual failure is not
+    # the request but the upstream provider (a timeout, or a reply with no
+    # JSON), and the retry is usually routed to a different one. Live: the
+    # interest-table request timed out once, the fallback guessed "web
+    # research", and the user got a search instead of a computed Excel file.
+    result: Optional[ArtifactIntentResult] = None
+    for number in range(1, INTENT_ATTEMPTS + 1):
+        try:
+            result = await attempt()
+        except Exception:  # noqa: BLE001 - fallback must never fail the job
+            stabilization_logger.warning(
+                "Artifact intent attempt %d/%d failed",
+                number,
+                INTENT_ATTEMPTS,
+                exc_info=True,
+            )
+            continue
+        if result is not None:
+            break
+        stabilization_logger.warning(
+            "Artifact intent attempt %d/%d returned no valid structured content",
+            number,
+            INTENT_ATTEMPTS,
+        )
+    if result is None:
+        stabilization_logger.warning("Artifact intent failed; using regex fallback")
         return fallback_from_regex(topic)
     intent = ArtifactIntent(
         result.wants_artifact,
