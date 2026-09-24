@@ -32,6 +32,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
+import brand
 import document_export
 from document_model import (
     DocumentModel,
@@ -131,7 +132,42 @@ a { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
 section.sources { font-size: 9pt; }
 section.sources h2 { font-size: 13pt; }
 section.sources li { overflow-wrap: anywhere; }
+.brand-logo { display: block; max-height: 14mm; max-width: 55mm; margin: 0 0 5mm; }
 """
+
+_BASE_FONTS = "'Liberation Sans', 'FreeSans', 'Segoe UI', Arial, sans-serif"
+
+
+def _brand_css(company: brand.Brand) -> str:
+    """Overrides that put the report (and the deck) in the company's colours.
+
+    The primary colour takes every accent the built-in design has (headings,
+    table headers, links, the table of contents); the secondary colour marks
+    the cover. Empty for an inactive brand, so the built-in look is unchanged.
+    """
+    if not company.active:
+        return ""
+    font = f"body {{ font-family: '{company.font}', {_BASE_FONTS}; }}" if company.font else ""
+    return (
+        f":root {{ --accent: #{company.primary}; --accent-soft: #{company.soft}; "
+        f"--brand-2: #{company.secondary}; }}"
+        f"strong, .slide strong {{ color: #{company.strong}; }}"
+        ".cover, .hero { border-left-color: var(--brand-2); }"
+        ".cover .eyebrow, .hero .eyebrow { color: var(--brand-2); }"
+        f"{font}"
+    )
+
+
+def _logo_html() -> str:
+    logo = brand.current().logo()
+    if logo is None:
+        return ""
+    data, mime = logo
+    alt = html.escape(brand.current().name or "logo")
+    return (
+        f'<img class="brand-logo" src="data:{mime};base64,'
+        f'{base64.b64encode(data).decode("ascii")}" alt="{alt}">'
+    )
 
 
 def _inline(text: str) -> str:
@@ -265,20 +301,23 @@ def render_html(
             + "</ol></nav>"
         )
     cover = (
-        '<header class="cover"><div class="eyebrow">Rapor</div>'
+        f'{_logo_html()}<header class="cover"><div class="eyebrow">Rapor</div>'
         f"<h1>{html.escape(title, quote=False)}</h1>"
         f'<div class="meta">Hazırlanma tarihi: {_turkish_date(generated)}</div></header>'
     )
     return (
         '<!doctype html><html lang="tr"><head><meta charset="utf-8">'
-        f"<title>{html.escape(title, quote=False)}</title><style>{CSS}</style></head>"
+        f"<title>{html.escape(title, quote=False)}</title>"
+        f"<style>{CSS}{_brand_css(brand.current())}</style></head>"
         f"<body>{cover}{toc}{''.join(body)}</body></html>"
     )
 
 
 def footer_template(title: str) -> str:
-    """Chromium footer: report title left, page X / Y right."""
-    safe = html.escape(title[:90], quote=False)
+    """Chromium footer: [company ·] report title left, page X / Y right."""
+    company = brand.current().name
+    label = f"{company} · {title}" if company else title
+    safe = html.escape(label[:90], quote=False)
     return (
         "<div style=\"width:100%;padding:0 18mm;font-size:7.5px;color:#7b8794;"
         "font-family:'Liberation Sans','FreeSans',Arial,sans-serif;"
@@ -375,6 +414,7 @@ body {
 .hero h1 { font-size: clamp(34px, 5vw, 58px); line-height: 1.1; margin: 14px 0 16px; letter-spacing: -.02em; max-width: 22ch; }
 .hero .lead { font-size: 20px; color: #3e4c59; max-width: 60ch; margin: 0 0 22px; }
 .hero .meta { font-size: 14px; color: var(--muted); }
+.hero .brand-logo { display: block; max-height: 64px; max-width: 260px; margin: 0 0 28px; }
 .hero .agenda { margin: 34px 0 0; padding: 18px 24px; background: var(--accent-soft); border-radius: 6px; max-width: 760px; }
 .hero .agenda-title { font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
 .hero .agenda ol { margin: 0; padding-left: 22px; columns: 2; column-gap: 40px; }
@@ -502,8 +542,9 @@ def render_deck(
     return (
         '<!doctype html><html lang="tr"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{safe_title}</title><style>{DECK_CSS}</style></head><body>"
-        f'<header class="hero"><div class="eyebrow">Sunum</div><h1>{safe_title}</h1>'
+        f"<title>{safe_title}</title>"
+        f"<style>{DECK_CSS}{_brand_css(brand.current())}</style></head><body>"
+        f'<header class="hero">{_logo_html()}<div class="eyebrow">Sunum</div><h1>{safe_title}</h1>'
         f'{lead_html}<div class="meta">Hazırlanma tarihi: {_turkish_date(generated)}</div>'
         f"{agenda}</header>"
         f'<main class="deck">{"".join(slides)}</main></body></html>'

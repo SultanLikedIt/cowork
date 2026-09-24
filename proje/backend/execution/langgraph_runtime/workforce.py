@@ -4070,6 +4070,33 @@ def _image_data_uri(path: Any) -> str:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
+def _deck_brand() -> tuple[str, str]:
+    """(style override, logo tag) for the markdown deck under a company brand.
+
+    The deck's own theme is dark; a brand turns it into the same light
+    corporate look as the report and the typed-block deck (brand.py).
+    """
+    import brand
+    import document_html
+
+    company = brand.current()
+    if not company.active:
+        return "", ""
+    style = (
+        "<style>"
+        f":root {{ --bg: #FFFFFF; --fg: #1F2933; --cyan: #{company.primary}; "
+        f"--ember: #{company.secondary}; --muted: #616E7C; --card: #F5F7FA; --line: #D9E2EC; }}"
+        ".hero { background: var(--bg); }"
+        ".hero h1 { text-shadow: none; }"
+        ".mark { filter: none; }"
+        ".meta { color: #616E7C; }"
+        ".slide { box-shadow: 0 10px 30px -18px rgba(16,42,67,.35); }"
+        ".brand-logo { display: block; max-height: 64px; max-width: 260px; margin: 0 auto 1.5rem; }"
+        "</style>"
+    )
+    return style, document_html._logo_html()
+
+
 def _html_deck_from_payload(
     *,
     title: str,
@@ -4300,6 +4327,7 @@ def _html_deck_from_payload(
     slides_html = "\n".join(slides)
     hero_sub = f"<p class='kicker'>{safe_subtitle}</p>" if safe_subtitle else ""
     hero_tag = f"<p class='tagline'>{safe_tagline}</p>" if safe_tagline else ""
+    brand_style, brand_logo = _deck_brand()
     return f"""<!DOCTYPE html>
 <html lang="tr"><head>
 <meta charset="utf-8"/>
@@ -4390,9 +4418,9 @@ def _html_deck_from_payload(
     .hero {{ min-height: auto; break-after: page; }}
     .slide {{ break-after: page; }}
   }}
-</style>
+</style>{brand_style}
 </head><body>
-<header class="hero">
+<header class="hero">{brand_logo}
   <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
     <circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/>
   </svg>
