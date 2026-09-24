@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
 
+import brand
 import document_export
 from slide_model import Bullet, Chart, Deck, Slide, parse_number
 
@@ -64,9 +65,31 @@ DIM = document_export._PPTX_DIM
 BULLET_TEXT = document_export._PPTX_BULLET
 CARD = document_export._PPTX_CARD
 CARD_ALT = document_export._PPTX_CARD_ALT
-GRID = "1E2C3E"
-SERIES_COLORS = ("3ECFFF", "E8A87C", "7BD88F", "C39BFF", "FF7B9C", "F2D16B", "5AA9E6", "B0BEC5")
+_BRAND = brand.current()
+if _BRAND.active:
+    GRID = "D9E2EC"
+    # The two brand colours first, then their tints and neutral greys, so a
+    # chart with many series still reads as the company's.
+    SERIES_COLORS = (
+        _BRAND.primary,
+        _BRAND.secondary,
+        brand.mix(_BRAND.primary, "FFFFFF", 0.45),
+        brand.mix(_BRAND.secondary, "FFFFFF", 0.45),
+        "5B6B7F",
+        brand.mix(_BRAND.primary, "FFFFFF", 0.7),
+        "9AA5B1",
+        brand.mix(_BRAND.secondary, "000000", 0.3),
+    )
+    # The deck's title eyebrow in the second brand colour, as on the report.
+    EYEBROW = _BRAND.secondary
+else:
+    GRID = "1E2C3E"
+    SERIES_COLORS = ("3ECFFF", "E8A87C", "7BD88F", "C39BFF", "FF7B9C", "F2D16B", "5AA9E6", "B0BEC5")
+    EYEBROW = MUTED
+# Stays Calibri even under a brand font: the text measurement below is built
+# on Calibri's advance widths, and fitting is what keeps text on the slide.
 FONT = "Calibri"
+LOGO_H = 0.6  # inches, title slide
 
 _MONTHS = (
     "Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran",
@@ -686,7 +709,9 @@ def _chrome(slide, title: str, planned: Planned, deck_title: str, page: int, tot
 
 
 def _footer(slide, deck_title: str, page: int, total: int) -> None:
-    label = deck_title if len(deck_title) <= 80 else deck_title[:77].rstrip() + "…"
+    company = brand.current().name
+    label = f"{company} · {deck_title}" if company else deck_title
+    label = label if len(label) <= 80 else label[:77].rstrip() + "…"
     _text(slide, LEFT, FOOTER_Y, CONTENT_W - 1.2, 0.3, label, size=10, color=DIM)
     _text(slide, SLIDE_W - RIGHT - 1.2, FOOTER_Y, 1.2, 0.3, f"{page} / {total}", size=10, color=DIM, align="right")
 
@@ -717,7 +742,8 @@ def _draw_title(slide, deck: Deck, images: Sequence[Any]) -> None:
     lines = wrap_count(title, size, text_w, bold=True)
     title_h = lines * size * LINE / 72
     top = 2.0 if lines <= 2 else 1.6
-    _text(slide, LEFT + 0.15, top - 0.55, text_w, 0.35, "SUNUM", size=13, color=MUTED, bold=True)
+    _draw_logo(slide, LEFT + 0.15, 0.45, max_w=text_w)
+    _text(slide, LEFT + 0.15, top - 0.55, text_w, 0.35, "SUNUM", size=13, color=EYEBROW, bold=True)
     _text(slide, LEFT + 0.15, top, text_w, title_h + 0.05, title, size=size, color=ACCENT, bold=True)
     y = top + title_h + 0.3
     _rect(slide, LEFT + 0.15, y, 2.2, 0.05, ACCENT)
@@ -731,6 +757,24 @@ def _draw_title(slide, deck: Deck, images: Sequence[Any]) -> None:
         slide, LEFT + 0.15, 6.75, text_w, 0.35,
         f"{today.day} {_MONTHS[today.month - 1]} {today.year}", size=13, color=DIM,
     )
+
+
+def _draw_logo(slide, left: float, top: float, *, max_w: float) -> None:
+    """The company logo, LOGO_H tall, never wider than ``max_w``."""
+    from PIL import Image as PILImage
+
+    logo = brand.current().logo()
+    if logo is None:
+        return
+    try:
+        with PILImage.open(io.BytesIO(logo[0])) as pil:
+            native_w, native_h = pil.size
+        width = min(max_w, LOGO_H * native_w / max(native_h, 1))
+        slide.shapes.add_picture(
+            io.BytesIO(logo[0]), _in(left), _in(top), _in(width), _in(width * native_h / max(native_w, 1))
+        )
+    except Exception:  # noqa: BLE001 - a bad logo file must not cost the deck
+        return
 
 
 def _usable_image(image: Any) -> bool:

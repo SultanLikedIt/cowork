@@ -147,6 +147,25 @@ section with real lists, tables and callouts, and a sources slide. Printed,
 each slide is one landscape page. Without blocks the previous
 `workforce._html_deck_from_payload` deck is used.
 
+## Company brand
+
+`brand.py` reads `BRAND_DIR/brand.json` (compose mounts `proje/brand` at
+`/app/brand`; setup in [`../brand/README.md`](../brand/README.md)) and every
+writer wears it:
+
+| Output | What changes |
+|---|---|
+| PDF (Chromium) + typed-block HTML deck | CSS overrides: primary colour on headings, table headers, links and the TOC; secondary colour on the cover bar and eyebrow; logo above the cover; company name in the footer |
+| PDF (reportlab fallback) | heading accent |
+| DOCX | style colours from the brand, secondary colour on the cover, logo above the cover, company name in the footer, brand font |
+| PPTX (typed slides and the notes fallback) | light corporate theme instead of the dark one: white slides, primary/secondary accents, chart series from the brand colours, logo on the title slide. The font stays Calibri: text fitting is measured with Calibri widths |
+| Markdown HTML deck | the same light palette as a style override, logo in the hero |
+| XLSX | header row filled with the primary colour, white bold text, frozen header; values untouched |
+
+The brand is read once at import, so a changed brand.json or logo needs a
+backend restart. With no brand (BRAND_DIR empty or no brand.json) every
+writer keeps its built-in look; a broken brand.json is logged and ignored.
+
 ## Verification
 
 `document_verify.verify_document` reopens every PDF/DOCX/PPTX (pypdfium2 /
@@ -172,6 +191,7 @@ problems are logged and returned in the tool result's `verification` field.
 | `DOCUMENT_SLIDES` | `true` | request typed slides for PPTX; `false` = the notes-driven deck |
 | `DOCUMENT_PDF_ENGINE` | `chromium` | `reportlab` skips Chromium |
 | `DOCUMENT_PDF_TIMEOUT_SECONDS` | `45` | Chromium print timeout |
+| `BRAND_DIR` | `/app/brand` (compose) | company brand folder; empty = built-in look |
 | `DOCUMENT_LLM_REASONING_EFFORT` | empty | OpenRouter `reasoning.effort` for the Document call: `low` / `medium` / `high` |
 | `DOCUMENT_LLM_PROVIDER_SORT` | empty | OpenRouter provider routing for the Document call: `throughput` / `latency` / `price` |
 

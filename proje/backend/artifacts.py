@@ -432,6 +432,27 @@ def _cell(value: Any) -> Any:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _brand_header_row(sheet: Any, width: int) -> None:
+    """Company colours on the header row and a frozen header, under a brand.
+
+    Only cell styles change -- the values and the sheet's shape are exactly
+    what was written, so nothing that reads the file back is affected.
+    """
+    import brand
+
+    company = brand.current()
+    if not company.active or width <= 0:
+        return
+    from openpyxl.styles import Font, PatternFill
+
+    fill = PatternFill("solid", fgColor=company.primary)
+    font = Font(bold=True, color="FFFFFF")
+    for cell in sheet[1][:width]:
+        cell.fill = fill
+        cell.font = font
+    sheet.freeze_panes = "A2"
+
+
 class ArtifactTools:
     """Artifact-creation tools bound to exactly one job's workspace.
 
@@ -1097,6 +1118,7 @@ class ArtifactTools:
         sheet.append([_cell(name) for name in header])
         for row in rows:
             sheet.append([_cell(cell) for cell in row])
+        _brand_header_row(sheet, len(header))
 
         buffer = io.BytesIO()
         workbook.save(buffer)

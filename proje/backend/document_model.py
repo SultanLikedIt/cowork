@@ -33,6 +33,7 @@ from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 from pydantic import BaseModel, Field
 
+import brand
 import document_export
 
 # --- Bounds ---------------------------------------------------------------
@@ -707,7 +708,8 @@ def build_pdf(document_model: DocumentModel, *, images: Optional[Sequence[Any]] 
     styles = getSampleStyleSheet()
     ink = colors.HexColor("#1F2933")
     muted = colors.HexColor("#616E7C")
-    accent = colors.HexColor("#2F5D8A")
+    # The built-in accent unless a company brand replaces it (brand.py).
+    accent = colors.HexColor("#" + brand.current().primary)
 
     title_style = ParagraphStyle(
         "DocTitle", parent=styles["Title"], alignment=TA_LEFT, fontName=bold_font,

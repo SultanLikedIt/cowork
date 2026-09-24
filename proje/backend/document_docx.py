@@ -27,6 +27,7 @@ import re
 from datetime import datetime
 from typing import Any, Optional, Sequence
 
+import brand
 import document_export
 import document_model
 from document_html import TOC_MIN_SECTIONS, _URL, _turkish_date
@@ -41,16 +42,21 @@ from document_model import (
     _SOURCES_LABEL,
 )
 
-# Same palette as document_html.CSS.
-ACCENT = "2F5D8A"
+# Same palette as document_html.CSS; the company brand, when one is set,
+# replaces the accent colours (brand.py).
+_BRAND = brand.current()
+ACCENT = _BRAND.primary if _BRAND.active else "2F5D8A"
+# The cover bar and eyebrow: the brand's second colour.
+COVER = _BRAND.secondary if _BRAND.active else ACCENT
 INK = "1F2933"
 MUTED = "616E7C"
-SOFT = "EAF1F7"
+SOFT = _BRAND.soft if _BRAND.active else "EAF1F7"
 RULE = "D9E2EC"
 ZEBRA = "F5F7FA"
-STRONG = "102A43"
+STRONG = _BRAND.strong if _BRAND.active else "102A43"
 WHITE = "FFFFFF"
-FONT = "Calibri"
+FONT = _BRAND.font or "Calibri"
+LOGO_HEIGHT_CM = 1.4
 
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
@@ -246,16 +252,32 @@ def _add_bookmark(paragraph: Any, name: str, bookmark_id: int) -> None:
 # --- blocks -------------------------------------------------------------------
 
 
+def _logo(document: Any) -> None:
+    """The company logo above the cover block, when the brand has one."""
+    from docx.shared import Cm, Pt
+
+    logo = brand.current().logo()
+    if logo is None:
+        return
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.space_after = Pt(10)
+    try:
+        paragraph.add_run().add_picture(io.BytesIO(logo[0]), height=Cm(LOGO_HEIGHT_CM))
+    except Exception:  # noqa: BLE001 - a bad logo file must not cost the report
+        paragraph._p.getparent().remove(paragraph._p)
+
+
 def _cover(document: Any, title: str, generated: Optional[datetime]) -> None:
     from docx.shared import Pt, RGBColor
 
-    bar = {"left": (ACCENT, 36, 10)}
+    _logo(document)
+    bar = {"left": (COVER, 36, 10)}
 
     eyebrow = document.add_paragraph()
     run = eyebrow.add_run("RAPOR")
     run.bold = True
     run.font.size = Pt(8)
-    run.font.color.rgb = RGBColor.from_string(ACCENT)
+    run.font.color.rgb = RGBColor.from_string(COVER)
     run._r.get_or_add_rPr().append(_el("w:spacing", val="40"))
     eyebrow.paragraph_format.space_after = Pt(0)
     _paragraph_border(eyebrow._p.get_or_add_pPr(), **bar)
@@ -388,7 +410,8 @@ def _footer(document: Any, title: str) -> None:
         for part in (begin, instr, separate, placeholder, end):
             run._r.append(part)
 
-    text(title[:90])
+    company = brand.current().name
+    text((f"{company} · {title}" if company else title)[:90])
     text("\tSayfa ")
     field(" PAGE ")
     text(" / ")

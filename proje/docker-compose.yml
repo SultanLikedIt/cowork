@@ -108,6 +108,11 @@ services:
       # on any failure.
       DOCUMENT_PDF_ENGINE: ${DOCUMENT_PDF_ENGINE:-chromium}
       DOCUMENT_PDF_TIMEOUT_SECONDS: ${DOCUMENT_PDF_TIMEOUT_SECONDS:-45}
+      # Company brand (colours, logo) on every generated file -- see
+      # brand/README.md. The folder is mounted below; an empty value turns
+      # the brand off and the built-in look comes back. Restart the backend
+      # after changing brand.json or the logo (no rebuild needed).
+      BRAND_DIR: ${BRAND_DIR-/app/brand}
       # OpenRouter options for the Document LLM call only (execution/
       # langgraph_runtime/workforce.py: _document_llm_extra_body). Empty =
       # provider defaults. EFFORT: low|medium|high. SORT: throughput|latency|price.
@@ -193,6 +198,7 @@ services:
       KNOWLEDGE_INDEX_WAIT_SECONDS: ${KNOWLEDGE_INDEX_WAIT_SECONDS:-20}
     volumes:
       - backend-data:/data
+      - ./brand:/app/brand:ro
     # Host ports differ from the Camel stack (8000/8080) so both can run
     # side-by-side without colliding. In-container ports stay the same.
     ports:

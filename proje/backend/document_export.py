@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Optional, Sequence
 
+import brand
+
 
 @dataclass(frozen=True)
 class ImageEmbed:
@@ -1737,17 +1739,33 @@ _PPTX_SOURCE_JUNK_RE = re.compile(
 )
 
 
-# Deck palette — dark research theme (not generic purple).
-_PPTX_BG = "07111D"
-_PPTX_BG_SOFT = "0B1624"
-_PPTX_ACCENT = "3ECFFF"
-_PPTX_ACCENT_WARM = "E8A87C"
-_PPTX_TEXT = "E8EEF6"
-_PPTX_MUTED = "8B97A8"
-_PPTX_DIM = "5D6B7C"
-_PPTX_BULLET = "C5D0DC"
-_PPTX_CARD = "101C2C"
-_PPTX_CARD_ALT = "0C1828"
+# Deck palette — dark research theme (not generic purple). A company brand
+# (brand.py) switches both deck builders to a light corporate theme instead:
+# white slides, the brand's primary colour as the accent and its second
+# colour as the warm accent. document_pptx reads these same names.
+_PPTX_BRAND = brand.current()
+if _PPTX_BRAND.active:
+    _PPTX_BG = "FFFFFF"
+    _PPTX_BG_SOFT = "F4F6FA"
+    _PPTX_ACCENT = _PPTX_BRAND.primary
+    _PPTX_ACCENT_WARM = _PPTX_BRAND.secondary
+    _PPTX_TEXT = "1F2933"
+    _PPTX_MUTED = "616E7C"
+    _PPTX_DIM = "9AA5B1"
+    _PPTX_BULLET = "3E4C59"
+    _PPTX_CARD = "F5F7FA"
+    _PPTX_CARD_ALT = "EAEFF5"
+else:
+    _PPTX_BG = "07111D"
+    _PPTX_BG_SOFT = "0B1624"
+    _PPTX_ACCENT = "3ECFFF"
+    _PPTX_ACCENT_WARM = "E8A87C"
+    _PPTX_TEXT = "E8EEF6"
+    _PPTX_MUTED = "8B97A8"
+    _PPTX_DIM = "5D6B7C"
+    _PPTX_BULLET = "C5D0DC"
+    _PPTX_CARD = "101C2C"
+    _PPTX_CARD_ALT = "0C1828"
 
 
 def _pptx_rgb(hex_color: str):
