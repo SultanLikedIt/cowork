@@ -1,5 +1,5 @@
-// Brand marks for agents that stand for an outside service (Jira, Reddit,
-// Hacker News, Outlook, GitHub). Unlike the line glyphs in icons.jsx these keep the
+// Brand marks for agents that stand for an outside service (Jira, Confluence,
+// Reddit, Hacker News, Outlook, GitHub). Unlike the line glyphs in icons.jsx these keep the
 // service's own colour: a logo is only worth showing if it is recognisable
 // at a glance, and a grey Reddit alien is not.
 //
@@ -10,6 +10,9 @@
 // Atlassian's lighter Jira blue rather than the #0052CC Simple Icons lists:
 // the app is dark-first, and #0052CC on the dark card ground is ~2.3:1.
 const JIRA_BLUE = '#2684FF'
+// Confluence's own mark is navy (#172B4D) -- invisible on the dark ground --
+// so it takes the same Atlassian blue as Jira.
+const CONFLUENCE_BLUE = '#2684FF'
 const REDDIT_ORANGE = '#FF4500'
 const HN_ORANGE = '#F0652F'
 const OUTLOOK_BLUE = '#0078D4'
@@ -40,6 +43,15 @@ const frame = { width: 18, height: 18, viewBox: '0 0 24 24', 'aria-hidden': true
 export const JiraLogo = (p) => (
   <svg {...frame} {...p}>
     <path fill={JIRA_BLUE} d={JIRA_PATH} />
+  </svg>
+)
+
+const CONFLUENCE_PATH =
+  'M.87 18.257c-.248.382-.53.875-.763 1.245a.764.764 0 0 0 .255 1.04l4.965 3.054a.764.764 0 0 0 1.058-.26c.199-.332.454-.763.733-1.221 1.967-3.247 3.945-2.853 7.508-1.146l4.957 2.337a.764.764 0 0 0 1.028-.382l2.364-5.346a.764.764 0 0 0-.382-1 599.851 599.851 0 0 1-4.965-2.361C10.911 10.97 5.224 11.185.87 18.257zM23.131 5.743c.249-.405.531-.875.764-1.25a.764.764 0 0 0-.256-1.034L18.675.404a.764.764 0 0 0-1.058.26c-.195.335-.451.763-.734 1.225-1.966 3.246-3.945 2.85-7.508 1.146L4.437.694a.764.764 0 0 0-1.027.382L1.046 6.422a.764.764 0 0 0 .382 1c1.039.49 3.105 1.467 4.965 2.361 6.698 3.246 12.392 3.029 16.738-4.04z'
+
+export const ConfluenceLogo = (p) => (
+  <svg {...frame} {...p}>
+    <path fill={CONFLUENCE_BLUE} d={CONFLUENCE_PATH} />
   </svg>
 )
 

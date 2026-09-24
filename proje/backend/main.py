@@ -53,6 +53,8 @@ from document_ingestion import DOCLING_EXTENSIONS, DocumentParseError, parse_doc
 import document_export
 import outlook
 import reranker
+import confluence_api
+import confluence_client
 import github_api
 import github_client
 import jira_api
@@ -797,6 +799,8 @@ class UsageTelemetry(BaseModel):
     # "bana atanan isler" -- this job read the user's Jira. Same audit
     # reasoning again: the classification is stored, never the tickets.
     reads_jira: Optional[bool] = None
+    # "izin politikası ne diyor" -- this job read the company Confluence.
+    reads_confluence: Optional[bool] = None
     # "bu repoyu ozetle" -- this job read public GitHub. Stored for the same
     # audit reason; the READMEs and files themselves are not.
     reads_github: Optional[bool] = None
@@ -1028,6 +1032,18 @@ def _worker_pool() -> WorkerPoolResponse:
                 description=(
                     "Searches and reads issues in your company Jira and passes "
                     "them to the other workers. Read-only."
+                ),
+                source="fixed",
+            )
+        )
+    if confluence_client.is_configured():
+        fixed.append(
+            WorkerSummary(
+                name="Confluence Agent",
+                description=(
+                    "Searches and reads pages in the allowed spaces of your "
+                    "company Confluence and passes them to the other workers. "
+                    "Read-only."
                 ),
                 source="fixed",
             )
@@ -1938,6 +1954,11 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     or single_intent.needs_code_execution
                     # Single has no Jira; Workforce does, when it is set up.
                     or (single_intent.reads_jira and jira_client.is_configured())
+                    # Nor Confluence.
+                    or (
+                        single_intent.reads_confluence
+                        and confluence_client.is_configured()
+                    )
                     # Nor GitHub: a pasted repository link is worth the offer.
                     or (single_intent.reads_github and github_client.is_configured())
                     # Nor document search, when there are documents to search.
@@ -1987,6 +2008,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["reads_email"] = intent.reads_email
                 job["usage"]["reads_social"] = intent.reads_social
                 job["usage"]["reads_jira"] = intent.reads_jira
+                job["usage"]["reads_confluence"] = intent.reads_confluence
                 job["usage"]["reads_github"] = intent.reads_github
                 job["usage"]["reads_documents"] = intent.reads_documents
                 job["usage"]["email_unaddressed"] = intent.email_unaddressed
@@ -2014,6 +2036,9 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 reads_email=intent.reads_email,
                 reads_social=intent.reads_social,
                 reads_jira=intent.reads_jira,
+                reads_confluence=(
+                    bool(intent.reads_confluence) and confluence_client.is_configured()
+                ),
                 reads_github=(
                     bool(intent.reads_github) and github_client.is_configured()
                 ),
@@ -2561,6 +2586,9 @@ async def _routing_for_workforce(
     # chat reply that never mentions Jira. A disconnected VPN costs the
     # agent one short connect timeout (JIRA_CONNECT_TIMEOUT_SECONDS).
     reads_jira = bool(intent.reads_jira) and jira_client.is_configured()
+    # Same terms as Jira: configured (which includes a space allowlist), not
+    # probed -- Confluence usually sits behind the same VPN.
+    reads_confluence = bool(intent.reads_confluence) and confluence_client.is_configured()
     # Granted on configuration, like Jira: public GitHub needs no account, and
     # a rate limit or an outage is better reported by the GitHub Agent (with
     # the reset time) than hidden by quietly not scheduling it.
@@ -2590,6 +2618,7 @@ async def _routing_for_workforce(
         reads_email=reads_email,
         reads_social=reads_social,
         reads_jira=reads_jira,
+        reads_confluence=reads_confluence,
         reads_github=reads_github,
         reads_documents=reads_documents,
     )
@@ -2925,6 +2954,11 @@ async def submit_job(
             ),
             reads_jira=(
                 artifact_intent_result.reads_jira
+                if artifact_intent_result is not None
+                else None
+            ),
+            reads_confluence=(
+                artifact_intent_result.reads_confluence
                 if artifact_intent_result is not None
                 else None
             ),
@@ -3765,6 +3799,7 @@ app.include_router(
 app.include_router(outlook.build_router())
 app.include_router(social_api.build_router())
 app.include_router(jira_api.build_router())
+app.include_router(confluence_api.build_router())
 app.include_router(github_api.build_router())
 app.include_router(knowledge_api.build_router(load_upload_record=_load_upload_record))
 

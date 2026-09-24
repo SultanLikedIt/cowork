@@ -1,7 +1,14 @@
 import { BookOpen, Check, Clock, Code2, FileText, Globe, PanelLeft, Search } from 'lucide-react'
 
 import { BotIcon } from '../icons.jsx'
-import { GitHubLogo, HackerNewsLogo, JiraLogo, OutlookLogo, RedditLogo } from '../brandLogos.jsx'
+import {
+  ConfluenceLogo,
+  GitHubLogo,
+  HackerNewsLogo,
+  JiraLogo,
+  OutlookLogo,
+  RedditLogo,
+} from '../brandLogos.jsx'
 import { ERROR_JOB_STATUSES, SUCCESS_JOB_STATUSES, isActiveJob } from '../stages.js'
 import { cn } from '../lib/utils.js'
 import { Button } from './ui/button.jsx'
@@ -79,6 +86,13 @@ const INTEGRATION_AGENTS = [
     description: 'Find & summarize your issues',
     Logo: JiraLogo,
     rosterName: 'Jira Agent',
+  },
+  {
+    key: 'Confluence',
+    label: 'Confluence',
+    description: 'Find & summarize wiki pages',
+    Logo: ConfluenceLogo,
+    rosterName: 'Confluence Agent',
   },
   {
     key: 'GitHub',

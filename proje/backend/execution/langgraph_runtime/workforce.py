@@ -51,6 +51,7 @@ ROLE_GENERAL = "Assistant"
 ROLE_MAIL = "Mail Agent"
 ROLE_SOCIAL = "Social Agent"
 ROLE_JIRA = "Jira Agent"
+ROLE_CONFLUENCE = "Confluence Agent"
 ROLE_GITHUB = "GitHub Agent"
 ROLE_KNOWLEDGE = "Knowledge Agent"
 
@@ -62,6 +63,7 @@ WORKER_IDS = {
     ROLE_MAIL: "lg-mail",
     ROLE_SOCIAL: "lg-social",
     ROLE_JIRA: "lg-jira",
+    ROLE_CONFLUENCE: "lg-confluence",
     ROLE_GITHUB: "lg-github",
     ROLE_KNOWLEDGE: "lg-knowledge",
 }
@@ -70,7 +72,7 @@ WORKER_IDS = {
 # output is notes for the next worker (quoted or summarized source material),
 # so a job made only of these needs the Assistant appended to answer.
 _GATHER_ONLY_ROLES = frozenset(
-    {ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA, ROLE_GITHUB, ROLE_KNOWLEDGE}
+    {ROLE_MAIL, ROLE_SOCIAL, ROLE_JIRA, ROLE_CONFLUENCE, ROLE_GITHUB, ROLE_KNOWLEDGE}
 )
 
 
@@ -400,6 +402,7 @@ def _select_roles(
     reads_email: bool = False,
     reads_social: bool = False,
     reads_jira: bool = False,
+    reads_confluence: bool = False,
     reads_github: bool = False,
     reads_documents: bool = False,
 ) -> list[str]:
@@ -435,6 +438,9 @@ def _select_roles(
     # And again for Jira: the user's tickets are the SOURCE, gathered first.
     if reads_jira or capabilities.JIRA_READ in caps:
         roles.append(ROLE_JIRA)
+    # And for the company wiki.
+    if reads_confluence or capabilities.CONFLUENCE_READ in caps:
+        roles.append(ROLE_CONFLUENCE)
     # And for GitHub: the repositories are the SOURCE ("bu repoyu ozetle",
     # "en populer Rust frameworkleri"), gathered before anything uses them.
     if reads_github or capabilities.GITHUB_READ in caps:
@@ -2672,6 +2678,107 @@ async def _run_jira(
     notes = jira_controller.render_notes(result)
     if result.ok:
         summary = f"{len(result.issues)} kayıt listelendi, {result.read_count} kayıt okundu"
+        if result.findings:
+            summary += " (yönlendirme denemesi içeren içerik var)"
+    else:
+        summary = f"okunamadı ({result.error_code})"
+    _lifecycle_done(
+        callback,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        result_summary=summary,
+        started=started,
+    )
+    return notes
+
+
+async def _run_confluence(
+    *,
+    content: str,
+    original_request: str,
+    tracker: UsageTracker,
+    callback: Any,
+    tool_call_recorder: Optional[ToolCallRecorder],
+    handle: CancellableWorkforce,
+    unit_task_id: str,
+    deep_research: bool = False,
+) -> str:
+    """Confluence Agent: search and read the company wiki, return evidence notes.
+
+    Same structure as ``_run_jira``: a fixed phase sequence in
+    confluence_controller, notes for the next worker, read-only, and only in
+    the spaces CONFLUENCE_SPACES allows.
+    """
+    import confluence_controller
+
+    worker_id = WORKER_IDS[ROLE_CONFLUENCE]
+    started = time.monotonic()
+    _lifecycle_start(
+        callback,
+        role=ROLE_CONFLUENCE,
+        worker_id=worker_id,
+        unit_task_id=unit_task_id,
+        description="Confluence sayfalarını oku",
+    )
+    _emit_activity(callback, unit_task_id, "searching", "Confluence taranıyor")
+
+    complete = await _make_complete(
+        tracker, deep_research=deep_research, stage_prefix="confluence"
+    )
+    try:
+        result = await confluence_controller.acquire_confluence_evidence(
+            original_request or content,
+            complete=complete,
+            deep_research=deep_research,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failure is an answer, not a crash
+        stabilization_logger.exception("confluence acquisition failed")
+        _lifecycle_done(
+            callback,
+            worker_id=worker_id,
+            unit_task_id=unit_task_id,
+            result_summary="Confluence okunamadı",
+            started=started,
+        )
+        return confluence_controller.render_notes(
+            confluence_controller.ConfluenceResult(
+                error=f"{type(exc).__name__}: {exc}", error_code="confluence_failed"
+            )
+        )
+
+    if tool_call_recorder is not None:
+        # Reading company pages is recorded like any other real action.
+        try:
+            tool_call_recorder.record(
+                "read_confluence",
+                {
+                    "cql": result.cql,
+                    "pages": [page.page_id for page in result.details],
+                },
+                result=(
+                    f"{len(result.pages)} page(s) listed, {result.read_count} read"
+                    if result.ok
+                    else None
+                ),
+                error=None if result.ok else str(result.error_code or "confluence_failed"),
+            )
+        except Exception:  # noqa: BLE001 - audit must not break the run
+            stabilization_logger.warning("could not record read_confluence", exc_info=True)
+
+    if handle.cancelled:
+        return confluence_controller.render_notes(result)
+
+    if result.ok and (result.pages or result.details):
+        _emit_activity(
+            callback,
+            unit_task_id,
+            "reading",
+            f"{len(result.pages) or result.read_count} Confluence sayfası okundu",
+        )
+
+    notes = confluence_controller.render_notes(result)
+    if result.ok:
+        summary = f"{len(result.pages)} sayfa listelendi, {result.read_count} sayfa okundu"
         if result.findings:
             summary += " (yönlendirme denemesi içeren içerik var)"
     else:
@@ -6198,6 +6305,17 @@ def _build_graph(
                 unit_task_id=unit_id,
                 deep_research=deep_research,
             )
+        elif role == ROLE_CONFLUENCE:
+            text = await _run_confluence(
+                content=content,
+                original_request=request,
+                tracker=tracker,
+                callback=callback,
+                tool_call_recorder=tool_call_recorder,
+                handle=handle,
+                unit_task_id=unit_id,
+                deep_research=deep_research,
+            )
         elif role == ROLE_GITHUB:
             text = await _run_github(
                 content=content,
@@ -6403,6 +6521,7 @@ async def _run_workforce_async(
     reads_email: Optional[bool] = None,
     reads_social: Optional[bool] = None,
     reads_jira: Optional[bool] = None,
+    reads_confluence: Optional[bool] = None,
     reads_github: Optional[bool] = None,
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
@@ -6471,6 +6590,7 @@ async def _run_workforce_async(
             reads_email=bool(reads_email),
             reads_social=bool(reads_social),
             reads_jira=bool(reads_jira),
+            reads_confluence=bool(reads_confluence),
             reads_github=bool(reads_github),
             # Only with documents to search: main resolves the library.
             reads_documents=bool(reads_documents) and bool(knowledge_files),
@@ -6628,6 +6748,7 @@ def run_workforce_in_thread(
     reads_email: Optional[bool] = None,
     reads_social: Optional[bool] = None,
     reads_jira: Optional[bool] = None,
+    reads_confluence: Optional[bool] = None,
     reads_github: Optional[bool] = None,
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
@@ -6661,6 +6782,7 @@ def run_workforce_in_thread(
                 reads_email=reads_email,
                 reads_social=reads_social,
                 reads_jira=reads_jira,
+                reads_confluence=reads_confluence,
                 reads_github=reads_github,
                 reads_documents=reads_documents,
                 knowledge_files=knowledge_files,
