@@ -10,6 +10,7 @@ bazlı derinleştirmesidir.
 | Dosya | Ne için |
 |---|---|
 | [STATUS.md](STATUS.md) | Branch / neredeyiz (kısa handoff) |
+| [gelistirme-ozeti.md](gelistirme-ozeti.md) | Devralmadan bugüne geliştirmeler, metrikler, gelecek planları — yapay zekâya parça parça verilip sunum hazırlatılacak kaynak |
 | [document-ingestion.md](document-ingestion.md) | Docling upload pipeline + model cache |
 | [document-generation.md](document-generation.md) | PDF/DOCX/PPTX üretimi: tipli bloklar, doğrulama, Chromium |
 | [web-execution.md](web-execution.md) | SearXNG + AgentSearch + Crawl4AI web path |

@@ -20,6 +20,12 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 
 ## Son tamamlanan işler
 
+- **Coding Agent düzeltmeleri (24.09.2026):** Coding işi sürerken arayüzün
+  boş kalması (#14); hesaplama isteklerinin (faiz tablosu, toplam,
+  istatistik) Coding'e yönlenmesi (#15); sınıflandırıcı zaman aşımında bir
+  kez yeniden deneme ve yedek kuralların hesaplamayı tanıması (#17).
+- **Geliştirme özeti:** [gelistirme-ozeti.md](gelistirme-ozeti.md) —
+  devralmadan bugüne, sunum hazırlatmak için.
 - **Coding Agent (PR #13, 23–24.09.2026):** kodu gerçekten çalıştırır
   (yaz → çalıştır → düzelt → gerçek çıktıyı anlat), yüklenen Excel/CSV'yi
   analiz eder, matplotlib grafiklerini sohbette gösterir ve PDF/Word'e gömer.
