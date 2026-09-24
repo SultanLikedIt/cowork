@@ -33,6 +33,11 @@ const PROCESS_LABELS = {
   'llm:knowledge_plan': 'LLM · document search plan',
   'llm:knowledge_answer': 'LLM · document summary',
   'tool:search_documents': 'Document search',
+  'llm:coding_write': 'LLM · code writing',
+  'llm:coding_fix': 'LLM · code fix',
+  'llm:coding_answer': 'LLM · result explanation',
+  'tool:run_python': 'Code run',
+  'tool:profile_data': 'Data file profiling',
   'llm:artifact_intent': 'LLM · artifact intent',
 }
 

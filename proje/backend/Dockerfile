@@ -104,6 +104,14 @@ RUN pip install --no-cache-dir --no-deps "psutil>=6.1.1"
 # failing a job.
 RUN pip install --no-cache-dir         "rdt-cli @ https://github.com/public-clis/rdt-cli/archive/5e4fb3720d5c174e976cd425ccc3b879d52cac66.zip"
 
+# Charts for the Coding Agent (code_controller.HAS_MATPLOTLIB; docs/coding-agent.md).
+# Its own layer, below the heavy ones and not in requirements.txt: adding it
+# there would invalidate the torch/docling install layer and re-download
+# gigabytes for a ~40 MB package. The font cache is built here so the first
+# chart of every job does not pay for it.
+RUN pip install --no-cache-dir "matplotlib==3.11.2" \
+    && MPLBACKEND=Agg python -c "import matplotlib.pyplot"
+
 # Now the application source.
 COPY . .
 

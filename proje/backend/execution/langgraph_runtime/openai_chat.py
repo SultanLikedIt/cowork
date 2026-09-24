@@ -184,6 +184,7 @@ async def complete_chat(
     retry_on_truncation: bool = False,
     json_mode: bool = False,
     extra_body: Optional[dict[str, Any]] = None,
+    reasoning_fallback: bool = False,
 ) -> Any:
     """One non-streaming chat call. If ``response_format`` is a Pydantic model,
     ask for JSON and validate (or recover). Used by web_controller ``complete``.
@@ -297,6 +298,30 @@ async def complete_chat(
     choices = getattr(response, "choices", None) or []
     if choices:
         text = (choices[0].message.content or "").strip()
+    if not text and reasoning_fallback and choices and _finish_reason(response) == "stop":
+        # Measured on OpenRouter: one upstream provider of deepseek-v4-flash
+        # (OpenInference) returns the WHOLE answer in `reasoning` with
+        # content empty and finish_reason "stop" -- the MODE/PLAN/code reply
+        # was there, complete, and the caller saw "". Opt-in only: for a
+        # caller whose reply is validated downstream (the Coding Agent parses
+        # a fenced program and refuses anything else), never for free prose,
+        # where a model's actual thinking could otherwise become the answer.
+        message = choices[0].message
+        extra = getattr(message, "model_extra", None) or {}
+        reasoning = (
+            getattr(message, "reasoning", None)
+            or extra.get("reasoning")
+            or getattr(message, "reasoning_content", None)
+            or extra.get("reasoning_content")
+            or ""
+        )
+        if isinstance(reasoning, str) and reasoning.strip():
+            logger.warning(
+                "chat stage=%s: content empty, using the reasoning field (%d chars)",
+                stage,
+                len(reasoning),
+            )
+            text = reasoning.strip()
     if not text:
         # A reasoning model that spends its whole budget thinking returns
         # content=None with finish_reason "length"; callers only ever saw "".

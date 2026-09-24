@@ -272,14 +272,41 @@ const ARTIFACT_ICONS = {
  * web page opens in a new tab; everything else downloads, which is what the
  * server's Content-Disposition already asks the browser to do.
  */
+// Charts the Coding Agent saved are shown, not only listed: a chart behind a
+// download link is a chart nobody looks at.
+const PREVIEW_KINDS = new Set(['png', 'jpg', 'jpeg'])
+
 function ProducedFiles({ job, artifacts }) {
   if (artifacts.length === 0) return null
+  const previews = artifacts.filter(
+    (artifact) => PREVIEW_KINDS.has(String(artifact.kind || '').toLowerCase()) && !artifact.bundle,
+  )
 
   return (
     <section className="mt-5 rounded-lg border border-border/70 p-3.5" aria-label="Files produced by this run">
       <h3 className="text-xs font-medium text-muted-foreground">
         {artifacts.length === 1 ? '1 file produced' : `${artifacts.length} files produced`}
       </h3>
+      {previews.length > 0 && (
+        <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          {previews.map((artifact) => (
+            <a
+              key={`preview-${artifact.path}`}
+              href={artifactUrl(job.job_id, artifact.download_path)}
+              download={artifact.filename}
+              className="block overflow-hidden rounded-md border border-border/60 bg-white transition-opacity duration-150 hover:opacity-90"
+              title={safeText(artifact.filename, 'chart')}
+            >
+              <img
+                src={artifactUrl(job.job_id, artifact.download_path)}
+                alt={safeText(artifact.filename, 'chart')}
+                loading="lazy"
+                className="h-auto w-full"
+              />
+            </a>
+          ))}
+        </div>
+      )}
       <ul className="mt-2.5 flex flex-col gap-1">
         {artifacts.map((artifact) => {
           const kind = String(artifact.kind || '').toLowerCase()

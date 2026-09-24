@@ -459,6 +459,9 @@ class ArtifactTools:
         # "görsel yükleme reddediliyordu" is content, not an ask. None =
         # decide from source_request as before.
         self.images_requested = images_requested
+        # Charts the job computed (the Coding Agent's PNGs), set by the
+        # server -- never by the model -- and embedded ahead of any photo.
+        self.leading_images: list = []
         self._records: dict[str, ArtifactRecord] = {}
         # Memo of (tool, normalized args) -> previous result, so an identical
         # create call returns the existing artifact instead of re-encoding it.
@@ -580,6 +583,27 @@ class ArtifactTools:
             return pptx_bytes
 
     def _fetch_images(
+        self,
+        image_query: str,
+        *,
+        context: str = "",
+        require_user_ask: bool = False,
+    ) -> list:
+        """The job's own charts (``leading_images``) first, then a topic photo.
+
+        Charts are not subject to ``require_user_ask``: they are the computed
+        results the report is about, not decoration.
+        """
+        leading = [
+            image
+            for image in (self.leading_images or [])
+            if Path(getattr(image, "path", "")).is_file()
+        ]
+        return leading + self._fetch_topic_images(
+            image_query, context=context, require_user_ask=require_user_ask
+        )
+
+    def _fetch_topic_images(
         self,
         image_query: str,
         *,

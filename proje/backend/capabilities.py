@@ -615,6 +615,34 @@ _TRANSFORM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# With a spreadsheet attached, these words mean "compute over the rows" --
+# something only running code can answer from the whole file rather than the
+# preview. Kept apart from _TRANSFORM_RE on purpose: that one also decides
+# CODE_EXEC for ANY attachment plus a file deliverable, and "özetle" there
+# would send "bu PDF'i özetle, Word ver" to the Coding Agent.
+_TABULAR_ANALYSIS_RE = re.compile(
+    r"\b("
+    r"analiz|incele|özetle|ozetle|grafi[kğg]|çiz|ciz|görselleştir|gorsellestir"
+    r"|filtrele|grupla|sırala|sirala|karşılaştır|karsilastir|say[ıi]s[ıi]"
+    r"|toplam|en\s+(?:yüksek|yuksek|düşük|dusuk|çok|cok|az)|trend|dağılım|dagilim"
+    r"|kaç\s|kac\s|pivot|korelasyon|yüzde|yuzde|oran"
+    r"|chart|plot|graph|filter|group|sort|compare|summari[sz]e|total|trend"
+    r")",
+    re.IGNORECASE,
+)
+_TABULAR_KINDS = frozenset({"csv", "tsv", "xlsx", "xlsm", "xls", "table"})
+
+
+def _tabular_needs_code(body: str, workspace_file_kinds: Optional[list[str]]) -> bool:
+    """A spreadsheet upload plus a transform or analysis ask."""
+    tabular = any(
+        str(kind).lower() in _TABULAR_KINDS for kind in (workspace_file_kinds or [])
+    )
+    return tabular and bool(
+        _TRANSFORM_RE.search(body) or _TABULAR_ANALYSIS_RE.search(body)
+    )
+
+
 # Deep research is detected from TWO signals rather than one keyword list,
 # because the single-list version was wrong in both directions: it missed
 # "review the important 2024-2026 work ... comparing approaches, datasets,
@@ -984,12 +1012,7 @@ def workforce_structural_requirements(
         needed.add(WEB_FETCH)
     if has_workspace_files:
         needed.add(FILES)
-    tabular = {
-        kind
-        for kind in (workspace_file_kinds or [])
-        if str(kind).lower() in {"csv", "xlsx", "table"}
-    }
-    if tabular and _TRANSFORM_RE.search(body):
+    if _tabular_needs_code(body, workspace_file_kinds):
         needed.add(CODE_EXEC)
     return expand(needed)
 
@@ -1028,12 +1051,7 @@ def structural_requirements(
     # A spreadsheet upload plus any transform/compute intent needs execution:
     # the read-only table tools can describe a table, but cannot produce a
     # changed one.
-    tabular = {
-        kind
-        for kind in (workspace_file_kinds or [])
-        if str(kind).lower() in {"csv", "xlsx", "table"}
-    }
-    if tabular and _TRANSFORM_RE.search(body):
+    if _tabular_needs_code(body, workspace_file_kinds):
         needed.add(CODE_EXEC)
 
     if detect_deep_research(body):

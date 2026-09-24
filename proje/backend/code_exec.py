@@ -154,6 +154,9 @@ class CodeExecutionTools:
         # a buffer that never flushes -- a timed-out run's partial output is
         # usually the most useful thing it produced.
         env["PYTHONUNBUFFERED"] = "1"
+        # No display in a container: a chart must be written to a file, and
+        # an interactive backend would either fail or wait on a window.
+        env["MPLBACKEND"] = "Agg"
         return env
 
     def _snapshot(self) -> dict[str, float]:
