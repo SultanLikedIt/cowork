@@ -2,6 +2,7 @@ import { BookOpen, Check, Clock, Code2, FileText, Globe, PanelLeft, Search } fro
 
 import { BotIcon } from '../icons.jsx'
 import {
+  AtlassianLogos,
   ConfluenceLogo,
   GitHubLogo,
   HackerNewsLogo,
@@ -80,19 +81,31 @@ const INTEGRATION_AGENTS = [
     Logo: HackerNewsLogo,
     rosterName: 'Social Agent',
   },
+  // Jira and Confluence use the same Atlassian account: one card when both
+  // are set up, each on its own otherwise (see integrationCards).
   {
-    key: 'Jira',
-    label: 'Jira',
-    description: 'Find & summarize your issues',
-    Logo: JiraLogo,
-    rosterName: 'Jira Agent',
-  },
-  {
-    key: 'Confluence',
-    label: 'Confluence',
-    description: 'Find & summarize wiki pages',
-    Logo: ConfluenceLogo,
-    rosterName: 'Confluence Agent',
+    key: 'Atlassian',
+    combined: {
+      label: 'Jira & Confluence',
+      description: 'Issues & wiki pages',
+      Logo: AtlassianLogos,
+    },
+    parts: [
+      {
+        key: 'Jira',
+        label: 'Jira',
+        description: 'Find & summarize your issues',
+        Logo: JiraLogo,
+        rosterName: 'Jira Agent',
+      },
+      {
+        key: 'Confluence',
+        label: 'Confluence',
+        description: 'Find & summarize wiki pages',
+        Logo: ConfluenceLogo,
+        rosterName: 'Confluence Agent',
+      },
+    ],
   },
   {
     key: 'GitHub',
@@ -102,6 +115,26 @@ const INTEGRATION_AGENTS = [
     rosterName: 'GitHub Agent',
   },
 ]
+
+// The cards this deployment can back, in INTEGRATION_AGENTS order. A grouped
+// entry becomes its combined card when every part is on the roster, the one
+// part's own card when only one is, and nothing when none is.
+function integrationCards(rosterNames) {
+  const cards = []
+  for (const agent of INTEGRATION_AGENTS) {
+    if (!agent.parts) {
+      if (rosterNames.has(agent.rosterName)) cards.push(agent)
+      continue
+    }
+    const present = agent.parts.filter((part) => rosterNames.has(part.rosterName))
+    if (present.length === agent.parts.length) {
+      cards.push({ key: agent.key, ...agent.combined })
+    } else {
+      cards.push(...present)
+    }
+  }
+  return cards
+}
 
 // One per agent, in the roster's own order, so the row below it reads as
 // "these are the three, and this is what you'd ask each of them". Two of
@@ -243,9 +276,7 @@ export default function HomeView({
   const showStarters = isWorkforce && !value.trim()
   const recent = recentConversations.slice(0, 5)
   const rosterNames = new Set((workers || []).map((worker) => worker?.name))
-  const integrations = INTEGRATION_AGENTS.filter((agent) =>
-    rosterNames.has(agent.rosterName),
-  )
+  const integrations = integrationCards(rosterNames)
   const knowledgeOn = rosterNames.has(KNOWLEDGE_AGENT.rosterName)
   const builtIn = knowledgeOn ? [...WORKFORCE_AGENTS, KNOWLEDGE_AGENT] : WORKFORCE_AGENTS
 

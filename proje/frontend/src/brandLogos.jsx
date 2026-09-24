@@ -93,3 +93,16 @@ export const SocialLogos = (p) => (
     </g>
   </svg>
 )
+
+// Jira and Confluence read with the same Atlassian account and share one
+// home card when both are set up; the same half-and-half layout as above.
+export const AtlassianLogos = (p) => (
+  <svg {...frame} {...p}>
+    <g transform="scale(0.5)">
+      <path fill={JIRA_BLUE} d={JIRA_PATH} />
+    </g>
+    <g transform="translate(12 12) scale(0.5)">
+      <path fill={CONFLUENCE_BLUE} d={CONFLUENCE_PATH} />
+    </g>
+  </svg>
+)
