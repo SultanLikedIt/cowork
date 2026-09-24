@@ -7,7 +7,7 @@ executing. That distinction is what keeps this catalog from becoming a
 second, parallel set of agents:
 
   * Nothing here means "do research" or "write a document" -- those are
-    already fixed workers (camel_service.WORKER_ROLES), and a skill that
+    already fixed workers (the Workforce roles), and a skill that
     only renamed one would be a worse way to reach the same agent.
   * Every entry has to make sense applied to a Research Agent, a Document
     Agent, a dynamic worker, AND a single direct agent. If guidance only
@@ -21,13 +21,11 @@ next steps, comparison layout, regulatory flags). They are product-owned and rea
 v1: users select from this list, they cannot author instructions, so no
 user-supplied text ever reaches a system prompt through this path.
 
-This module is deliberately CAMEL-free (same rule as capability_routing.py)
-so main.py and camel_service.py can both import it.
-
 ORCHESTRATION BOUNDARY -- skills are strictly downstream of routing.
 Nothing in this module is read by the router, the planner, the coordinator,
-the recovery policy, or tool selection. See camel_service for where the
-rendered guidance is actually attached, and test_skills.py for the
+the recovery policy, or tool selection. The rendered guidance is attached to
+the answering prompts in execution/langgraph_runtime (single.py and
+workforce.py); see test_skills.py for the
 regression tests that hold that boundary in place.
 """
 

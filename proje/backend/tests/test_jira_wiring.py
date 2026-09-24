@@ -66,13 +66,6 @@ def test_an_unconfigured_jira_is_reported_through_the_missing_channel() -> None:
     assert "missing.append((JIRA_READ" in source
 
 
-def test_the_camel_path_drops_the_kwarg_instead_of_crashing() -> None:
-    from execution import adapter
-
-    source = inspect.getsource(adapter.run_workforce_in_thread)
-    assert 'kwargs.pop("reads_jira", None)' in source
-
-
 def test_routing_grants_jira_on_configuration_not_on_reachability() -> None:
     import main
 

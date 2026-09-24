@@ -6,6 +6,7 @@ This module is not a replacement for strategy selection.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -602,11 +603,9 @@ async def classify_artifact_intent(
     if existing is not None:
         return existing
 
-    from camel.agents import ChatAgent
-    from camel.messages import BaseMessage
-    from model_config import get_model
+    from execution.langgraph_runtime import openai_chat
 
-    names = [str(n).strip() for n in (attachment_names or []) if str(n).strip()]
+    names =[str(n).strip() for n in (attachment_names or []) if str(n).strip()]
     attached_line = (
         "ATTACHED FILES: " + ", ".join(names[:10])
         if names
@@ -627,31 +626,23 @@ async def classify_artifact_intent(
     prompt = f"{attached_line}\n{library_line}\nREQUEST: {topic}"
 
     async def attempt() -> Optional[ArtifactIntentResult]:
-        agent = ChatAgent(
-            system_message=BaseMessage.make_assistant_message(
-                role_name="Artifact intent",
-                content=INTENT_SYSTEM_PROMPT,
-            ),
-            model=get_model(
-                tracker,
+        reply = await asyncio.wait_for(
+            openai_chat.complete_chat(
+                [
+                    {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                tracker=tracker,
                 stage="artifact_intent",
-                temperature=0,
                 max_tokens=INTENT_MAX_TOKENS,
+                temperature=0,
+                response_format=ArtifactIntentResult,
             ),
-            max_iteration=1,
-            retry_attempts=1,
-            step_timeout=INTENT_TIMEOUT_SECONDS,
+            timeout=INTENT_TIMEOUT_SECONDS,
         )
-        response = await agent.astep(prompt, response_format=ArtifactIntentResult)
-        parsed = response.msg.parsed if response.msg else None
-        if isinstance(parsed, ArtifactIntentResult):
-            return parsed
-        if isinstance(parsed, dict):
-            try:
-                return ArtifactIntentResult.model_validate(parsed)
-            except ValidationError:
-                return None
-        return _recover_intent(response.msg.content if response.msg else None)
+        if isinstance(reply, ArtifactIntentResult):
+            return reply
+        return _recover_intent(reply)
 
     # A second attempt before the regex fallback. The usual failure is not
     # the request but the upstream provider (a timeout, or a reply with no

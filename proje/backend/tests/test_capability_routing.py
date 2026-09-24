@@ -28,7 +28,7 @@ try:
 except (AttributeError, ValueError):
     pass
 
-import camel_service
+from execution.langgraph_runtime import openai_chat
 import capabilities
 import capability_routing
 from capabilities import (
@@ -132,13 +132,10 @@ def test_production_routing_makes_no_model_call() -> None:
     """UI-selected strategy never constructs a routing agent."""
     import main
 
-    class _Exploding:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("routing must not construct an agent")
+    async def _exploding(*args, **kwargs):
+        raise AssertionError("routing must not call a model")
 
-    with patch.object(camel_service, "ChatAgent", _Exploding), patch.object(
-        camel_service, "get_model", lambda *a, **k: None
-    ):
+    with patch.object(openai_chat, "complete_chat", _exploding):
         topic = "Go to https://example.com/t and give me an Excel file"
         single = main._routing_for_ui_mode(
             "single", topic, has_workspace_files=False, workspace_file_kinds=[]
@@ -689,7 +686,7 @@ def test_unsupported_capability_is_reported_not_attempted() -> None:
         WEB_SEARCH in decision.capabilities,
         sorted(decision.capabilities),
     )
-    message = camel_service.unsupported_capability_message(["video_render"])
+    message = capabilities.unsupported_capability_message(["video_render"])
     check(
         "the unsupported message names the missing capability",
         "video_render" in message,
@@ -764,14 +761,6 @@ def test_survey_questions_still_need_the_web() -> None:
 # ---------------------------------------------------------------------------
 # 6. Retired router lock-ins
 # ---------------------------------------------------------------------------
-
-
-def test_routing_call_is_bounded() -> None:
-    check(
-        "the execution router is gone",
-        not hasattr(camel_service, "route_request")
-        and not hasattr(camel_service, "ROUTING_TIMEOUT_SECONDS"),
-    )
 
 
 def test_json_recovery_from_unparsed_content() -> None:
@@ -938,159 +927,6 @@ def test_literal_url_request_is_unaffected() -> None:
         "a literal-URL job is still satisfiable even if the router says nothing",
         decision.can_satisfy({WEB_FETCH}),
         sorted(decision.capabilities),
-    )
-
-
-def test_search_quota_exhaustion_does_not_remove_fetch() -> None:
-    """Example 6: search's own per-agent call budget and web_read's tool
-    binding are two independent mechanisms. Exhausting the search budget
-    must not remove or disable the fetch tools that were bound alongside it
-    -- they are a different capability with a different, separate budget
-    (web_tools.MAX_WEB_READS_PER_JOB), not gated by search's call count.
-    """
-    workspace_root = tempfile.mkdtemp(prefix="search_fetch_budget_test_")
-
-    def _stub_search(*args, **kwargs):
-        # No network in this test -- only the budget wrapper's own
-        # bookkeeping is under test, not a real search provider.
-        return [{"result_id": 1, "title": "stub", "description": "", "url": "https://example.com/x"}]
-
-    with patch.object(camel_service, "search_web", _stub_search):
-        budgeted = camel_service._budgeted_search_tool()
-        context = capabilities.ToolContext(
-            workspace_root=workspace_root,
-            search_tool_factory=lambda: budgeted,
-        )
-        bound = capabilities.resolve_tools({WEB_SEARCH}, context)
-
-        tool_names = set(bound.names)
-        check(
-            "one WEB_SEARCH capability binds the whole acquisition pipeline",
-            tool_names == {"web_search", "web_read", "transform_table"},
-            sorted(tool_names),
-        )
-
-        # Exhaust the search budget. DISTINCT queries on purpose: an
-        # identical repeated query is served from the memo cache and never
-        # reaches the budget check at all (asserted separately below).
-        for i in range(camel_service.MAX_INTERNAL_DISCOVERY_SEARCHES):
-            budgeted(f"query-{i}")
-        exhausted = budgeted("a brand new query")
-        check(
-            "the search budget is actually exhausted after its call limit",
-            exhausted.get("search_budget_exhausted") is True,
-            str(exhausted),
-        )
-
-        # The fetch tools are separate objects with no dependency on the
-        # search wrapper's internal call_count -- still present, still the
-        # same bound methods, unaffected by search's exhaustion.
-        still_bound = set(bound.names)
-        check(
-            "the acquisition tool remains bound after the search budget is exhausted",
-            still_bound == {"web_search", "web_read", "transform_table"},
-            sorted(still_bound),
-        )
-
-        # An already-answered query is still answered from cache even now,
-        # rather than being told the budget is gone -- it costs nothing.
-        repeat = budgeted("query-0")
-        check(
-            "an identical repeated query is served from cache, not refused",
-            isinstance(repeat, list) and repeat and repeat[0]["title"] == "stub",
-            str(repeat)[:160],
-        )
-
-
-def test_identical_search_does_no_duplicate_real_work() -> None:
-    """The same query twice must hit the network once and charge the budget
-    once -- CAMEL's streaming path can dispatch one logical call twice, and
-    re-running a search returns the same links anyway."""
-    executions: list = []
-
-    def _stub_search(query, *args, **kwargs):
-        executions.append(query)
-        return [{"result_id": 1, "title": "stub", "description": "", "url": "https://example.com/x"}]
-
-    with patch.object(camel_service, "search_web", _stub_search):
-        budgeted = camel_service._budgeted_search_tool()
-        first = budgeted("same query")
-        second = budgeted("same query")
-
-    check(
-        "an identical search query executes real search work only once",
-        len(executions) == 1,
-        str(executions),
-    )
-    check(
-        "the memoized repeat returns the same results",
-        first == second,
-        f"{first} vs {second}",
-    )
-
-    # ...and the budget was only charged once, so a duplicate dispatch does
-    # not eat an agent's whole search allowance.
-    with patch.object(camel_service, "search_web", _stub_search):
-        executions.clear()
-        budgeted = camel_service._budgeted_search_tool()
-        for _ in range(camel_service.MAX_INTERNAL_DISCOVERY_SEARCHES + 2):
-            budgeted("one query")
-        fresh = budgeted("a different query")
-    check(
-        "duplicate identical dispatches do not consume the search budget",
-        isinstance(fresh, list) and len(executions) == 2,
-        f"executions={executions} fresh={str(fresh)[:120]}",
-    )
-
-
-def test_search_is_logged_exactly_once_per_real_call() -> None:
-    """Regression: search_web was wrapped by logged_tool twice -- once inside
-    _budgeted_search_tool (so only real network calls are recorded) and again
-    by resolve_tools -- so every real search produced two identical records
-    and all search telemetry read double."""
-    from tool_call_log import ToolCallRecorder
-
-    recorder = ToolCallRecorder(job_id="test")
-
-    def _stub_search(*args, **kwargs):
-        return []
-
-    with patch.object(camel_service, "search_web", _stub_search):
-        context = capabilities.ToolContext(
-            tool_call_recorder=recorder,
-            search_tool_factory=lambda: camel_service._budgeted_search_tool(recorder),
-        )
-        bound = capabilities.resolve_tools({WEB_SEARCH}, context)
-        search_tool = next(
-            tool for tool, name in zip(bound.tools, bound.names)
-            if name == "web_search"
-        )
-        search_tool(query="a query")
-
-    records = recorder.snapshot()
-    names = [call["tool_name"] for call in records]
-    # One real operation is recorded, not one operation twice: the
-    # model-facing web_search call itself dispatches the search directly now
-    # (no separate internal search step to double-record), so the regression
-    # this guards -- one real network call producing two log entries -- would
-    # show up as len(records) == 2 for a single web_search call.
-    check(
-        "a real search is recorded exactly once, not twice",
-        len(records) == 1 and names == ["web_search"],
-        f"{len(records)} records: {names}",
-    )
-
-    # The pre-existing property this double-wrap fix must not break: a
-    # budget-exhausted stub does no network work and is never recorded.
-    with patch.object(camel_service, "search_web", _stub_search):
-        recorder2 = ToolCallRecorder(job_id="test2")
-        budgeted = camel_service._budgeted_search_tool(recorder2)
-        for i in range(camel_service.MAX_INTERNAL_DISCOVERY_SEARCHES + 2):
-            budgeted(f"q{i}")
-    check(
-        "over-budget search stubs are still not recorded as real calls",
-        len(recorder2.snapshot()) == camel_service.MAX_INTERNAL_DISCOVERY_SEARCHES,
-        str(len(recorder2.snapshot())),
     )
 
 
@@ -1470,7 +1306,6 @@ def main() -> None:
     test_empty_topic()
     test_survey_questions_still_need_the_web()
     test_prompt_carries_only_topic_and_file_flag()
-    test_routing_call_is_bounded()
     test_json_recovery_from_unparsed_content()
     test_prompt_semantics_lock_in()
     test_capability_expansion_rules()
@@ -1478,9 +1313,6 @@ def main() -> None:
     test_search_plus_artifact_request_stays_orthogonal()
     test_search_plus_api_request_resolves_independently()
     test_literal_url_request_is_unaffected()
-    test_search_quota_exhaustion_does_not_remove_fetch()
-    test_identical_search_does_no_duplicate_real_work()
-    test_search_is_logged_exactly_once_per_real_call()
     test_no_progress_guard_stops_repeated_identical_failures()
     test_no_progress_guard_allows_recovery_and_distinct_calls()
     test_named_web_source_without_a_url_gets_web_capabilities()

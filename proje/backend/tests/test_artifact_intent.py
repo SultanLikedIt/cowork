@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import artifact_intent
 import capabilities
+from execution.langgraph_runtime import openai_chat
 from model_config import UsageTracker
 
 failures: list[str] = []
@@ -19,38 +20,27 @@ def check(name: str, ok: bool, detail: object = "") -> None:
         raise AssertionError(f"{name} -- {detail}")
 
 
-class _Msg:
-    def __init__(self, parsed=None, content=""):
-        self.parsed = parsed
-        self.content = content
+class _Scripted:
+    """Stands in for openai_chat.complete_chat: a parsed model, raw text, or an error."""
 
-
-class _Response:
-    def __init__(self, parsed=None, content=""):
-        self.msg = _Msg(parsed, content)
-
-
-class _ScriptedAgent:
     parsed = None
     content = ""
     error = None
 
-    def __init__(self, *args, **kwargs):
-        self.kwargs = kwargs
-
-    async def astep(self, prompt, response_format=None):
-        if _ScriptedAgent.error is not None:
-            raise _ScriptedAgent.error
-        return _Response(_ScriptedAgent.parsed, _ScriptedAgent.content)
+    @staticmethod
+    async def complete_chat(messages, **kwargs):
+        if _Scripted.error is not None:
+            raise _Scripted.error
+        if _Scripted.parsed is not None:
+            return _Scripted.parsed
+        return _Scripted.content
 
 
 def _classify(topic: str, parsed=None, content="", error=None, persisted=None):
-    _ScriptedAgent.parsed = parsed
-    _ScriptedAgent.content = content
-    _ScriptedAgent.error = error
-    with patch.object(artifact_intent, "ChatAgent", _ScriptedAgent, create=True), patch(
-        "camel.agents.ChatAgent", _ScriptedAgent
-    ), patch("model_config.get_model", lambda *a, **k: None):
+    _Scripted.parsed = parsed
+    _Scripted.content = content
+    _Scripted.error = error
+    with patch.object(openai_chat, "complete_chat", _Scripted.complete_chat):
         return asyncio.run(
             artifact_intent.classify_artifact_intent(
                 topic, UsageTracker(), persisted=persisted
@@ -198,23 +188,6 @@ def test_research_plus_file_sets_web_and_artifact() -> None:
         capabilities.WEB_SEARCH in effective and capabilities.ARTIFACTS in effective,
         sorted(effective),
     )
-    streams = __import__("workforce_plan").expand_plan_for_coverage(
-        topic,
-        __import__("workforce_plan").fallback_plan(topic, effective),
-        effective,
-        max_subtasks=4,
-    )
-    research = [
-        s
-        for s in streams
-        if s.capabilities & {capabilities.WEB_SEARCH, capabilities.WEB_FETCH}
-    ]
-    artifact = [
-        s for s in streams if capabilities.ARTIFACTS in s.capabilities
-    ]
-    check("plan has research stream", len(research) == 1, len(research))
-    check("plan has artifact stream", len(artifact) == 1, len(artifact))
-    check("artifact depends on research", artifact[0].depends_on == (0,))
 
 
 def test_llm_none_on_excel_analyze_is_kept() -> None:
@@ -284,7 +257,7 @@ if __name__ == "__main__":
     main()
 
 
-class _FlakyAgent:
+class _Flaky:
     """Fails (or answers with no JSON) until ``fail_times`` calls are used up."""
 
     calls = 0
@@ -292,45 +265,41 @@ class _FlakyAgent:
     failure: object = TimeoutError("step timed out")
     parsed = None
 
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def astep(self, prompt, response_format=None):
-        _FlakyAgent.calls += 1
-        if _FlakyAgent.calls <= _FlakyAgent.fail_times:
-            if isinstance(_FlakyAgent.failure, BaseException):
-                raise _FlakyAgent.failure
-            return _Response(None, "no json here")
-        return _Response(_FlakyAgent.parsed, "")
+    @staticmethod
+    async def complete_chat(messages, **kwargs):
+        _Flaky.calls += 1
+        if _Flaky.calls <= _Flaky.fail_times:
+            if isinstance(_Flaky.failure, BaseException):
+                raise _Flaky.failure
+            return "no json here"
+        return _Flaky.parsed
 
 
 def _classify_flaky(topic: str, *, fail_times: int, failure=TimeoutError("t/o")):
-    _FlakyAgent.calls = 0
-    _FlakyAgent.fail_times = fail_times
-    _FlakyAgent.failure = failure
-    _FlakyAgent.parsed = artifact_intent.ArtifactIntentResult(
+    _Flaky.calls = 0
+    _Flaky.fail_times = fail_times
+    _Flaky.failure = failure
+    _Flaky.parsed = artifact_intent.ArtifactIntentResult(
         wants_artifact=True, artifact_type="xlsx", needs_code_execution=True
     )
-    with patch("camel.agents.ChatAgent", _FlakyAgent), patch(
-        "model_config.get_model", lambda *a, **k: None
-    ):
+    with patch.object(openai_chat, "complete_chat", _Flaky.complete_chat):
         return asyncio.run(artifact_intent.classify_artifact_intent(topic, UsageTracker()))
 
 
 def test_a_timed_out_classifier_is_retried_before_the_fallback() -> None:
     intent = _classify_flaky("faiz tablosu excel", fail_times=1)
-    assert _FlakyAgent.calls == 2
+    assert _Flaky.calls == 2
     assert intent.source == "llm" and intent.needs_code_execution is True
 
 
 def test_a_reply_without_json_is_retried_too() -> None:
     intent = _classify_flaky("faiz tablosu excel", fail_times=1, failure=None)
-    assert _FlakyAgent.calls == 2 and intent.source == "llm"
+    assert _Flaky.calls == 2 and intent.source == "llm"
 
 
 def test_two_failures_reach_the_regex_fallback() -> None:
     intent = _classify_flaky("faiz tablosu excel", fail_times=2)
-    assert _FlakyAgent.calls == artifact_intent.INTENT_ATTEMPTS == 2
+    assert _Flaky.calls == artifact_intent.INTENT_ATTEMPTS == 2
     assert intent.source == "regex_fallback"
 
 

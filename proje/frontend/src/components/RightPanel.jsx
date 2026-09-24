@@ -5,7 +5,6 @@ import {
   ChevronDown,
   FileText,
   Loader2,
-  Plus,
   Wrench,
   X,
 } from 'lucide-react'
@@ -403,7 +402,6 @@ export default function RightPanel({
   mode = 'single',
   workers = [],
   workersState = 'ready',
-  onAddAgent,
   open = true,
   onClose,
 }) {
@@ -521,25 +519,7 @@ export default function RightPanel({
                 )}
               </Section>
 
-              <Section
-                label="Agents"
-                count={pool.length}
-                action={
-                  !isSingle && onAddAgent ? (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="xs"
-                      onClick={onAddAgent}
-                      aria-label="Add a new agent"
-                      className="-my-1 gap-1"
-                    >
-                      <Plus className="h-3 w-3" aria-hidden="true" />
-                      Add
-                    </Button>
-                  ) : null
-                }
-              >
+              <Section label="Agents" count={pool.length}>
                 {pool.length > 0 ? (
                   <ul className="flex flex-col gap-1.5">
                     {pool.map((worker) => {

@@ -1,7 +1,7 @@
-"""LangGraph Single / Direct path — streamed chatbot, no tools.
+"""LangGraph Single path — streamed chatbot, no tools.
 
-Parity target: ``execution.direct.run_single_agent`` event sequence and
-result shape for ``main._run_job``.
+Emits the lifecycle events and returns the result shape ``main._run_job``
+expects (execution/result.py).
 """
 
 from __future__ import annotations
@@ -28,7 +28,8 @@ stabilization_logger = logging.getLogger("agent_webapp.stabilization")
 
 SINGLE_AGENT_WORKER_ID = "single-agent"
 
-# Keep display names aligned with execution.direct.EXECUTION_PROFILES.
+# Display names match the Workforce roles so the UI and job history read the
+# same labels.
 _PROFILES: dict[str, tuple[str, str]] = {
     capability_routing.PROFILE_GENERAL: (
         "Assistant",

@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import patch
 
 import turn_resolution
+from execution.langgraph_runtime import openai_chat
 from model_config import UsageTracker
 
 failures: list[str] = []
@@ -18,43 +19,32 @@ def check(name: str, ok: bool, detail: object = "") -> None:
         raise AssertionError(f"{name} -- {detail}")
 
 
-class _Msg:
-    def __init__(self, parsed=None, content=""):
-        self.parsed = parsed
-        self.content = content
+class _Scripted:
+    """Stands in for openai_chat.complete_chat: a parsed model, raw text, or an error."""
 
-
-class _Response:
-    def __init__(self, parsed=None, content=""):
-        self.msg = _Msg(parsed, content)
-
-
-class _ScriptedAgent:
     parsed = None
     content = ""
     error = None
 
-    def __init__(self, *args, **kwargs):
-        self.kwargs = kwargs
-
-    async def astep(self, prompt, response_format=None):
-        if _ScriptedAgent.error is not None:
-            raise _ScriptedAgent.error
-        return _Response(_ScriptedAgent.parsed, _ScriptedAgent.content)
+    @staticmethod
+    async def complete_chat(messages, **kwargs):
+        if _Scripted.error is not None:
+            raise _Scripted.error
+        if _Scripted.parsed is not None:
+            return _Scripted.parsed
+        return _Scripted.content
 
 
 def _resolve(topic, parsed=None, content="", error=None, prior=None, catalog=None):
-    _ScriptedAgent.parsed = parsed
-    _ScriptedAgent.content = content
-    _ScriptedAgent.error = error
+    _Scripted.parsed = parsed
+    _Scripted.content = content
+    _Scripted.error = error
     prior = prior if prior is not None else [
         {"role": "user", "content": "Süper Lig puan durumu"},
         {"role": "assistant", "content": "Galatasaray, Fenerbahçe, Beşiktaş"},
     ]
     catalog = catalog if catalog is not None else []
-    with patch("camel.agents.ChatAgent", _ScriptedAgent), patch(
-        "model_config.get_model", lambda *a, **k: None
-    ):
+    with patch.object(openai_chat, "complete_chat", _Scripted.complete_chat):
         return asyncio.run(
             turn_resolution.resolve_turn(
                 topic,

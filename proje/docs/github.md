@@ -144,4 +144,3 @@ sınırdan düşmez.
 | "bulunamadı (özel, silinmiş ya da adı yanlış)" | Depo özel olabilir — bu faz yalnız herkese açık depoları okur |
 | Sağ panelde GitHub Agent yok | `GITHUB_ENABLED=false` ya da `GITHUB_API_URL` geçersiz; `/integrations/github/status`'a bakın |
 | Trend listesi github.com/trending ile birebir değil | Beklenen: trend sayfasının API'si yok, liste yaklaşık hesaplanır |
-| `AGENT_EXECUTOR=camel` iken GitHub Agent çalışmıyor | GitHub Agent yalnız LangGraph yolunda var. CAMEL yolunda github.com adresleri yine de web okuyucusu üzerinden API ile okunur |

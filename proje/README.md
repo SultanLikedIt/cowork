@@ -31,23 +31,11 @@ açar.
 Proje **19 Ağustos 2026**'da `bsaltalii/agent-webapp` reposundan alındı. O
 tarihte sistem tamamen **CAMEL-AI** (`camel-ai==0.2.80`) üzerine kuruluydu.
 
-**21 Ağustos 2026**'da LangGraph'a geçiş başladı ve geçiş **bilerek çift yollu**
-yapıldı: eski CAMEL kodu silinmedi, LangGraph yolu onun yanına kondu.
-`backend/execution/adapter.py` (41 satır) hangisinin çalışacağına karar verir:
-
-```env
-AGENT_EXECUTOR=langgraph   # guncel yol -- teslimde bunu kullan
-AGENT_EXECUTOR=camel       # eski CAMEL yolu, hala calisir
-```
-
-`backend/camel_service.py` (4.700+ satır) hâlâ repoda duruyor. İstersen tek
-satırlık env değişikliğiyle eski davranışa dönebilirsin — uygulamanın geri
-kalanı `camel_service`'i doğrudan çağırmaz, hep adapter üzerinden geçer.
-
-> ⚠️ **Kod default'u `camel`'dir**, `langgraph` değil — klasör adı ne olursa
-> olsun. `.env`'ye yazmazsan eski yol çalışır ve LangGraph'a özel özellikler
-> (yüklenen belgeyi şablon olarak kullanma, dosyayı bilgisayarda açma)
-> **sessizce kaybolur**; hata vermez, sadece çalışmaz.
+**21 Ağustos 2026**'da LangGraph'a geçiş başladı; bir süre iki yol yan yana
+çalıştı (`AGENT_EXECUTOR` ile seçiliyordu). **24 Eylül 2026**'da CAMEL tamamen
+kaldırıldı: `camel_service.py`, `camel-ai` bağımlılığı ve `AGENT_EXECUTOR`
+anahtarı artık yok. Tek çalıştırıcı `backend/execution/langgraph_runtime/`.
+Geçiş notları: [docs/archive/langgraph-migration.md](docs/archive/langgraph-migration.md).
 
 ---
 
@@ -57,7 +45,7 @@ kalanı `camel_service`'i doğrudan çağırmaz, hep adapter üzerinden geçer.
 | --- | --- |
 | Arayüz | React 18 + Vite + Tailwind |
 | Sunucu | FastAPI + Python 3.11 |
-| Ajan çalıştırıcı | **LangGraph** (kod default'u: CAMEL 0.2.80) — `AGENT_EXECUTOR` ile seçilir |
+| Ajan çalıştırıcı | **LangGraph** |
 | Model | OpenAI uyumlu `/v1/chat/completions` (OpenRouter, Ollama, vLLM, şirket gateway'i…) |
 | Web araştırma | SearXNG + AgentSearch sidecar + Crawl4AI/Playwright Chromium |
 | Belge okuma | Docling (PDF, DOCX, PPTX, XLSX, HTML, görsel) + PaddleOCR-VL-1.6 OCR (taranmış PDF sayfası / görsel, GPU; yoksa Tesseract yedeği) + CSV / TXT / ZIP |
@@ -116,8 +104,8 @@ docker compose up --build
 | AgentSearch | http://127.0.0.1:3939 |
 | SearXNG | yayınlanmaz (Docker ağı içi) |
 
-> Host portları **bilerek** 8081/8001 — eski CAMEL yığını (8080/8000) ile yan yana
-> çalışabilsin diye. Container içinde backend hâlâ 8000 dinler.
+> Host portları **bilerek** 8081/8001 — 8080/8000'i kullanan başka bir yığınla
+> yan yana çalışabilsin diye. Container içinde backend hâlâ 8000 dinler.
 
 İlk deneme: workspace oluştur → Single ile "2+2 kaç" → Workforce'a geç →
 "İstanbul hakkında kısa bir PDF hazırla".
@@ -143,7 +131,6 @@ MODEL_API_KEY=...
 Sık kullanılanlar:
 
 ```env
-AGENT_EXECUTOR=langgraph        # boşsa camel'e düşer
 OUTLOOK_ENABLED=false           # zamanlanmış sonuçları Outlook'tan e-postala
 AGENT_SEARCH_ENABLED=true
 LOCAL_COMPUTER_ENABLED=false    # "bilgisayarımda aç" köprüsü
@@ -231,7 +218,7 @@ Tarayıcı `/api` öneki ekler; backend kökü dinler.
 | GET | `/jobs/{id}/artifacts/{path}` | Üretilen dosyayı indir |
 | POST | `/jobs/{id}/export/{fmt}` | Cevabı md/txt/docx/pdf yap |
 | POST | `/execute` | Kod bloğunu çalıştır |
-| GET/POST | `/workers` | İşçi havuzu + manuel agent |
+| GET | `/workers` | İşçi havuzu |
 | GET/POST/PATCH/DELETE | `/workspaces` | Workspace |
 | GET | `/skills` | Skill kataloğu |
 
@@ -258,9 +245,9 @@ geçmişini kirletmez. Ayrıntı: [HANDOVER.md § 10](HANDOVER.md#10-test-ve-gel
 
 ## Docker'sız geliştirme
 
-Backend host Python'da (uvicorn :8000), frontend Vite'de (:5173). `requirements.txt`
-tek geçişte kurulmaz — crawl4ai ile camel-ai arasında `psutil` pin çatışması var;
-adım adım kurulum sırası [HANDOVER.md § 9](HANDOVER.md#9-dockersız-yerel-geliştirme)'da.
+Backend host Python'da (uvicorn :8000), frontend Vite'de (:5173).
+`pip install -r requirements.txt`, ardından `playwright install chromium`;
+ayrıntı [HANDOVER.md § 9](HANDOVER.md#9-dockersız-yerel-geliştirme)'da.
 
 ---
 
@@ -283,7 +270,7 @@ Güncel açık listesi ve nerede düzeltileceği:
 | --- | --- |
 | [BASLANGIC.md](BASLANGIC.md) | **Başlangıç** — kurulum, günlük kullanım, özellikleri açma, sorun giderme |
 | [HANDOVER.md](HANDOVER.md) | **Tam rehber** — kurulum, mimari, kullanım, test, açıklar |
-| [docs/langgraph-migration.md](docs/langgraph-migration.md) | CAMEL ↔ LangGraph geçişi |
+| [docs/archive/langgraph-migration.md](docs/archive/langgraph-migration.md) | CAMEL → LangGraph geçişi (arşiv) |
 | [docs/web-execution.md](docs/web-execution.md) | Arama + sayfa açma |
 | [docs/document-ingestion.md](docs/document-ingestion.md) | Docling upload pipeline |
 | [docs/document-generation.md](docs/document-generation.md) | PDF/DOCX/PPTX üretimi |

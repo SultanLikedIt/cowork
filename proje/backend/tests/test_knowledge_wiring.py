@@ -82,17 +82,6 @@ def test_the_capability_guidance_frames_documents_as_evidence() -> None:
     assert "never invent" in text
 
 
-def test_the_camel_path_drops_the_kwargs_instead_of_crashing() -> None:
-    from execution import adapter
-
-    source = inspect.getsource(adapter.run_workforce_in_thread)
-    assert 'kwargs.pop("reads_documents", None)' in source
-    assert 'kwargs.pop("knowledge_files", None)' in source
-
-
-# -- routing ------------------------------------------------------------------------
-
-
 def test_routing_grants_documents_only_when_there_are_some() -> None:
     import main
 

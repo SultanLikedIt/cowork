@@ -25,25 +25,18 @@ from unittest.mock import patch
 if os.environ.get("PYTEST_USE_REAL_DATA_DIR") != "1":
     os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="turn_resolution_pipe_")
 
-import camel_service  # noqa: E402
 import capability_routing  # noqa: E402
 import db  # noqa: E402
 import main  # noqa: E402
 import turn_resolution  # noqa: E402
-from camel.tasks.task import Task, TaskState  # noqa: E402
+from execution.result import execution_result  # noqa: E402
 
 failures: list[str] = []
 
 
-# main binds the execution facade at import time, so these tests patch
-# main.run_single_agent_executor / main.run_workforce_in_thread_executor
-# rather than camel_service directly. Patching camel_service made the tests
-# quietly executor-dependent: with AGENT_EXECUTOR=langgraph -- the setting the
-# app actually ships with -- the adapter routes past camel_service, the fake
-# never ran, and the assertions failed on an empty `seen` dict. What these
-# tests measure (does a follow-up go Direct instead of starting Workforce)
-# is a routing decision made before either executor is chosen, so the seam
-# they hold has to be the one main really calls.
+# main binds the executors at import time, so these tests patch
+# main.run_single_agent_executor / main.run_workforce_in_thread_executor --
+# the seam main really calls.
 
 
 def check(name: str, ok: bool, detail: object = "") -> None:
@@ -101,12 +94,7 @@ async def _fake_run_single_agent(
         "request_topic": request_topic,
         "tool_binding_source": tool_binding_source,
     }
-    return Task(
-        content=content,
-        id=task_id,
-        state=TaskState.DONE,
-        result="mocked follow-up",
-    )
+    return execution_result(task_id=task_id, content=content, result="mocked follow-up")
 
 
 def _fake_workforce(*args, **kwargs):
@@ -117,17 +105,11 @@ def _fake_workforce(*args, **kwargs):
     if original is None and len(args) >= 11:
         original = args[10]
     _fake_workforce.original_request = original
-    return Task(
+    return execution_result(
+        task_id=args[4] if len(args) > 4 else "t",
         content=args[3] if len(args) > 3 else "",
-        id=args[4] if len(args) > 4 else "t",
-        state=TaskState.DONE,
         result="mocked workforce",
     )
-
-
-async def _fake_synth(task, topic, tracker, **kwargs):
-    _fake_synth.topic = topic
-    return task.result, False
 
 
 async def _fake_replay(text, task_id, queue):
@@ -179,9 +161,7 @@ def test_first_turn_persists_bag_and_annotates() -> None:
         with patch.object(
             main, "run_workforce_in_thread_executor", _fake_workforce
         ), patch.object(
-            camel_service, "synthesize_workforce_result", _fake_synth
-        ), patch.object(
-            camel_service, "replay_final_answer_as_stream", _fake_replay
+            main, "replay_final_answer_as_stream", _fake_replay
         ), patch.object(
             main.artifact_intent, "classify_artifact_intent", _fake_intent
         ), patch.object(
@@ -350,9 +330,7 @@ def test_rebind_from_bag_keeps_workforce() -> None:
         ), patch.object(
             main, "run_workforce_in_thread_executor", _fake_workforce
         ), patch.object(
-            camel_service, "synthesize_workforce_result", _fake_synth
-        ), patch.object(
-            camel_service, "replay_final_answer_as_stream", _fake_replay
+            main, "replay_final_answer_as_stream", _fake_replay
         ), patch.object(
             main.artifact_intent, "classify_artifact_intent", _fake_intent
         ):
@@ -376,7 +354,6 @@ def test_rebind_from_bag_keeps_workforce() -> None:
         _fake_workforce.original_request == resolved,
         _fake_workforce.original_request,
     )
-    check("synthesis saw resolved request", _fake_synth.topic == resolved, _fake_synth.topic)
     check("raw topic unchanged", job["topic"] == "öncekiyle karşılaştır")
 
 

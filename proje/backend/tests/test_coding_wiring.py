@@ -85,8 +85,6 @@ def test_the_code_really_runs_and_its_output_is_shown(tmp_path, monkeypatch) -> 
     assert "TOPLAM 35" in text
     assert "`ozet.csv`" in text
     assert (root / "artifacts" / "ozet.csv").read_text(encoding="utf-8").startswith("bolge,satis")
-    # main skips its restating synthesis for this answer.
-    assert result.verbatim is True
 
 
 def test_a_crash_is_fixed_from_the_real_traceback(tmp_path, monkeypatch) -> None:
@@ -167,7 +165,6 @@ def test_a_file_the_program_wrote_is_not_rewritten_by_document(tmp_path, monkeyp
     )
     assert sorted(p.name for p in (root / "artifacts").iterdir()) == ["faiz.xlsx"]
     assert result.result.startswith("Tablo faiz.xlsx dosyasında.")
-    assert result.verbatim is True
 
 
 def test_document_still_runs_when_the_program_wrote_another_format(tmp_path) -> None:
@@ -229,13 +226,6 @@ def test_present_answer_shields_code_fences() -> None:
     presented = workforce._present_workforce_answer(text)
     assert "print('cannot create file')" in presented
     assert "Kaynaklar" not in presented
-
-
-def test_main_skips_synthesis_for_verbatim_results() -> None:
-    import main
-
-    source = inspect.getsource(main._run_job)
-    assert 'getattr(result_task, "verbatim", False)' in source
 
 
 def test_the_timing_panel_names_the_coding_steps() -> None:

@@ -27,7 +27,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import artifacts as artifacts_module
-import camel_service
 import capabilities
 import golden_prompts
 import web_fetch
@@ -717,34 +716,8 @@ def test_no_runaway_on_the_xlsx_case() -> None:
 
     A capable executor converts a spreadsheet in one call. The failure mode
     was an incapable one paging rows forever, so this asserts the budgets that
-    make that impossible: the DIRECT iteration budget is proportional to the
-    capabilities actually needed, and both expensive tools have per-run caps.
+    make that impossible: both expensive tools have per-run caps.
     """
-    entry = golden_prompts.by_id("mentor.xlsx-to-searchable-web")
-    decision = _route_golden(entry)
-
-    budget = camel_service._direct_iteration_budget(decision.capabilities)
-    check(
-        "runaway: the DIRECT iteration budget is bounded",
-        budget <= camel_service._DIRECT_MAX_ITERATIONS,
-        str(budget),
-    )
-    check(
-        "runaway: the budget is large enough for the real chain",
-        budget >= 6,
-        str(budget),
-    )
-
-    summary = golden_prompts.by_id("baseline.pdf-summary")
-    summary_budget = camel_service._direct_iteration_budget(
-        _route_golden(summary).capabilities
-    )
-    check(
-        "runaway: a simple summary gets a strictly tighter budget",
-        summary_budget < budget,
-        f"summary={summary_budget} transform={budget}",
-    )
-
     import code_exec
 
     check(

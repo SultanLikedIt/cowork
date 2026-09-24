@@ -8,7 +8,7 @@ clear, non-retryable message whenever a file has no readable representation.
 
 Exercises the real workspace.py: build_job_workspace (the same function
 main.py's upload path calls) followed by ReadOnlyWorkspaceTools (the same
-class camel_service.py wires into every worker). No model, no network, no
+class capabilities.resolve_tools binds for every worker). No model, no network, no
 FastAPI app import -- upload records are constructed directly, exactly in
 the shape main.py produces them (file_id/filename/path/extracted_text/kind).
 
@@ -655,7 +655,7 @@ def test_workforce_wiring_unaffected() -> None:
     """The new tools are additive to the existing workspace_tools seam --
     Workforce/routing/assignment code is untouched. Cheap smoke check that
     the tool list is still a plain list of bound callables usable exactly
-    where camel_service.py wires workspace_tools in (no signature/shape
+    where capabilities.resolve_tools binds workspace tools (no signature/shape
     change that would ripple into worker construction)."""
     csv_rec = _csv_record("x.csv", [{"a": 1}])
     info, context, root = _build([csv_rec])

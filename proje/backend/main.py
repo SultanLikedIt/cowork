@@ -1,4 +1,4 @@
-"""FastAPI boundary: HTTP + SSE only. No CAMEL imports here.
+"""FastAPI boundary: HTTP + SSE only.
 
 Endpoints:
   POST /upload, /uploads   - file upload + text extraction (unchanged logic)
@@ -7,7 +7,7 @@ Endpoints:
   GET  /jobs/{id}/events    - Server-Sent Events stream of live job snapshots
   POST /jobs/{id}/cancel    - cooperative cancellation
   POST /jobs/{id}/export/{docx|pdf} - final answer as a downloadable file
-  GET  /workers, POST /workers - list / manually add session-scoped agents
+  GET  /workers             - the Workforce roster this deployment can schedule
 """
 
 from __future__ import annotations
@@ -35,15 +35,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Windows consoles default to a codepage (e.g. cp1254 for Turkish locale)
-# that can't encode most emoji/symbols. CAMEL's own workforce.py prints
-# status markers like the U+274C X mark directly (see
-# Workforce._handle_failed_task), and this crashes with UnicodeEncodeError
-# uncaught inside the background task -- which then leaves the job's
-# asyncio.Queue never drained, so it looks like an indefinite hang (main.py
-# only learns about it via Workforce's own 600s "Timeout waiting for task
-# return" warning) rather than a clean, visible failure. This has to be
-# set before any of that code runs, so it's here at the top of the actual
-# process entrypoint rather than in camel_service.py.
+# that can't encode most emoji/symbols; a log line or print carrying one
+# would raise UnicodeEncodeError inside a background task. Set before
+# anything else runs, here at the process entrypoint.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -52,7 +46,6 @@ for _stream in (sys.stdout, sys.stderr):
 
 import artifacts as artifacts_module
 import artifact_intent
-import camel_service
 import capabilities
 import capability_routing
 import db
@@ -68,11 +61,12 @@ import knowledge_api
 import knowledge_index
 import social_api
 from social import health as social_health
-from execution.adapter import (
+from execution.langgraph_runtime.single import (
     run_single_agent as run_single_agent_executor,
+)
+from execution.langgraph_runtime.workforce import (
     run_workforce_in_thread as run_workforce_in_thread_executor,
 )
-from execution.executor_config import agent_executor
 from model_config import UsageTracker
 import skills as skills_catalog
 from scheduling import config as scheduling_config
@@ -83,6 +77,10 @@ from scheduling.api import build_router as build_scheduling_router
 from scheduling.runner import Scheduler, SubmittedJob
 from tool_call_log import ToolCallRecorder
 import turn_resolution
+from workforce.answer_format import (
+    replay_final_answer_as_stream,
+    summarize_conversation_history,
+)
 from workforce.events import ActivityStage
 from workforce_callback import QueueWorkforceCallback
 from workspace import (
@@ -100,8 +98,8 @@ from workspace import (
 
 timing_logger = logging.getLogger("agent_webapp.timing")
 stabilization_logger = logging.getLogger("agent_webapp.stabilization")
-# CAMEL's own logging.basicConfig(level=WARNING) sets the root logger's
-# level, which would otherwise silently swallow these INFO-level records.
+# The root logger stays at WARNING, which would otherwise silently swallow
+# these INFO-level records.
 timing_logger.setLevel(logging.INFO)
 
 # DATA_DIR defaults to this file's own directory (bare-metal/local dev is
@@ -729,8 +727,7 @@ class UsageTelemetry(BaseModel):
     usage_available: bool = False
     total_duration_seconds: Optional[float] = None
     # Per-stage breakdown (planning/assignment/research/document/review/
-    # outline/quality/synthesis, plus dynamic_worker/manual_worker/
-    # single_agent where applicable) -- see UsageTracker.stage_snapshot().
+    # coding/answer, plus single_agent where applicable) -- see UsageTracker.stage_snapshot().
     # Empty for jobs run before this field existed (persisted rows just
     # don't have the key; model default fills it in as {}).
     # float, not int: the buckets carry token counts *and* duration_seconds,
@@ -738,10 +735,9 @@ class UsageTelemetry(BaseModel):
     by_stage: dict[str, dict[str, float]] = Field(default_factory=dict)
     # Every timed step (model calls, tool calls, reranking), oldest first -- see _timeline.
     timeline: list[dict[str, Any]] = Field(default_factory=list)
-    # Which execution strategy actually ran this job -- "direct" (single
-    # ChatAgent, no Workforce), "specialist" (one known fixed worker,
-    # decompose+assign skipped), or "workforce" (full CAMEL decompose +
-    # assign). Lives on `usage` (JSON blob, no migration needed to persist
+    # Which execution strategy actually ran this job -- "direct"/"single"
+    # (one agent, no Workforce), "specialist" (one known fixed worker), or
+    # "workforce". Lives on `usage` (JSON blob, no migration needed to persist
     # it) rather than as a top-level JobStatusResponse field -- see
     # db.save_job's explicit column list, which a new top-level job dict key
     # would silently not survive a restart through. `mode` is unchanged and
@@ -809,16 +805,6 @@ class UsageTelemetry(BaseModel):
     reads_documents: Optional[bool] = None
     # Classified once when a Single run finishes; see _suggests_workforce.
     suggests_workforce: Optional[bool] = None
-    planning_ms: Optional[int] = None
-    assignment_ms: Optional[int] = None
-    assignment_source: Optional[str] = None
-    planning_output_tokens: Optional[int] = None
-    subtask_count: Optional[int] = None
-    targets_planned: list[str] = Field(default_factory=list)
-    targets_covered: list[str] = Field(default_factory=list)
-    controller_search_count: Optional[int] = None
-    controller_fetch_count: Optional[int] = None
-    controller_by_target: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Turn-resolution output. `topic` on the job stays the raw user text;
     # executors (web controller, artifact intent, synthesis) read this.
     resolved_request: Optional[str] = None
@@ -858,7 +844,7 @@ class ActivityStatus(BaseModel):
 
 class ToolCallRecord(BaseModel):
     """One real tool invocation: what was actually sent and actually
-    returned, independent of CAMEL's task-level events or what the calling
+    returned, independent of the task-level events or what the calling
     agent's response text claims. See tool_call_log.py."""
 
     timestamp: str
@@ -918,7 +904,7 @@ class JobStatusResponse(BaseModel):
     # Real files this job produced, downloadable via
     # GET /jobs/{job_id}/artifacts/{path}.
     artifacts: list[ArtifactSummary] = Field(default_factory=list)
-    # Accumulates as "token_delta" events arrive (see camel_service.py) so
+    # Accumulates as "token_delta" events arrive so
     # the frontend can render the final answer as it's generated instead of
     # waiting for the job to reach a terminal status.
     streaming_text: str = ""
@@ -965,39 +951,47 @@ class ExportRequest(BaseModel):
     title: Optional[str] = None
 
 
-class AddWorkerRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
-
-
 class WorkerSummary(BaseModel):
     name: str
-    # The coordinator-facing sentence this agent is actually registered
-    # with -- synthesized from the name when the user left it blank.
     description: str
-    source: Literal["fixed", "manual"]
+    source: Literal["fixed"] = "fixed"
 
 
 class WorkerPoolResponse(BaseModel):
     workers: list[WorkerSummary] = Field(default_factory=list)
 
 
+# The workers every deployment has. The optional readers below are appended
+# only when _routing_for_workforce could actually schedule them.
+_CORE_WORKERS = (
+    (
+        "Research Agent",
+        "Searches the web, opens current sources and gathers verified "
+        "evidence for the answer or the file.",
+    ),
+    (
+        "Document Agent",
+        "Writes Word, PDF, PowerPoint, Excel and HTML files, and fills in "
+        "uploaded templates.",
+    ),
+    (
+        "Coding Agent",
+        "Writes and runs Python, fixes it when it fails, analyses uploaded "
+        "Excel/CSV data and draws charts.",
+    ),
+)
+
+
 def _worker_pool() -> WorkerPoolResponse:
     fixed = [
-        WorkerSummary(name=role_name, description=description, source="fixed")
-        for description, role_name, _ in camel_service.WORKER_ROLES
+        WorkerSummary(name=name, description=description, source="fixed")
+        for name, description in _CORE_WORKERS
     ]
     # Shown only when this deployment can actually read mail. The roster is
     # a promise to the user about who can work on their request, so listing
     # a Mail Agent on an install with OUTLOOK_READ_ENABLED off would be
     # advertising a worker that can never be scheduled (see
     # _routing_for_workforce, which withholds MAIL_READ for the same reason).
-    #
-    # Appended here rather than added to camel_service.WORKER_ROLES on
-    # purpose: that list is CAMEL's *assignment* roster -- its coordinator
-    # reads those descriptions to route subtasks -- and there is no mail
-    # worker on the CAMEL path at all. Putting it there would let the
-    # coordinator hand tasks to an agent that does not exist.
     if outlook.read_enabled():
         fixed.append(
             WorkerSummary(
@@ -1011,9 +1005,7 @@ def _worker_pool() -> WorkerPoolResponse:
             )
         )
     # The Social and Jira agents, on the same terms as the Mail Agent above:
-    # listed exactly when _routing_for_workforce could schedule them. Like
-    # mail, neither belongs in camel_service.WORKER_ROLES -- they exist only
-    # on the LangGraph path.
+    # listed exactly when _routing_for_workforce could schedule them.
     try:
         social_ready = social_health.check("reddit").ok
     except Exception:  # noqa: BLE001 - a broken probe hides the card, nothing more
@@ -1067,13 +1059,7 @@ def _worker_pool() -> WorkerPoolResponse:
                 source="fixed",
             )
         )
-    manual = [
-        WorkerSummary(
-            name=record["name"], description=record["description"], source="manual"
-        )
-        for record in camel_service.list_manual_workers()
-    ]
-    return WorkerPoolResponse(workers=fixed + manual)
+    return WorkerPoolResponse(workers=fixed)
 
 
 class _JobControl:
@@ -1111,7 +1097,7 @@ _TIMING: dict[str, dict[str, Any]] = {}  # job_id -> phase timestamps, for the l
 
 @app.on_event("startup")
 def _rehydrate_from_db() -> None:
-    """Bring jobs and manually-added agents back after a restart.
+    """Bring jobs back after a restart.
 
     Deliberately does NOT create a _JobControl for any rehydrated job --
     there is no live workforce/usage_tracker/tool_call_recorder to attach,
@@ -1131,8 +1117,6 @@ def _rehydrate_from_db() -> None:
         if root:
             job["workspace_root"] = root
         _JOBS[job["job_id"]] = job
-
-    camel_service.load_manual_workers(db.load_manual_workers())
 
 
 @app.on_event("startup")
@@ -1475,7 +1459,6 @@ def _job_snapshot(job_id: str) -> JobStatusResponse:
         "tool_calls_by_name": by_name,
         "artifact_count": len(job["artifacts"]),
         "terminal_reason": _terminal_reason(job, len(job["artifacts"])),
-        **camel_service.orchestration_telemetry(control.workforce),
     }
     job["tool_calls"] = tool_calls
     return JobStatusResponse(**job)
@@ -1594,15 +1577,7 @@ def _apply_event(job_id: str, event: dict[str, Any]) -> None:
     ts = _parse_ts(event.get("timestamp"))
 
     if event_type == "worker_created":
-        # event["role"] falls back to the worker's `description` (see
-        # camel_service.WORKER_DISPLAY_NAMES for why); translate our fixed
-        # workers' and any manually added agent's long coordinator-facing
-        # description back to a short display name. Workers CAMEL creates
-        # dynamically match neither map and keep their own (already short)
-        # coordinator-generated role.
-        worker_roles[event["worker_id"]] = camel_service.display_name_for(
-            event["role"]
-        )
+        worker_roles[event["worker_id"]] = event["role"]
 
     elif event_type == "task_created":
         task_id = event["task_id"]
@@ -1622,21 +1597,6 @@ def _apply_event(job_id: str, event: dict[str, Any]) -> None:
             timing["root_created"] = ts
         else:
             timing["tasks"][task_id] = {"created": ts, "attempts": []}
-
-    elif event_type == "task_decomposed":
-        timing["decomposed"] = ts
-        if timing.get("root_created"):
-            duration = (ts - timing["root_created"]).total_seconds()
-            timing_logger.info(
-                "[timing] job=%s phase=decomposition duration=%.2fs "
-                "subtasks=%d planning_ms=%s",
-                job_id,
-                duration,
-                len(event.get("subtask_ids") or []),
-                camel_service.orchestration_telemetry(
-                    _JOB_CONTROLS.get(job_id) and _JOB_CONTROLS[job_id].workforce
-                ).get("planning_ms"),
-            )
 
     elif event_type == "task_assigned":
         task_id = event["task_id"]
@@ -1677,16 +1637,8 @@ def _apply_event(job_id: str, event: dict[str, Any]) -> None:
                     job_id, task_id, duration,
                 )
         else:
-            # CAMEL's RETRY/REPLAN recovery reposts to the SAME worker with
-            # no fresh coordinator call when a prior assignee is on record
-            # (Workforce._apply_recovery_strategy: "no coordinator call
-            # needed") -- this gap is the previous attempt's execution +
-            # quality-check + recovery-decision time, not assignment/
-            # coordinator latency. Logging it under "assignment" (the old
-            # behavior) is exactly what made assignment duration look like
-            # it randomly varied 3s-55s: single-attempt tasks showed real,
-            # small coordinator latency, multi-attempt tasks showed the
-            # entire previous attempt folded in.
+            # A retry of the same task: this gap is the previous attempt's
+            # execution time, not assignment latency, so it is logged apart.
             previous = task_timing["attempts"][-2]
             prior_ref = previous.get("completed") or previous["started"]
             duration = (ts - prior_ref).total_seconds()
@@ -1765,7 +1717,7 @@ def _apply_event(job_id: str, event: dict[str, Any]) -> None:
 
 
 # Task-level DB writes happen only for these event types (one upsert per
-# transition), not on every raw CAMEL event -- worker_created/task_decomposed
+# transition), not on every raw event -- worker_created/activity
 # carry no per-task state and firing a write on every token/usage tick would
 # swamp the single write lock for no benefit.
 _TASK_EVENT_TYPES = {"task_created", "task_assigned", "task_started", "task_completed", "task_failed"}
@@ -1814,17 +1766,9 @@ async def _drain_events(job_id: str, queue: "asyncio.Queue[dict | None]") -> Non
 
 def _log_job_timing_summary(job_id: str, total_duration: float) -> None:
     timing = _TIMING[job_id]
-    decomposition = None
-    if timing.get("root_created") and timing.get("decomposed"):
-        decomposition = (timing["decomposed"] - timing["root_created"]).total_seconds()
-
-    # assignment_total is attempt-1 latency only (the only attempt CAMEL's
-    # coordinator is actually involved in -- see the task_started handler
-    # above); execution_total covers every attempt with a recorded
-    # completion. retry_gap_total (accumulated live, since a failed
-    # quality-check attempt has no "completed" timestamp of its own to
-    # recompute it from here) covers the execution+quality-check+recovery
-    # time of every attempt that got retried.
+    # assignment_total is attempt-1 latency only; execution_total covers every
+    # attempt with a recorded completion; retry_gap_total (accumulated live)
+    # covers the time between a failed attempt and its retry.
     assignment_total = 0.0
     execution_total = 0.0
     for task_id, task_timing in timing["tasks"].items():
@@ -1836,32 +1780,21 @@ def _log_job_timing_summary(job_id: str, total_duration: float) -> None:
                 execution_total += (attempt["completed"] - attempt["started"]).total_seconds()
     retry_gap_total = timing.get("retry_gap_total", 0.0)
 
-    accounted = (decomposition or 0.0) + assignment_total + execution_total + retry_gap_total
+    accounted = assignment_total + execution_total + retry_gap_total
     usage = _JOB_CONTROLS[job_id].usage_tracker.snapshot()
-    orch = camel_service.orchestration_telemetry(_JOB_CONTROLS[job_id].workforce)
     timing_logger.info(
-        "[timing] job=%s SUMMARY total=%.2fs decomposition=%s "
-        "planning_ms=%s assignment_ms=%s assignment_source=%s "
-        "assignment_sum=%.2fs execution_and_quality_check_sum=%.2fs "
+        "[timing] job=%s SUMMARY total=%.2fs "
+        "assignment_sum=%.2fs execution_sum=%.2fs "
         "retry_gap_sum=%.2fs other_overhead=%.2fs real_model_calls=%d "
-        "total_tokens=%d planning_output_tokens=%s subtasks=%s "
-        "targets_planned=%s targets_covered=%s",
+        "total_tokens=%d",
         job_id,
         total_duration,
-        f"{decomposition:.2f}s" if decomposition is not None else "n/a",
-        orch.get("planning_ms"),
-        orch.get("assignment_ms"),
-        orch.get("assignment_source"),
         assignment_total,
         execution_total,
         retry_gap_total,
         max(0.0, total_duration - accounted),
         usage["model_call_count"],
         usage["total_tokens"],
-        orch.get("planning_output_tokens"),
-        orch.get("subtask_count"),
-        orch.get("targets_planned") or [],
-        orch.get("targets_covered") or [],
     )
 
 
@@ -1876,14 +1809,13 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
     # start lets the frontend count the same interval the backend reports.
     job["started_at"] = time.time()
     job["status"] = "running"
-    is_partial = False
     await asyncio.to_thread(db.update_job_status, job_id, "running")
 
     queue: "asyncio.Queue[dict | None]" = asyncio.Queue()
     drain_task = asyncio.create_task(_drain_events(job_id, queue))
 
-    # Product mode is authoritative for new jobs: Single runs one ChatAgent;
-    # Workforce always runs CAMEL's orchestration. "direct"/"specialist" are
+    # Product mode is authoritative for new jobs: Single runs one chat agent;
+    # Workforce runs the LangGraph Workforce. "direct"/"specialist" are
     # accepted only so persisted jobs created by older versions can finish.
     execution_strategy = job["usage"].get("execution_strategy") or (
         "single" if mode == "single" else "workforce"
@@ -1924,7 +1856,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
         # is correct capability selection above.
         unsupported = job.get("unsupported_capabilities") or []
         if unsupported:
-            job["result"] = camel_service.unsupported_capability_message(unsupported)
+            job["result"] = capabilities.unsupported_capability_message(unsupported)
             job["status"] = "failed"
             job["error"] = (
                 "unsupported capability requested: " + ", ".join(sorted(unsupported))
@@ -1962,7 +1894,6 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["bound_tools"] = sorted(bound.names)
                 job["usage"]["tool_binding_source"] = source
 
-            job["usage"]["agent_executor"] = agent_executor()
             result_task = await run_single_agent_executor(
                 content,
                 control.usage_tracker,
@@ -2026,17 +1957,12 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     exc_info=True,
                 )
         else:
-            # SPECIALIST reuses the same Workforce build + dispatch loop as
-            # WORKFORCE -- only the decompose+assign calls are skipped (see
-            # camel_service._run_task_direct) when execution_strategy is
-            # "specialist", via fast_path_role below. Runs on its own
-            # thread with its own event loop, so CAMEL's internal
-            # synchronous coordinator calls (decomposition/assignment/
-            # quality-check -- see camel_service.run_workforce_in_thread for
-            # exact line refs) can never block *this* event loop, which
-            # every other request in the app shares. loop=asyncio.
-            # get_running_loop() lets the callback marshal events back here
-            # safely from that other thread.
+            # SPECIALIST runs the same Workforce with its role fixed up
+            # front (fast_path_role below). The Workforce runs on its own
+            # thread with its own event loop, so nothing it does can block
+            # *this* event loop, which every other request in the app
+            # shares. loop=asyncio.get_running_loop() lets the callback
+            # marshal events back here safely from that other thread.
             callback = QueueWorkforceCallback(queue, asyncio.get_running_loop())
             intent = artifact_intent.from_persisted(job.get("usage"))
             if intent is None:
@@ -2066,7 +1992,6 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 job["usage"]["email_unaddressed"] = intent.email_unaddressed
             wants_artifact = intent.wants_artifact
             artifact_type = intent.artifact_type
-            job["usage"]["agent_executor"] = agent_executor()
             result_task = await asyncio.to_thread(
                 run_workforce_in_thread_executor,
                 callback,
@@ -2098,38 +2023,12 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 knowledge_files=list(job.get("knowledge_files") or []),
             )
             if not control.cancelled:
-                if getattr(result_task, "verbatim", False):
-                    # The Coding Agent's reply: the code that ran and what it
-                    # really printed. Synthesis restates answers with a model
-                    # call, and a restated program output is a guessed one.
-                    synthesized, is_partial = "", False
-                else:
-                    synthesized, is_partial = await camel_service.synthesize_workforce_result(
-                        result_task,
-                        resolved_request,
-                        control.usage_tracker,
-                        skills=active_skills,
-                        job_capabilities=job_capabilities,
-                        workspace_root=job.get("workspace_root"),
-                    )
-                if synthesized:
-                    result_task.result = synthesized
-                else:
-                    # No synthesis to show: result_task.result is CAMEL's
-                    # raw subtask string-join, whose "--- Subtask <uuid>.N
-                    # Result ---" delimiters are internal scaffolding, not
-                    # part of the answer. Clean it here, before the replay,
-                    # so the streamed text and the stored/final text are
-                    # the same string rather than diverging at completion.
-                    result_task.result = camel_service.strip_subtask_scaffolding(
-                        result_task.result or ""
-                    )
                 # The canonical text is fixed as of here -- everything from
                 # this point on (the typing replay, then queue drain, then
                 # DB writes in `finally`) is presentation/persistence, not
                 # execution, so it must not inflate the reported duration.
                 result_ready_at = time.monotonic()
-                await camel_service.replay_final_answer_as_stream(
+                await replay_final_answer_as_stream(
                     result_task.result or "", job_id, queue
                 )
         job["result"] = result_task.result or ""
@@ -2146,8 +2045,6 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
         produced = _ensure_requested_pdf(job, produced)
         if control.cancelled:
             job["status"] = "cancelled"
-        elif mode == "multi" and is_partial:
-            job["status"] = "partial"
         elif result_task.state.value == "DONE":
             job["status"] = "done"
         elif produced:
@@ -2212,12 +2109,10 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
         await drain_task
         # Every event has now been applied, so anything still non-terminal
         # never received a task_completed/task_failed at all. That happens
-        # for real: a subtask can still be in flight when the run ends --
-        # CAMEL's dispatch loop aborts on its own _get_returned_task
-        # timeout (workforce.py:3906) with tasks outstanding, and
-        # run_workforce_in_thread's teardown then cancels whatever worker
-        # coroutines are left, so no terminal event is ever emitted for
-        # them. Without this the task stays "running" forever in the
+        # for real: a worker can still be in flight when the run ends (a
+        # cancel, an exception), and run_workforce_in_thread's teardown
+        # cancels whatever coroutines are left, so no terminal event is
+        # ever emitted for them. Without this the task stays "running" forever in the
         # snapshot AND in the persisted row -- observed live as a subtask
         # still spinning in the UI after the job had finalized and
         # reported its result.
@@ -2270,7 +2165,6 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
             "tool_calls_by_name": by_name,
             "artifact_count": len(final_artifacts),
             "terminal_reason": _terminal_reason(job, len(final_artifacts)),
-            **camel_service.orchestration_telemetry(control.workforce),
         }
         await asyncio.to_thread(db.finalize_job, job, final_tool_calls)
         workspace_id = job.get("workspace_id")
@@ -2559,7 +2453,7 @@ async def _build_conversation_context(
             for m in reversed(to_fold)
         ]
         try:
-            summary_text = await camel_service.summarize_conversation_history(
+            summary_text = await summarize_conversation_history(
                 existing_summary, entries, tracker
             )
             newest_folded = max(float(m["created_at"]) for m in to_fold)
@@ -3054,7 +2948,7 @@ async def submit_job(
         ),
         # Set only when the request needs something this system does not
         # implement. _run_job turns it into an immediate, explicit answer --
-        # see camel_service.unsupported_capability_message for why an
+        # see capabilities.unsupported_capability_message for why an
         # impossible request must cost one routing call rather than an
         # executor's whole iteration budget.
         "unsupported_capabilities": list(routing.unsupported),
@@ -3467,21 +3361,6 @@ def list_skills():
 @app.get("/workers", response_model=WorkerPoolResponse)
 def list_workers():
     """The agents available to any Multi Agent run this session."""
-    return _worker_pool()
-
-
-@app.post("/workers", response_model=WorkerPoolResponse, status_code=201)
-def add_worker(req: AddWorkerRequest):
-    """Manually register an agent for the rest of this session.
-
-    The agent is stored in-memory and registered onto every subsequent Multi
-    Agent Workforce at build time -- see camel_service.add_manual_worker for
-    why it can't be attached to an already-running Workforce.
-    """
-    try:
-        camel_service.add_manual_worker(req.name, req.description or "")
-    except camel_service.ManualWorkerError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _worker_pool()
 
 

@@ -1,46 +1,19 @@
-"""Bounded initial Workforce plan: targets × capabilities, not free XML.
+"""The Workforce's lookup plan: which named subjects need their own search.
 
-Initial decomposition used CAMEL's <task> prompt with a 12k completion
-budget and the full Workforce step timeout. That made planning wall time
-a function of hidden reasoning tokens (10s–60s+) and collapsed
-multi-target lookups into one Research subtask. This module is the
-source of truth for the first split: a short JSON plan, a 25s timeout,
-then deterministic packing.
+The LangGraph Research step asks the model for a short JSON plan
+(PLAN_SYSTEM_PROMPT -> PlanResult) and reads only its target names:
+independent lookup subjects each get their own SEARCH, an empty list means
+one search for one subject.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-from dataclasses import dataclass
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-import capabilities
-
-stabilization_logger = logging.getLogger("agent_webapp.stabilization")
-
-# Keep in lockstep with camel_service.WORST_CASE_MODEL_CALL_SECONDS.
-# This is the planning stage's own deadline; it must not inherit the
-# ~1000s batch step_timeout.
-PLANNING_STEP_TIMEOUT_SECONDS = 25
-PLANNING_MAX_TOKENS = 4096
 MAX_PLAN_TARGETS = 8
-
-_WEB = {capabilities.WEB_SEARCH, capabilities.WEB_FETCH}
-_CAP_ALIASES = {
-    "web": capabilities.WEB_SEARCH,
-    "web_search": capabilities.WEB_SEARCH,
-    "web_fetch": capabilities.WEB_FETCH,
-    "search": capabilities.WEB_SEARCH,
-    "artifacts": capabilities.ARTIFACTS,
-    "artifact": capabilities.ARTIFACTS,
-    "files": capabilities.FILES,
-    "file": capabilities.FILES,
-    "code": capabilities.CODE_EXEC,
-    "code_exec": capabilities.CODE_EXEC,
-}
 
 
 class PlanTarget(BaseModel):
@@ -58,14 +31,6 @@ class PlanResult(BaseModel):
     targets: list[PlanTarget] = Field(default_factory=list)
     workstreams: list[PlanWorkstream] = Field(default_factory=list)
     source: str = "llm"
-
-
-@dataclass(frozen=True)
-class NormalizedStream:
-    goal: str
-    capabilities: frozenset[str]
-    targets: tuple[str, ...]
-    depends_on: tuple[int, ...]
 
 
 PLAN_SYSTEM_PROMPT = (
@@ -112,42 +77,6 @@ PLAN_SYSTEM_PROMPT = (
 )
 
 
-def fallback_plan(request: str, required) -> PlanResult:
-    caps = [
-        name
-        for name in (
-            capabilities.WEB_SEARCH,
-            capabilities.ARTIFACTS,
-            capabilities.FILES,
-            capabilities.CODE_EXEC,
-        )
-        if name in capabilities.expand(required or [])
-    ]
-    if not caps:
-        caps = [capabilities.WEB_SEARCH]
-    return PlanResult(
-        targets=[],
-        workstreams=[
-            PlanWorkstream(
-                goal=(request or "").strip(),
-                capabilities=caps,
-                target_names=[],
-                depends_on=[],
-            )
-        ],
-        source="fallback",
-    )
-
-
-def _expand_stream_caps(raw) -> frozenset[str]:
-    names: set[str] = set()
-    for item in raw or []:
-        token = str(item or "").strip().casefold().replace(" ", "_")
-        mapped = _CAP_ALIASES.get(token, token)
-        names.add(mapped)
-    return capabilities.expand(names)
-
-
 def unique_target_names(plan: PlanResult) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
@@ -165,144 +94,6 @@ def unique_target_names(plan: PlanResult) -> list[str]:
         if len(names) >= MAX_PLAN_TARGETS:
             break
     return names
-
-
-def partition_targets(targets: list[str], slots: int) -> list[list[str]]:
-    if not targets:
-        return []
-    slots = max(1, min(int(slots or 1), len(targets)))
-    groups: list[list[str]] = [[] for _ in range(slots)]
-    for index, name in enumerate(targets):
-        groups[index % slots].append(name)
-    return [group for group in groups if group]
-
-
-def _research_goal(request: str, targets: list[str]) -> str:
-    if not targets:
-        return (
-            "Gather verified current facts for the original request. Cover "
-            "every named subject; do not stop after the first one that is "
-            "easy to find.\n\n"
-            f"ORIGINAL USER REQUEST:\n{request}"
-        )
-    listed = ", ".join(targets)
-    scope = (
-        f"This subtask covers ONLY: {listed}."
-        if len(targets) == 1
-        else f"This subtask covers ONLY these targets: {listed}."
-    )
-    return (
-        f"Gather verified current facts for: {listed}. {scope} Preserve "
-        "the original language, dates, and constraints. Do not skip a "
-        "named target.\n\n"
-        f"ORIGINAL USER REQUEST:\n{request}"
-    )
-
-
-def _artifact_goal(request: str) -> str:
-    return (
-        "Create the explicitly requested file/artifact for the original "
-        "user request below. Consume the verified outputs, provenance, and "
-        "data_path from prerequisite tasks directly; do not repeat web "
-        "research and do not invent missing data.\n\n"
-        f"ORIGINAL USER REQUEST:\n{request}"
-    )
-
-
-def _files_goal(request: str) -> str:
-    return (
-        "Read and analyze the uploaded workspace files needed to fulfill the "
-        "original request below. Use the Docling-backed file tools to inspect "
-        "and read the relevant material directly; do not search the web or "
-        "invent content that is not present in the uploads.\n\n"
-        f"ORIGINAL USER REQUEST:\n{request}"
-    )
-
-
-def expand_plan_for_coverage(
-    request: str,
-    plan: PlanResult,
-    required,
-    *,
-    max_subtasks: int,
-) -> list[NormalizedStream]:
-    """Turn a JSON plan into bounded streams: targets × capability groups."""
-    required = capabilities.expand(required or [])
-    request = (request or "").strip()
-    targets = unique_target_names(plan)
-    # Job structural requirements are authoritative for whether web research
-    # runs at all. A planner workstream tagged web_search must not override
-    # a FILES-only job into Research.
-    needs_web = bool(required & _WEB)
-    needs_files_primary = capabilities.is_files_primary(required)
-    needs_artifact = capabilities.ARTIFACTS in required
-    needs_code = capabilities.CODE_EXEC in required
-    # Planner workstreams must not override the submission-time effective contract.
-
-    max_subtasks = max(1, int(max_subtasks or 1))
-    streams: list[NormalizedStream] = []
-    reserved = (
-        int(needs_artifact)
-        + int(needs_code and not needs_web)
-        + int(needs_files_primary)
-    )
-    research_slots = max(1, max_subtasks - reserved) if needs_web else 0
-
-    if needs_web:
-        groups = partition_targets(targets, research_slots) if targets else [[]]
-        if not groups:
-            groups = [[]]
-        for group in groups:
-            streams.append(
-                NormalizedStream(
-                    _research_goal(request, group),
-                    frozenset(_WEB),
-                    tuple(group),
-                    (),
-                )
-            )
-
-    if needs_code and not needs_web:
-        streams.append(
-            NormalizedStream(
-                request or "Fulfill the requested computation.",
-                frozenset({capabilities.CODE_EXEC}),
-                (),
-                (),
-            )
-        )
-
-    if needs_files_primary:
-        streams.append(
-            NormalizedStream(
-                _files_goal(request),
-                frozenset({capabilities.FILES}),
-                tuple(targets) if targets else (),
-                (),
-            )
-        )
-
-    if needs_artifact:
-        prereq = tuple(range(len(streams)))
-        streams.append(
-            NormalizedStream(
-                _artifact_goal(request),
-                frozenset({capabilities.ARTIFACTS}),
-                tuple(targets),
-                prereq,
-            )
-        )
-
-    if not streams:
-        streams.append(
-            NormalizedStream(
-                request,
-                frozenset(),
-                tuple(targets),
-                (),
-            )
-        )
-    return streams
 
 
 def _recover(response_text: Any) -> Optional[PlanResult]:
@@ -328,78 +119,6 @@ def _recover(response_text: Any) -> Optional[PlanResult]:
         return PlanResult.model_validate(decoded)
     except ValidationError:
         return None
-
-
-def plan_request(
-    request: str,
-    *,
-    agent: Any = None,
-    required=None,
-) -> PlanResult:
-    """JSON plan from the management agent, or a one-stream fallback."""
-    request = request or ""
-    required = capabilities.expand(required or [])
-    if agent is None:
-        return fallback_plan(request, required)
-
-    from camel.messages import BaseMessage
-
-    original_timeout = getattr(agent, "step_timeout", None)
-    had_timeout = hasattr(agent, "step_timeout")
-    agent.step_timeout = PLANNING_STEP_TIMEOUT_SECONDS
-    backend = getattr(agent, "model_backend", None)
-    config = getattr(backend, "model_config_dict", None)
-    original_max_tokens = None
-    mutated_tokens = False
-    if isinstance(config, dict):
-        original_max_tokens = config.get("max_tokens")
-        config["max_tokens"] = PLANNING_MAX_TOKENS
-        mutated_tokens = True
-    reset = getattr(agent, "reset", None)
-    if callable(reset):
-        reset()
-    try:
-        response = agent.step(
-            BaseMessage.make_user_message(
-                role_name="planner",
-                content=(
-                    f"{PLAN_SYSTEM_PROMPT}\n\nREQUEST:\n{request}\n"
-                ),
-            ),
-            response_format=PlanResult,
-        )
-    except Exception:  # noqa: BLE001 - fail closed to a single stream
-        stabilization_logger.warning(
-            "Workforce planning failed; using single-stream fallback",
-            exc_info=True,
-        )
-        return fallback_plan(request, required)
-    finally:
-        if had_timeout:
-            agent.step_timeout = original_timeout
-        if mutated_tokens and isinstance(config, dict):
-            if original_max_tokens is None:
-                config.pop("max_tokens", None)
-            else:
-                config["max_tokens"] = original_max_tokens
-
-    parsed = response.msg.parsed if getattr(response, "msg", None) else None
-    if isinstance(parsed, PlanResult):
-        result = parsed
-    elif isinstance(parsed, dict):
-        try:
-            result = PlanResult.model_validate(parsed)
-        except ValidationError:
-            result = None
-    else:
-        result = _recover(response.msg.content if getattr(response, "msg", None) else None)
-    if result is None:
-        stabilization_logger.warning(
-            "Workforce planning returned no valid plan JSON; fallback"
-        )
-        return fallback_plan(request, required)
-    result.source = "llm"
-    return result
 
 
 def parse_plan_result(raw: Any) -> Optional[PlanResult]:

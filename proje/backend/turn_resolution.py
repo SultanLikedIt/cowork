@@ -8,6 +8,7 @@ turn needs new external work (web, files, artifacts).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -220,34 +221,32 @@ async def resolve_turn(
 
     prior_messages = prior_messages[:MAX_PRIOR_MESSAGES]
 
-    from camel.agents import ChatAgent
-    from camel.messages import BaseMessage
-    from model_config import get_model
+    from execution.langgraph_runtime import openai_chat
 
     recent = format_recent_turns(prior_messages)
     catalog_json = json.dumps(catalog, ensure_ascii=False)
-    agent = ChatAgent(
-        system_message=BaseMessage.make_assistant_message(
-            role_name="Turn resolution",
-            content=RESOLVE_SYSTEM_PROMPT,
-        ),
-        model=get_model(
-            tracker,
-            stage="turn_resolution",
-            temperature=0,
-            max_tokens=RESOLVE_MAX_TOKENS,
-        ),
-        max_iteration=1,
-        retry_attempts=1,
-        step_timeout=RESOLVE_TIMEOUT_SECONDS,
-    )
     try:
-        response = await agent.astep(
-            f"CURRENT MESSAGE:\n{topic}\n\n"
-            f"PRIOR TURNS (oldest first):\n{recent or '(none)'}\n\n"
-            f"FILE CATALOG:\n{catalog_json}\n\n"
-            f"WORKSPACE DOCUMENTS:\n{_library_line(library_names)}\n",
-            response_format=TurnResolutionResult,
+        reply = await asyncio.wait_for(
+            openai_chat.complete_chat(
+                [
+                    {"role": "system", "content": RESOLVE_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"CURRENT MESSAGE:\n{topic}\n\n"
+                            f"PRIOR TURNS (oldest first):\n{recent or '(none)'}\n\n"
+                            f"FILE CATALOG:\n{catalog_json}\n\n"
+                            f"WORKSPACE DOCUMENTS:\n{_library_line(library_names)}\n"
+                        ),
+                    },
+                ],
+                tracker=tracker,
+                stage="turn_resolution",
+                max_tokens=RESOLVE_MAX_TOKENS,
+                temperature=0,
+                response_format=TurnResolutionResult,
+            ),
+            timeout=RESOLVE_TIMEOUT_SECONDS,
         )
     except Exception:  # noqa: BLE001 - fallback must never fail the job
         stabilization_logger.warning(
@@ -256,16 +255,10 @@ async def resolve_turn(
         )
         return fallback(topic, catalog_ids)
 
-    parsed = response.msg.parsed if response.msg else None
-    if isinstance(parsed, TurnResolutionResult):
-        result = parsed
-    elif isinstance(parsed, dict):
-        try:
-            result = TurnResolutionResult.model_validate(parsed)
-        except ValidationError:
-            result = None
+    if isinstance(reply, TurnResolutionResult):
+        result = reply
     else:
-        result = _recover(response.msg.content if response.msg else None)
+        result = _recover(reply)
     if result is None:
         stabilization_logger.warning(
             "Turn resolution returned no valid structured content; fallback"

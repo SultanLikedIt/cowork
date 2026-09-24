@@ -17,9 +17,9 @@ no free-text `need` blob left to smuggle a guessed URL into. What's still
 tested below is source-pin enforcement, which is a real runtime check, not a
 structural non-issue.
 
-The streaming tests drive the real run_single_agent loop, and the tool tests
-build tools through the real capabilities.resolve_tools, so both cover the
-production path rather than a helper.
+The replay test drives the real replay_final_answer_as_stream, and the tool
+tests build tools through the real capabilities.resolve_tools, so both cover
+the production path rather than a helper.
 
 Run directly:  python test_live_blockers.py
 """
@@ -35,11 +35,10 @@ from unittest.mock import patch
 _tmp_dir = tempfile.mkdtemp(prefix="agent_webapp_blockers_")
 os.environ.setdefault("DATA_DIR", _tmp_dir)
 
-import camel_service  # noqa: E402
+from workforce.answer_format import replay_final_answer_as_stream  # noqa: E402
 import capabilities  # noqa: E402
-from model_config import UsageTracker  # noqa: E402
 from html_extract import AcquiredPage, AcquisitionResult  # noqa: E402
-from stream_protocol import StreamTextFilter, sanitize_text  # noqa: E402
+from stream_protocol import sanitize_text  # noqa: E402
 
 failures: list[str] = []
 
@@ -53,8 +52,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 # ---------------------------------------------------------------------------
 # The exact progressive sequence observed live.
 #
-# CAMEL yields CUMULATIVE content, and the provider emits its tool call as
-# ordinary content tokens, so the tool-call markup grows one fragment at a
+# The provider emitted its tool call as ordinary content tokens, so the tool-call markup grows one fragment at a
 # time -- including the "https" -> "https://www" -> "https://www.yayla.com"
 # growth inside the url parameter that made complete-block regex stripping
 # useless.
@@ -105,75 +103,13 @@ def _assert_clean(label: str, emitted: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# BLOCKER 1 -- filtering happens at the stream boundary
+# BLOCKER 1 -- protocol markup is stripped before the user sees it
 # ---------------------------------------------------------------------------
 
 
-def test_progressive_dsml_never_emits_protocol() -> None:
-    stream = StreamTextFilter()
-    emitted = "".join(stream.feed_cumulative(chunk) for chunk in LIVE_DSML_STREAM)
-    emitted += stream.flush()
-
-    _assert_clean("progressive DSML", emitted)
+def test_tool_status_lines_are_filtered() -> None:
     check(
-        "the assistant text either side of the tool call survives intact",
-        emitted == _OPEN + _ANSWER,
-        repr(emitted),
-    )
-
-
-def test_incomplete_dsml_block_stays_buffered_forever() -> None:
-    """A tool call that runs to the end of the message must leak nothing.
-
-    The live stream often ends while still inside the call -- CAMEL executes
-    the tool and starts a new iteration -- so there is never a closing marker
-    to match.
-    """
-    stream = StreamTextFilter()
-    truncated = LIVE_DSML_STREAM[: LIVE_DSML_STREAM.index(_OPEN + _CALL + "https://www.yayla.com") + 1]
-    emitted = "".join(stream.feed_cumulative(chunk) for chunk in truncated)
-    emitted += stream.flush()
-
-    _assert_clean("unterminated DSML", emitted)
-    check(
-        "text before an unterminated tool call is still shown",
-        emitted == _OPEN,
-        repr(emitted),
-    )
-
-
-def test_token_by_token_stream_never_emits_protocol() -> None:
-    """Worst case: one character per chunk, so every marker is split."""
-    full = LIVE_DSML_STREAM[-1]
-    stream = StreamTextFilter()
-    emitted = ""
-    for index in range(1, len(full) + 1):
-        emitted += stream.feed_cumulative(full[:index])
-    emitted += stream.flush()
-
-    _assert_clean("character-by-character DSML", emitted)
-    check(
-        "character-by-character streaming reconstructs the same answer",
-        emitted == _OPEN + _ANSWER,
-        repr(emitted),
-    )
-
-
-def test_ordinary_angle_brackets_are_still_delivered() -> None:
-    """Holding back a possible marker must not swallow real text."""
-    stream = StreamTextFilter()
-    chunks = ["Use ", "Use a < b", "Use a < b and <tool", "Use a < b and <tools> in HTML."]
-    emitted = "".join(stream.feed_cumulative(chunk) for chunk in chunks) + stream.flush()
-    check(
-        "a literal '<' that never becomes a marker is emitted",
-        emitted == "Use a < b and <tools> in HTML.",
-        repr(emitted),
-    )
-
-
-def test_camel_tool_status_lines_are_filtered() -> None:
-    check(
-        "CAMEL's own [TOOL RESULT]/[TOOL CALL] status lines stay internal",
+        "[TOOL RESULT]/[TOOL CALL] status lines stay internal",
         sanitize_text(
             "Before.\n[TOOL RESULT] web_read → {...}\n[TOOL CALL] x → {}\nAfter."
         )
@@ -186,89 +122,12 @@ def test_camel_tool_status_lines_are_filtered() -> None:
     )
 
 
-# --- the same sequence, through the real DIRECT production loop ------------
-
-
-class _FakeMsg:
-    def __init__(self, content: str) -> None:
-        self.content = content
-
-
-class _FakePartial:
-    def __init__(self, content: str) -> None:
-        self.msg = _FakeMsg(content)
-
-
-class _FakeFinal:
-    def __init__(self, info: dict) -> None:
-        self.info = info
-
-
-class _FakeStream:
-    def __init__(self, chunks: list[str]) -> None:
-        self._chunks = chunks
-
-    def __aiter__(self):
-        async def _gen():
-            for chunk in self._chunks:
-                yield _FakePartial(chunk)
-
-        return _gen()
-
-    def __await__(self):
-        async def _final():
-            return _FakeFinal({"usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
-
-        return _final().__await__()
-
-
-class _FakeChatAgent:
-    stream: "_FakeStream | None" = None
-
-    def __init__(self, *args, **kwargs) -> None:
-        pass
-
-    async def astep(self, content, response_format=None):
-        return _FakeChatAgent.stream
-
-
-def test_production_direct_stream_emits_no_protocol() -> None:
-    """Drive run_single_agent itself: the deltas it publishes are what the
-    SSE pipe forwards and what the user reads."""
-    job_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
-    async def run() -> tuple[str, str]:
-        queue: "asyncio.Queue" = asyncio.Queue()
-        _FakeChatAgent.stream = _FakeStream(LIVE_DSML_STREAM)
-        with patch.object(camel_service, "ChatAgent", _FakeChatAgent), patch.object(
-            camel_service, "get_model", lambda *a, **k: None
-        ):
-            task = await camel_service.run_single_agent(
-                "Yayla freeze dried ürünlerini bul", UsageTracker(), job_id, queue
-            )
-        deltas = []
-        while not queue.empty():
-            event = queue.get_nowait()
-            if event.get("event_type") == "token_delta":
-                deltas.append(event["delta"])
-        return "".join(deltas), task.result or ""
-
-    streamed, final = asyncio.run(run())
-    _assert_clean("run_single_agent token_delta pipe", streamed)
-    _assert_clean("run_single_agent final task result", final)
-    check(
-        "the DIRECT path still delivers the real answer",
-        streamed == _OPEN + _ANSWER and final == _OPEN + _ANSWER,
-        f"streamed={streamed!r} final={final!r}",
-    )
-
-
 def test_final_replay_path_is_filtered_by_the_same_rules() -> None:
     """Multi Agent replays an already-final string over the same pipe."""
 
     async def run() -> str:
         queue: "asyncio.Queue" = asyncio.Queue()
-        await camel_service.replay_final_answer_as_stream(
+        await replay_final_answer_as_stream(
             LIVE_DSML_STREAM[-1], "job", queue
         )
         chunks = []

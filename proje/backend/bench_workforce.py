@@ -1,7 +1,7 @@
 """Repeatable end-to-end benchmark for the execution-strategy scenarios.
 
-Drives the REAL /run-pipeline handler (routing, strategy dispatch, CAMEL
-execution, synthesis, telemetry) against the real configured model, in an
+Drives the REAL /run-pipeline handler (routing, strategy dispatch, Workforce
+execution, telemetry) against the real configured model, in an
 isolated temp DATA_DIR so it never touches the dev database. This is the
 harness used to produce the before/after numbers in the efficiency work --
 it is a measurement tool, not a unit test (it needs a live model endpoint).

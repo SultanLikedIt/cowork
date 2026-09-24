@@ -4,7 +4,7 @@
    ready, not when `finally` gets around to measuring it. Between those two
    moments sits replay_final_answer_as_stream's fake typing effect
    (asyncio.sleep(0.015) per 4-char chunk -- 15-30+ real seconds for a
-   medium-length synthesized answer) plus queue drain and DB persistence.
+   medium-length answer) plus queue drain and DB persistence.
    None of that is the agent doing work, so it must not inflate the
    reported "how long did this take" number.
 
@@ -31,8 +31,7 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="agent_webapp_test_"))
 
 import db  # noqa: E402
 import main  # noqa: E402
-from camel.tasks import Task  # noqa: E402
-from camel.tasks.task import TaskState  # noqa: E402
+from execution.result import execution_result  # noqa: E402
 
 # Module-level (not just inside main_test()) so pytest -- which discovers and
 # runs the test_* functions below directly, never calling main_test() -- also
@@ -48,6 +47,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name}" + ("" if ok else f" -- {detail}"))
     if not ok:
         failures.append(name)
+        raise AssertionError(f"{name} -- {detail}")
 
 
 def _make_job(job_id: str, mode: str = "multi") -> None:
@@ -93,8 +93,6 @@ def _run_workforce_job(
     *,
     execution_strategy: str = "workforce",
     raw_result: str = "answer body",
-    synthesized: str = "synthesized answer",
-    is_partial: bool = False,
     cancelled: bool = False,
     raise_error: bool = False,
 ) -> tuple[dict, dict]:
@@ -119,13 +117,7 @@ def _run_workforce_job(
         time.sleep(WORK_DELAY)
         if raise_error:
             raise RuntimeError("boom")
-        root = Task(content="c", id=job_id)
-        root.result = raw_result
-        root.state = TaskState.DONE
-        return root
-
-    async def fake_synth(result_task, topic, tracker, skills=None, job_capabilities=None, **kwargs):
-        return synthesized, is_partial
+        return execution_result(task_id=job_id, content="c", result=raw_result)
 
     async def fake_replay(text, task_id, queue):
         captured["replayed_text"] = text
@@ -136,21 +128,22 @@ def _run_workforce_job(
 
         return ai.ArtifactIntent(False, "none", "test")
 
+    def workforce_sentinel(*args, **kwargs):
+        raise AssertionError("replaced by fake_to_thread")
+
     originals = (
-        main.camel_service.run_workforce_in_thread,
-        main.camel_service.synthesize_workforce_result,
-        main.camel_service.replay_final_answer_as_stream,
+        main.run_workforce_in_thread_executor,
+        main.replay_final_answer_as_stream,
         main.artifact_intent.classify_artifact_intent,
     )
-    main.camel_service.run_workforce_in_thread = lambda *a, **k: None
-    main.camel_service.synthesize_workforce_result = fake_synth
-    main.camel_service.replay_final_answer_as_stream = fake_replay
+    main.run_workforce_in_thread_executor = workforce_sentinel
+    main.replay_final_answer_as_stream = fake_replay
     main.artifact_intent.classify_artifact_intent = fake_intent
 
     original_to_thread = asyncio.to_thread
 
     async def fake_to_thread(fn, *a, **k):
-        if fn is main.camel_service.run_workforce_in_thread:
+        if fn is workforce_sentinel:
             return await fake_run_workforce()
         return await original_to_thread(fn, *a, **k)
 
@@ -161,9 +154,8 @@ def _run_workforce_job(
     finally:
         asyncio.to_thread = original_to_thread
         (
-            main.camel_service.run_workforce_in_thread,
-            main.camel_service.synthesize_workforce_result,
-            main.camel_service.replay_final_answer_as_stream,
+            main.run_workforce_in_thread_executor,
+            main.replay_final_answer_as_stream,
             main.artifact_intent.classify_artifact_intent,
         ) = originals
     captured["wall_elapsed"] = time.monotonic() - wall_start
@@ -175,30 +167,16 @@ def _run_direct_job(job_id: str, *, answer: str = "direct answer") -> dict:
     job = main._JOBS[job_id]
     job["usage"]["execution_strategy"] = "direct"
 
-    async def fake_single_agent(
-        content,
-        tracker,
-        task_id,
-        queue,
-        skills=None,
-        workspace_root=None,
-        tool_call_recorder=None,
-        job_capabilities=None,
-        profile=None,
-        **kwargs,
-    ):
+    async def fake_single_agent(content, tracker, task_id, queue, **kwargs):
         time.sleep(WORK_DELAY)
-        root = Task(content="c", id=task_id)
-        root.result = answer
-        root.state = TaskState.DONE
-        return root
+        return execution_result(task_id=task_id, content="c", result=answer)
 
-    original = main.camel_service.run_single_agent
-    main.camel_service.run_single_agent = fake_single_agent
+    original = main.run_single_agent_executor
+    main.run_single_agent_executor = fake_single_agent
     try:
         asyncio.run(main._run_job(job_id, "content", "single"))
     finally:
-        main.camel_service.run_single_agent = original
+        main.run_single_agent_executor = original
     return job
 
 
@@ -224,21 +202,6 @@ def test_duration_excludes_replay_delay() -> None:
         "duration is not negative or implausibly small",
         job["duration_seconds"] >= WORK_DELAY / 2,
         job["duration_seconds"],
-    )
-
-
-def test_duration_excludes_replay_delay_when_partial() -> None:
-    # is_partial takes a different status branch (main.py:1033-1034) but
-    # result_ready_at must still be set before the replay, same as the
-    # full-success case above.
-    job, captured = _run_workforce_job(
-        "job-duration-partial", is_partial=True, synthesized="partial answer"
-    )
-    check("job reported as partial", job["status"] == "partial", job["status"])
-    check(
-        "partial run's duration also excludes the replay delay",
-        job["duration_seconds"] < REPLAY_DELAY / 2,
-        f"duration={job['duration_seconds']}",
     )
 
 
@@ -296,42 +259,17 @@ def test_canonical_result_matches_what_was_streamed() -> None:
     being typed out.
     """
     job, captured = _run_workforce_job(
-        "job-canonical-synth", synthesized="the synthesized final answer"
+        "job-canonical", raw_result="the final answer"
     )
     check(
-        "synthesized text was actually replayed",
-        captured.get("replayed_text") == "the synthesized final answer",
+        "the final text was actually replayed",
+        captured.get("replayed_text") == "the final answer",
         captured.get("replayed_text"),
     )
     check(
-        "job.result exactly matches the replayed synthesized text",
+        "job.result exactly matches the replayed text",
         job["result"] == captured.get("replayed_text"),
         f"result={job['result']!r} replayed={captured.get('replayed_text')!r}",
-    )
-
-
-def test_canonical_result_matches_when_synthesis_empty() -> None:
-    """Same invariant on the no-synthesis fallback path (raw join, stripped)."""
-    job, captured = _run_workforce_job(
-        "job-canonical-raw",
-        raw_result="--- Subtask abc.1 Result ---\nbody one\n"
-        "--- Subtask abc.2 Result ---\nbody two",
-        synthesized="",  # falsy -> takes the strip_subtask_scaffolding branch
-    )
-    check(
-        "scaffolding was stripped before replay",
-        "Result ---" not in (captured.get("replayed_text") or ""),
-        captured.get("replayed_text"),
-    )
-    check(
-        "job.result exactly matches the replayed stripped text",
-        job["result"] == captured.get("replayed_text"),
-        f"result={job['result']!r} replayed={captured.get('replayed_text')!r}",
-    )
-    check(
-        "both subtask bodies survived stripping",
-        "body one" in job["result"] and "body two" in job["result"],
-        job["result"],
     )
 
 
@@ -339,12 +277,10 @@ def main_test() -> None:
     db.run_migrations()
 
     test_duration_excludes_replay_delay()
-    test_duration_excludes_replay_delay_when_partial()
     test_duration_falls_back_on_error()
     test_duration_falls_back_when_cancelled_before_synthesis()
     test_direct_mode_duration_is_not_frozen_early()
     test_canonical_result_matches_what_was_streamed()
-    test_canonical_result_matches_when_synthesis_empty()
 
     print()
     if failures:

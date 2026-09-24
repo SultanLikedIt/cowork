@@ -1,11 +1,11 @@
-"""LangGraph Workforce — supervisor + specialist nodes (Phase 4).
+"""LangGraph Workforce — supervisor + specialist nodes.
 
-Drop-in for ``camel_service.run_workforce_in_thread``: same call signature,
-thread + private event loop, ``on_workforce_ready`` + ``stop_gracefully``,
-SSE lifecycle events via ``QueueWorkforceCallback``.
+Runs on its own thread with a private event loop; ``on_workforce_ready``
+hands main.py a handle whose ``stop_gracefully`` cancels the job, and
+lifecycle events reach SSE through ``QueueWorkforceCallback``.
 
-Does not stream ``token_delta`` during workers (Camel parity); ``main`` still
-runs ``replay_final_answer_as_stream`` for typing UI.
+Does not stream ``token_delta`` during workers; ``main`` runs
+``replay_final_answer_as_stream`` for the typing effect.
 """
 
 from __future__ import annotations
@@ -645,7 +645,7 @@ async def _extract_lookup_targets(
     *,
     complete: Any,
 ) -> list[str]:
-    """Named lookup subjects via the same rules as Camel workforce_plan.
+    """Named lookup subjects via workforce_plan's target rules.
 
     Empty list means one unscoped SEARCH (single subject / coupled design).
     """
@@ -789,7 +789,7 @@ def _web_lookup_text(original_request: str, content: str) -> str:
 
     ``content`` from main is often topic + PRIOR MESSAGES. Feeding that into
     SEARCH makes the model chase an earlier turn (e.g. FX rates) instead of
-    the current ask. Camel uses assigned/original_request only; match that.
+    the current ask, so only the assigned/original request is used.
     """
     primary = (original_request or "").strip()
     if primary:
@@ -1834,7 +1834,7 @@ def _cheap_recovery_lookup(
     """Template recovery brief — no extra LLM call for a new query.
 
     Includes short excerpts so SEARCH can name opponent/date/etc. the way
-    Camel's search→read→refine loop did, without a second propose-query call.
+    a search→read→refine loop would, without a second propose-query call.
 
     Must hold no URL at all: acquire_web_evidence takes any URL in its text
     as one the user typed and fetches it WITHOUT searching. Listing the
@@ -1988,7 +1988,7 @@ async def _run_research(
         research_depth = "survey"
     else:
         research_depth = "lookup"
-    # Same target rules as Camel workforce_plan: independent lookup subjects
+    # workforce_plan target rules: independent lookup subjects
     # each get their own SEARCH. Empty list → single search (one subject).
     # Survey already plans angles — do not double-plan targets there.
     lookup_targets: list[str] = []
@@ -3594,7 +3594,7 @@ def _infer_artifact_kinds(
 ) -> list[str]:
     """All explicitly requested formats (e.g. Word + HTML sunum).
 
-    Camel Workforce can emit multiple files in one job; LangGraph used to
+    A job can ask for several files at once; this used to
     pick a single kind, so ``word … ve html sunum`` silently dropped HTML.
 
     ``attached_kinds`` are the formats the user UPLOADED. A format named in
@@ -3628,7 +3628,7 @@ def _infer_artifact_kinds(
         ("txt", ("txt", "markdown", "md dosya")),
         ("code", ("zip", "code bundle", "kod paketi")),
     )
-    # "sunum" alone (no format named) → HTML deck (matches Camel's html
+    # "sunum" alone (no format named) → HTML deck (the original html
     # sunum path). "PowerPoint sunumu" is the normal Turkish phrase for "a
     # PowerPoint presentation" -- sunum here describes what the PowerPoint
     # already is, not a request for a SECOND, separate deliverable. So this
@@ -6516,12 +6516,6 @@ async def _run_workforce_async(
 
     final_answer = (final_state.get("answer") or final_state.get("notes") or "").strip()
     notes_for_doc = (final_state.get("notes") or final_answer or "").strip()
-    # The Coding Agent's reply is the code that ran and what it really
-    # printed. main's synthesis step restates answers with a model call
-    # (skills, "latest"-type asks, file jobs), which would put a retyped --
-    # possibly invented -- output where the real one was.
-    coding_answer = final_state.get("answer_role") == ROLE_CODING and bool(final_answer)
-    answer_before_fallbacks = final_answer
 
     # Safety net: only if Document never ran. Initial ``roles`` always lists
     # Document when wants_artifact — that must NOT count as "already ran".
@@ -6610,7 +6604,6 @@ async def _run_workforce_async(
             sources_out.get("documents"),
         ),
         state="DONE" if not handle.cancelled else "FAILED",
-        verbatim=coding_answer and final_answer.startswith(answer_before_fallbacks),
     )
 
 
@@ -6639,7 +6632,7 @@ def run_workforce_in_thread(
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
 ) -> Any:
-    """Sync entrypoint matching ``camel_service.run_workforce_in_thread``."""
+    """Sync entrypoint: runs one Workforce job on this thread's own event loop."""
     handle = CancellableWorkforce()
     on_workforce_ready(handle)
 

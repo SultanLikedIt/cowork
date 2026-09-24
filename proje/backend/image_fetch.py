@@ -862,13 +862,11 @@ def _llm_verify_relevance(topic: str, candidates: list[dict[str, Any]]) -> Optio
 
     from openai import OpenAI
 
-    # Same fallback defaults as model_config.py -- duplicated as three
-    # literals rather than imported, so this module never pulls in camel
-    # (model_config.py imports camel.models at module load) just to make
-    # a plain OpenAI-compatible chat call.
-    base_url = (os.environ.get("MODEL_BASE_URL") or "http://localhost:11434/v1").rstrip("/")
-    api_key = os.environ.get("MODEL_API_KEY") or "ollama"
-    model = os.environ.get("MODEL_NAME") or "qwen2.5:3b"
+    from model_config import DEFAULT_API_KEY, DEFAULT_BASE_URL, DEFAULT_MODEL_NAME
+
+    base_url = (os.environ.get("MODEL_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+    api_key = os.environ.get("MODEL_API_KEY") or DEFAULT_API_KEY
+    model = os.environ.get("MODEL_NAME") or DEFAULT_MODEL_NAME
 
     capped = candidates[:5]
     lines = [f"{i}: {_page_text_blob(page)[:200]}" for i, page in enumerate(capped)]

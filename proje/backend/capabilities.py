@@ -41,8 +41,8 @@ Two independent inputs produce the set:
 
 The two are UNIONED, never intersected: the structural signals are a floor.
 
-This module deliberately does not import CAMEL, so main.py and the tests
-can all use it without a model backend.
+This module makes no model calls, so main.py and the tests can all use it
+without a model backend.
 """
 
 from __future__ import annotations
@@ -221,18 +221,17 @@ REGISTRY: dict[str, CapabilitySpec] = {
     FILES: CapabilitySpec(
         name=FILES,
         summary="files -- read and analyze the user's uploaded documents/spreadsheets",
-        guidance="",  # supplied by camel_service.WORKSPACE_TOOLS_CAVEAT
+        guidance="",  # supplied by execution.caveats.WORKSPACE_TOOLS_CAVEAT
     ),
     CODE_EXEC: CapabilitySpec(
         name=CODE_EXEC,
         summary=(
-            "code_exec -- execute Python code and shell commands to transform "
-            "data, compute results, or generate files"
+            "code_exec -- execute Python code to transform data, compute "
+            "results, or generate files"
         ),
         guidance=(
-            "Use execute_code for Python and execute_command for shell "
-            "commands. Do NOT use them to print or format prose -- write "
-            "that answer directly instead."
+            "Use run_python to execute Python. Do NOT use it to print or "
+            "format prose -- write that answer directly instead."
         ),
     ),
     ARTIFACTS: CapabilitySpec(
@@ -996,6 +995,27 @@ def unsupported_deliverable_message(fmt: str) -> str:
     )
 
 
+def unsupported_capability_message(names) -> str:
+    """The answer a job gets when it needs something this system cannot do.
+
+    Deliberately a real, final answer rather than an exception: the user asked
+    for something, and "I cannot do this specific thing, here is what I can
+    do" is a better outcome than a stack trace. The point is that it is
+    produced BEFORE any execution, so an impossible request costs one routing
+    call instead of an executor looping to its iteration cap discovering the
+    same thing expensively.
+    """
+    wanted = ", ".join(sorted(names))
+    available = ", ".join(ALL_CAPABILITIES)
+    return (
+        f"This request needs a capability this system does not have: "
+        f"{wanted}.\n\nWhat is available: {available}.\n\n"
+        "Nothing was executed, because no execution here could have produced "
+        "the requested result. Rephrase the request within the capabilities "
+        "above, or ask for the part of it that is covered."
+    )
+
+
 def workforce_structural_requirements(
     text: str,
     has_workspace_files: bool = False,
@@ -1189,9 +1209,8 @@ class ToolContext:
 
     workspace_root: Optional[str] = None
     tool_call_recorder: Any = None
-    # Injected by camel_service so the search tool keeps its existing
-    # per-agent call budget and evidence-returning stub. Capability binding
-    # must not silently drop a bound that already exists.
+    # Replaces the search step's search function (tests inject a stub here);
+    # None means the real SearXNG/AgentSearch search.
     search_tool_factory: Optional[Callable[[], Any]] = None
     # Called with (stage, detail) at each REAL acquisition step so the UI can
     # show "Searching the web...", "Opening page...", and extraction status.
@@ -1221,10 +1240,8 @@ class ToolContext:
 class BoundTools:
     """The result of binding: the callables, and what they are called.
 
-    `names` exists because a dynamic worker's system message must list the
-    exact tool identifiers bound to it -- a name in the roster that is not
-    bound raises an uncaught KeyError inside CAMEL and fails the whole
-    subtask (see camel_service._dynamic_worker_tool_roster).
+    `names` are the exact tool identifiers bound, recorded on the job
+    (usage.bound_tools) so history shows what the run could call.
     """
 
     tools: tuple
@@ -1235,10 +1252,8 @@ class BoundTools:
     # capability must be able to say so instead of trying anyway.
     missing: tuple[tuple[str, str], ...] = ()
     # The live ArtifactTools instance, when the ARTIFACTS capability was
-    # bound. Exposed so the caller can ask what was ACTUALLY produced --
-    # camel_service uses it to write a truthful final answer for a run that
-    # exhausted its turns before summarizing its own work. Not a tool; never
-    # given to the model.
+    # bound. Exposed so the caller can ask what was ACTUALLY produced. Not a
+    # tool; never given to the model.
     artifact_tools: Any = None
 
     def as_list(self) -> list:
@@ -1396,11 +1411,9 @@ def _record_verified_web_result(
 def _record_verified_artifact_result(tool: Callable) -> Callable:
     """Remember a real file this tool actually wrote, for recovery grounding.
 
-    A Research worker that returns a verified table gets a documented
-    protection from CAMEL's quality judge (see camel_service.
-    _worker_structured_evidence / _patched_analyze_task / _patched_
-    handle_failed_task): the concrete side effect -- a real, checkable
-    data_path -- outranks a low prose score. A Document/Review/Outline
+    A Research worker that returns a verified table is protected from a
+    quality judge's low prose score: the concrete side effect -- a real,
+    checkable data_path -- outranks it. A Document/Review/Outline
     worker that actually wrote a real file (create_xlsx_artifact and
     friends all return {"created": True, "path": ..., ...} -- see
     artifacts.ArtifactTools._ok) had no equivalent: the quality judge could
@@ -1548,8 +1561,6 @@ def resolve_tools(capabilities, context: ToolContext) -> BoundTools:
         )
         instance = web_tools_module.WebTools(
             fetch_tools=fetch_instance,
-            # Keeps the existing per-agent search budget and its
-            # evidence-returning exhausted stub on the search step.
             search_fn=(
                 context.search_tool_factory()
                 if context.search_tool_factory is not None
@@ -1596,13 +1607,13 @@ def resolve_tools(capabilities, context: ToolContext) -> BoundTools:
                 (CODE_EXEC, "this job has no workspace directory to execute in")
             )
         else:
-            from camel.toolkits import CodeExecutionToolkit
+            from code_exec import CodeExecutionTools
 
             instance = _shared_instance(
                 "code_exec",
-                lambda: CodeExecutionToolkit(sandbox="subprocess", verbose=False),
+                lambda: CodeExecutionTools(Path(context.workspace_root)),
             )
-            tools.extend([instance.execute_code, instance.execute_command])
+            tools.extend(instance.as_tools())
 
     if ARTIFACTS in resolved:
         if not context.workspace_root:
@@ -1824,5 +1835,6 @@ __all__ = [
     "structural_requirements",
     "workforce_structural_requirements",
     "unsupported",
+    "unsupported_capability_message",
     "unsupported_deliverable_message",
 ]

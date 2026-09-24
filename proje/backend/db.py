@@ -1,6 +1,6 @@
-"""SQLite persistence: jobs, per-task/tool-call detail, and manually-added
-agents survive a backend restart. Everything else (live CAMEL `workforce`
-objects, SSE subscriber queues, in-flight cancellation flags) stays
+"""SQLite persistence: jobs, per-task/tool-call detail, workspaces and
+conversations survive a backend restart. Everything else (the live Workforce
+handle, SSE subscriber queues, in-flight cancellation flags) stays
 process-memory-only -- see main._JobControl -- because there is nothing to
 rehydrate a live agent run from a database row. A job left `queued`/
 `running` when the process dies is swept to `interrupted` at the next
@@ -312,45 +312,6 @@ def load_all_jobs() -> list[dict[str, Any]]:
                 }
             )
         return jobs
-    finally:
-        conn.close()
-
-
-# --------------------------------------------------------------------------
-# Manually-added agents
-# --------------------------------------------------------------------------
-
-
-def insert_manual_worker(record: dict[str, str], created_at: float) -> None:
-    with _write_lock, _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO manual_workers (name, description, description_provided, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                record["name"],
-                record["description"],
-                int(record["description_provided"] == "true"),
-                created_at,
-            ),
-        )
-
-
-def load_manual_workers() -> list[dict[str, str]]:
-    conn = _connect()
-    try:
-        rows = conn.execute(
-            "SELECT name, description, description_provided FROM manual_workers ORDER BY id"
-        ).fetchall()
-        return [
-            {
-                "name": row["name"],
-                "description": row["description"],
-                "description_provided": "true" if row["description_provided"] else "false",
-            }
-            for row in rows
-        ]
     finally:
         conn.close()
 

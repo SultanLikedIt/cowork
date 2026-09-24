@@ -106,7 +106,7 @@ def evaluate(result: RunResult, scenario: Scenario, defaults: dict[str, Any]) ->
         # deliberately NOT threshold-checked as an absolute number below --
         # see recovery_count_per_task.
         "recovery_count": len(result.recoveries),
-        # Bounded-recovery semantics (MAX_TASK_ATTEMPTS=2 in camel_service.py)
+        # Bounded-recovery semantics (an initial attempt plus one retry)
         # allow AT MOST one recovery per task: an initial attempt plus one
         # retry, never more. A flat per-JOB threshold (the old
         # "recovery_count": {"warn": 2}) was therefore miscalibrated against

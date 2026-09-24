@@ -10,7 +10,7 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 |---|---|
 | Repo | `SultanLikedIt/cowork` (güncel). Devralınan kod: 11.09.2026 (`0836338`); köken `bsaltalii/agent-webapp` |
 | Branch | **`main`** — son birleşen: PR #13 Coding Agent (24.09.2026). Özellik işleri kendi dalında + PR ile gelir |
-| Executor | `AGENT_EXECUTOR=langgraph` (kod default'u `camel` — env'de yazılmalı) |
+| Executor | LangGraph (`execution/langgraph_runtime/`); CAMEL 24.09.2026'da kaldırıldı |
 | Portlar | Arayüz 8081, API 8001, AgentSearch 3939 (container içi backend 8000) |
 | Modlar | Single = tools-free chat; Workforce = artifact intent + web phase controller |
 | Web | SEARCH → SELECT → FETCH → ANSWER (`web_controller.py`); model-facing `web_search`/`web_read` Research'te yok |
@@ -20,6 +20,13 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 
 ## Son tamamlanan işler
 
+- **CAMEL kaldırıldı (24.09.2026):** `camel_service.py` (4.7k satır), CAMEL
+  Single yolu, `AGENT_EXECUTOR` anahtarı, `camel-ai` bağımlılığı ve vendor'daki
+  CAMEL kaynağı (2141 dosya) silindi. Niyet, takip turu ve sohbet özeti
+  çağrıları `openai_chat.complete_chat` üzerinden gider. Manuel agent
+  (arayüzde "Add agent") kaldırıldı; LangGraph'ta zaten hiçbir işe
+  atanmıyordu. Backend imajı yeniden build edilmeli (Dockerfile artık
+  bağımlılıkları PyPI'den kuruyor).
 - **Coding Agent düzeltmeleri (24.09.2026):** Coding işi sürerken arayüzün
   boş kalması (#14); hesaplama isteklerinin (faiz tablosu, toplam,
   istatistik) Coding'e yönlenmesi (#15); sınıflandırıcı zaman aşımında bir
@@ -44,7 +51,6 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 - **Zamanlanmış görev zincirleri:** bir görev başka bir görevin çalışmasından
   sonra, koşullu olarak (başarı / değişiklik / her zaman) çalışır; üst görevin
   raporu ve dosyaları aktarılır
-- LangGraph executor'a geçiş (`execution/adapter.py` anahtarı, `langgraph_runtime/`)
 - Web fazı sertleştirme: `unwrap_document_source` (sohbete yazılan HTML sayfası
   düz yazıya çevrilir, Document yine dosyayı üretir), `drop_echoed_request`
   (cevap kullanıcının kendi cümlesiyle başlamaz)
@@ -70,16 +76,15 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
   dosyanın üretilip üretilmediği olmalı
 - İki docx'te "içerik A, biçim B" ayrımı kırılgan
 - Deep anahtarı iş sürerken kilitlenmiyor
-- Artifact intent LLM false positive → Document Agent chat-only isteklerde
-  görünebilir (`expand_plan_for_coverage`)
 - Docling model cache yoksa upload 422 (`docling_conversion_failed`)
-- `camel_service.py` hâlâ büyük; monkeypatch çekirdeği ayrı refactor
+- `main.py` (~3.8k satır) ve `langgraph_runtime/workforce.py` (~6.7k satır)
+  büyük; bölünmeleri sıradaki iş
 
 ## Test
 
 ```bash
 # Container içinde (pytest image'da yok, her --build sonrası kurulur)
-docker compose exec backend pip install pytest pytest-asyncio
+docker compose exec backend pip install pytest pytest-asyncio pypdf
 docker compose exec backend python -m pytest tests -q
 
 # Host venv ile
@@ -87,6 +92,6 @@ cd backend
 python -m pytest tests -q
 ```
 
-Son ölçüm: **652 geçti, 0 kaldı** (container içinde, `AGENT_EXECUTOR=langgraph`).
+Son ölçüm (24.09.2026): **1409 geçti, 0 kaldı** (container içinde, `camel-ai` kaldırılmış halde).
 
 CI (`.github/workflows/backend-tests.yml`) yalnız `main`'e push'ta koşar.

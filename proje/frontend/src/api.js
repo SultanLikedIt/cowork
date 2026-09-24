@@ -215,15 +215,6 @@ export function getWorkers(options = {}) {
   return request('/workers', options)
 }
 
-export function addWorker({ name, description }, options = {}) {
-  return request('/workers', {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, description: description || null }),
-  })
-}
-
 export function executeCode({ code, language = 'python', workspaceId }, options = {}) {
   return request('/execute', {
     ...options,

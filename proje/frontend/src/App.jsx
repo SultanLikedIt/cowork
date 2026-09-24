@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import {
-  addWorker,
   cancelJob,
   createWorkspace,
   deleteConversation,
@@ -17,7 +16,6 @@ import {
   uploadFiles,
 } from './api.js'
 import { AlertCircle } from 'lucide-react'
-import AddAgentModal from './components/AddAgentModal.jsx'
 import { ACCEPTED_UPLOAD_EXTENSIONS } from './components/Composer.jsx'
 import HomeView from './components/HomeView.jsx'
 import RightPanel from './components/RightPanel.jsx'
@@ -184,7 +182,6 @@ export default function App() {
   // (handleDeepResearchChange); switching the mode back clears it again
   // (handleModeChange), so it never claims a search that will not run.
   const [deepResearch, setDeepResearch] = useState(false)
-  const [agentModalOpen, setAgentModalOpen] = useState(false)
   // One concept -- "is the execution panel open" -- presented two ways: a
   // docked column at lg and up, a drawer below it. It starts open on a
   // desktop-width viewport (there is room for it) and closed on narrow
@@ -198,8 +195,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(
     () => typeof window !== 'undefined' && window.innerWidth >= 768,
   )
-  const [savingAgent, setSavingAgent] = useState(false)
-  const [agentError, setAgentError] = useState(null)
 
   // Navigation context now comes from the URL (see readRoute): a load with
   // a /w/... path restores that workspace/conversation, and a bare "/"
@@ -563,33 +558,6 @@ export default function App() {
         workspace.workspace_id === workspaceIdToRename ? updated : workspace,
       ),
     )
-  }, [])
-
-
-  const handleSaveAgent = useCallback(async ({ name, description }) => {
-    setSavingAgent(true)
-    setAgentError(null)
-    try {
-      const data = await addWorker({ name, description })
-      // The add response is the full, authoritative roster -- so a session
-      // whose initial /workers fetch failed becomes trustworthy again here.
-      if (Array.isArray(data?.workers)) {
-        setWorkers(data.workers)
-        setWorkersState('ready')
-      }
-      setAgentModalOpen(false)
-    } catch (error) {
-      setAgentError(
-        userSafeMessage(error, 'Unable to add this agent. Please try again.'),
-      )
-    } finally {
-      setSavingAgent(false)
-    }
-  }, [])
-
-  const handleCloseAgentModal = useCallback(() => {
-    setAgentModalOpen(false)
-    setAgentError(null)
   }, [])
 
   const activePollingIds = useMemo(
@@ -1484,7 +1452,6 @@ export default function App() {
                     deepResearch={deepResearch}
                     onDeepResearchChange={handleDeepResearchChange}
                     deepResearchAvailable={deepResearchAvailable}
-                    onAddAgent={() => setAgentModalOpen(true)}
                     workers={workers}
                     workspaceName={
                       activeWorkspace?.name || 'Untitled workspace'
@@ -1570,7 +1537,6 @@ export default function App() {
                   mode={mode}
                   workers={workers}
                   workersState={workersState}
-                  onAddAgent={() => setAgentModalOpen(true)}
                   open={rightPanelOpen}
                   onClose={() => setRightPanelOpen(false)}
                 />
@@ -1578,14 +1544,6 @@ export default function App() {
             )}
           </div>
         </div>
-
-        <AddAgentModal
-          open={agentModalOpen}
-          onClose={handleCloseAgentModal}
-          onSave={handleSaveAgent}
-          saving={savingAgent}
-          error={agentError}
-        />
       </div>
     </TooltipProvider>
   )

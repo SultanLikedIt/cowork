@@ -183,7 +183,6 @@ log'a yazılır (`reranker lock wait`).
   PLAN yalnız kullanıcının isteğini görür, aşağıya brief gider.
 - Atıflar dosya + sayfa olarak yazılır; PDF'i o sayfada açan bağlantı yok.
   `/uploads/{id}` bilerek `attachment` + `sandbox` CSP ile sunuluyor.
-- `AGENT_EXECUTOR=camel` yolunda Knowledge Agent yoktur; bayrak sessizce düşer.
 
 ## Bilinen açıklar
 

@@ -609,15 +609,3 @@ def test_mail_agent_is_listed_only_when_reading_is_enabled(monkeypatch: Any) -> 
     assert "Research Agent" in names
 
 
-def test_mail_agent_is_not_in_camels_assignment_roster() -> None:
-    """Display roster only.
-
-    camel_service.WORKER_ROLES is what CAMEL's coordinator reads to route
-    subtasks, and the CAMEL path has no mail worker. A Mail Agent in there
-    would let the coordinator assign work to an agent that cannot run.
-    """
-    import camel_service
-
-    assert all(
-        role_name != "Mail Agent" for _, role_name, _ in camel_service.WORKER_ROLES
-    )

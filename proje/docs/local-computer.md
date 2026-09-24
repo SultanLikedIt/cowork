@@ -99,7 +99,7 @@ docker compose up -d backend
   an allowed directory — this only applies when the model is given an
   *explicit* filename with no known disk path, a file exceeds the
   ~30MB cap, or an older bridge process predates `/save-and-open`.
-- `mode: "single"` (the CAMEL direct-chat path) is not wired to this
+- `mode: "single"` (the direct-chat path) is not wired to this
   fast-path at all yet — only `mode: "multi"` (Workforce) is.
 
 ## Manual end-to-end verification

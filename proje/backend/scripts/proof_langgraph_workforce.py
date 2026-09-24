@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import time
 
-from execution.executor_config import agent_executor
 from execution.langgraph_runtime.workforce import WORKER_IDS, run_workforce_in_thread
 from model_config import UsageTracker
 
@@ -26,7 +25,6 @@ class FakeCB:
 
 
 def main() -> None:
-    print("executor=", agent_executor())
     print("WORKER_IDS=", WORKER_IDS)
     cb = FakeCB()
     handle_box: dict = {}

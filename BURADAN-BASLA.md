@@ -90,15 +90,6 @@ MODEL_NAME=deepseek/deepseek-v4-flash
 MODEL_API_KEY=sk-or-...
 ```
 
-Dosyada bir de şu satır var, **olduğu gibi bırak**:
-
-```env
-AGENT_EXECUTOR=langgraph
-```
-
-Bunu silersen sistem eski CAMEL yoluna düşer ve bazı özellikler sessizce
-çalışmaz. (Nedeni: `HANDOVER.md` § 1)
-
 Kaydet, kapat.
 
 ### Adım 3 — Başlat
@@ -156,7 +147,7 @@ Sonra `proje/HANDOVER.md` — asıl rehber. Sırasıyla:
 
 | Bölüm | Ne anlatır |
 | --- | --- |
-| § 1 | Proje nedir, iki executor (CAMEL / LangGraph), reponun geçmişi |
+| § 1 | Proje nedir, LangGraph çalıştırıcı, reponun geçmişi |
 | § 2–3 | Kurulum ve ayarların tamamı |
 | § 4 | Arayüzün nasıl kullanılacağı, hangi modda ne yapılır |
 | § 5 | Mimari — bir istek uçtan uca nasıl işleniyor |

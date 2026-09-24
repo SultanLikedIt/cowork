@@ -1,8 +1,8 @@
-"""Ground-truth tool-call logging, separate from CAMEL's task-level events.
+"""Ground-truth tool-call logging, separate from the task-level events.
 
-CAMEL's WorkforceCallback (see workforce_callback.py) only bridges
+The Workforce callback (see workforce_callback.py) only bridges
 task/worker lifecycle events -- it has no per-tool-call detail, so there is
-currently no way to verify whether a worker's tool actually ran, what was
+otherwise no way to verify whether a worker's tool actually ran, what was
 sent to it, or what it actually returned. An agent's response text can
 describe search results that were never actually fetched. This module wraps
 a tool function so every real invocation is recorded with its raw
@@ -84,10 +84,10 @@ def is_logged(func: Callable) -> bool:
     """Whether `func` is already wrapped by logged_tool.
 
     Exists because two call sites legitimately want to wrap: capabilities.
-    resolve_tools() wraps every bound tool uniformly, while
-    camel_service._budgeted_search_tool() wraps search_web *before* its
-    budget check so that only calls which really hit the network are
-    recorded. Both ran, so every real search produced TWO identical records
+    resolve_tools() wraps every bound tool uniformly, while a budgeted
+    search tool wraps search_web *before* its budget check so that only
+    calls which really hit the network are recorded. Both ran, so every
+    real search produced TWO identical records
     -- doubling search counts in the tool-call log and in anything derived
     from it. Marking the wrapper lets the outer site skip an already-wrapped
     tool and keeps this module's promise exact: one record == one real call.

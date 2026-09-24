@@ -7,7 +7,7 @@ covers the replacement: dropped turns get folded into a per-conversation
 running summary (db.conversations.summary) instead, so the model still sees
 what happened earlier even once raw turns stop fitting.
 
-No model or network: camel_service.summarize_conversation_history is
+No model or network: main.summarize_conversation_history is
 monkeypatched to a deterministic stub.
 
     python test_conversation_context_compaction.py
@@ -23,7 +23,6 @@ os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="agent_webapp_test_"))
 
 import db  # noqa: E402
 import main  # noqa: E402
-import camel_service  # noqa: E402
 from model_config import UsageTracker  # noqa: E402
 
 db.run_migrations()
@@ -90,15 +89,15 @@ def test_long_conversation_gets_summarized_not_dropped() -> None:
     # forcing the oldest ones to be dropped -> folded into a summary instead.
     _insert_messages(workspace_id, conversation_id, count=10, size=4_000)
 
-    original = camel_service.summarize_conversation_history
-    camel_service.summarize_conversation_history = _fake_summarize
+    original = main.summarize_conversation_history
+    main.summarize_conversation_history = _fake_summarize
     try:
         tracker = UsageTracker()
         context = asyncio.run(
             main._build_conversation_context(conversation_id, tracker)
         )
     finally:
-        camel_service.summarize_conversation_history = original
+        main.summarize_conversation_history = original
 
     check("long conversation still returns context", context is not None, context)
     check(
@@ -144,8 +143,8 @@ def test_second_overflow_only_folds_new_turns() -> None:
         prefix = "PREV+" if previous_summary else ""
         return f"{prefix}SUMMARY[{len(dropped_entries)}]"
 
-    original = camel_service.summarize_conversation_history
-    camel_service.summarize_conversation_history = _counting_summarize
+    original = main.summarize_conversation_history
+    main.summarize_conversation_history = _counting_summarize
     try:
         tracker = UsageTracker()
         asyncio.run(main._build_conversation_context(conversation_id, tracker))
@@ -155,7 +154,7 @@ def test_second_overflow_only_folds_new_turns() -> None:
         _insert_messages(workspace_id, conversation_id, count=3, size=4_000)
         asyncio.run(main._build_conversation_context(conversation_id, tracker))
     finally:
-        camel_service.summarize_conversation_history = original
+        main.summarize_conversation_history = original
 
     check(
         "summarizer was called on both overflow events",

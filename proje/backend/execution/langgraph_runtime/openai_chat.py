@@ -1,6 +1,6 @@
 """OpenAI-compatible chat helper shared by LangGraph nodes.
 
-Uses the same MODEL_* env vars as model_config.get_model, without Camel.
+Reads the MODEL_* env vars (defaults in model_config).
 """
 
 from __future__ import annotations

@@ -156,7 +156,7 @@ MAX_TABLE_SOURCE_BYTES = 20 * 1024 * 1024
 # read_table_rows calls (342K Document input tokens across 19 calls). These
 # totals are tracked per ReadOnlyWorkspaceTools instance, which is built
 # once per job and shared across every worker/subtask/attempt (see
-# camel_service.py's _workspace_tools()), so the ceiling is genuinely
+# capabilities.resolve_tools), so the ceiling is genuinely
 # per-run, not per-call or per-agent. Once reached, the affected tool
 # returns a clear, bounded "budget exhausted" result instead of raising --
 # table_summary/compare_tables/inspect_table remain fully available
@@ -932,7 +932,7 @@ class ReadOnlyWorkspaceTools:
         # signal (used only to phrase the repeat note); the cache is what
         # actually prevents a repeat from re-executing. One instance is
         # shared by every worker/subtask for the whole job (see
-        # camel_service.py's _workspace_tools()), so both are genuinely
+        # capabilities.resolve_tools), so both are genuinely
         # per-run, not per-call or per-agent.
         self._call_counts: dict[tuple, int] = {}
         self._call_cache: dict[tuple, Any] = {}

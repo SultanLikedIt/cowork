@@ -42,13 +42,6 @@ MODEL_NAME=deepseek/deepseek-v4-flash
 MODEL_API_KEY=sk-...
 ```
 
-Hemen altına şunu da ekle — **yazmazsan eski CAMEL yolu çalışır** ve LangGraph'a
-özel özellikler sessizce kaybolur:
-
-```env
-AGENT_EXECUTOR=langgraph
-```
-
 Sonra:
 
 ```powershell
@@ -87,8 +80,8 @@ docker compose ps                                # hepsi Up
 | paddleocr-vl-api | yayınlanmaz | OCR (yalnız `COMPOSE_PROFILES=paddleocr`) |
 | *(host)* local computer bridge | 127.0.0.1:8765 | Dosya açma + Outlook e-posta (Docker **dışında**) |
 
-Portlar 8081/8001 bilerek seçildi: eski CAMEL yığını (8080/8000) ile yan yana
-çalışabilsin diye.
+Portlar 8081/8001 bilerek seçildi: 8080/8000'i kullanan başka bir yığınla yan
+yana çalışabilsin diye.
 
 ---
 
@@ -304,7 +297,6 @@ docker compose exec backend python -m pytest tests -q   # container içinde (ön
 | Arayüz açılıyor ama cevap yok | `.env`'de `MODEL_*` üçlüsü; `docker compose logs -f backend` |
 | Yeni özellik arayüzde yok | Frontend yeniden derlenmedi: `docker compose up -d --build frontend`, sonra Ctrl+F5 |
 | Kod değişikliği etkisiz | Backend yeniden derlenmedi (§ 7) |
-| LangGraph özellikleri yok | `.env`'de `AGENT_EXECUTOR=langgraph` yazılı mı |
 | Taranmış PDF boş geliyor | `DOCLING_ENABLE_OCR=true`; GPU yoksa Tesseract yedeği |
 | Zamanlanmış görev çalışmadı | Bilgisayar açık mıydı; `SCHEDULING_ENABLED`; Scheduled ekranında run durumu |
 | E-posta gitmiyor | Köprü çalışıyor mu (`:8765/health`), klasik Outlook açık ve hesabı tanımlı mı → [`docs/outlook.md`](docs/outlook.md) |

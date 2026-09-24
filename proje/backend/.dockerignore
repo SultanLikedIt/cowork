@@ -1,9 +1,5 @@
-# Keep the Windows-only offline bundle and the full CAMEL source checkout
-# out of the build context -- neither is needed to build the image
-# (camel-ai installs from vendor/camel-offline-bundle-linux instead) and
-# together they are hundreds of MB.
-vendor/camel-offline-bundle
-vendor/camel-source
+# Leftover CAMEL-era wheel cache, if a local copy still exists.
+vendor/camel-offline-bundle-linux
 
 # Local dev/runtime state that must not be baked into the image.
 app.db

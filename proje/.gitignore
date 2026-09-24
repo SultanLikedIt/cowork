@@ -59,17 +59,13 @@ backend/reliability-results/
 .DS_Store
 Thumbs.db
 
-# NOTE: backend/vendor/ (camel-offline-bundle, camel-source) is
-# intentionally tracked in this repo for air-gapped deployment and
-# security review purposes. Do NOT add it here.
-
-# camel-offline-bundle-linux is a rebuildable manylinux wheel cache (see
-# backend/Dockerfile), not reviewed source -- narrow exception to the note
-# above. docling-models is a downloadable Docling model-weights cache (see
-# docs/document-ingestion.md for the deterministic setup step); both are
-# too large and too easy to regenerate to commit.
-backend/vendor/camel-offline-bundle-linux/
+# docling-models is a downloadable Docling model-weights cache (see
+# docs/document-ingestion.md for the deterministic setup step); too large and
+# too easy to regenerate to commit.
 backend/vendor/docling-models/
+# Wheel cache the old CAMEL-era Dockerfile built from; unused now, kept
+# ignored so a leftover local copy is never committed.
+backend/vendor/camel-offline-bundle-linux/
 # BGE reranker weights (BAAI/bge-reranker-v2-m3) -- downloadable, see .env.example.
 backend/vendor/bge-reranker-v2-m3/
 

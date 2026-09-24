@@ -87,23 +87,13 @@ def test_an_unusable_platform_is_reported_through_the_missing_channel() -> None:
     assert "missing.append((SOCIAL_READ" in source
 
 
-def test_the_camel_path_drops_the_kwarg_instead_of_crashing() -> None:
-    """camel_service's entrypoint has no such parameter; forwarding it would
-    turn an executor switch into a TypeError."""
-    import inspect
-
-    from execution import adapter
-
-    source = inspect.getsource(adapter.run_workforce_in_thread)
-    assert 'kwargs.pop("reads_social", None)' in source
-
-
 def test_the_role_is_scheduled_and_never_answers_alone() -> None:
     pytest.importorskip("langgraph")
     from execution.langgraph_runtime import workforce
 
     roles = workforce._select_roles(
         job_capabilities=frozenset({capabilities.SOCIAL_READ}),
+        fast_path_role=None,
         wants_artifact=False,
     )
     assert workforce.ROLE_SOCIAL in roles

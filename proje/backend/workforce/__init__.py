@@ -1,1 +1,1 @@
-"""Workforce orchestration helpers extracted from camel_service."""
+"""Workforce event models and user-facing answer helpers."""

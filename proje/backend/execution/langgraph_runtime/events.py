@@ -1,7 +1,7 @@
-"""SSE lifecycle events for LangGraph paths (Camel-free dicts).
+"""SSE lifecycle events for the LangGraph paths, as plain dicts.
 
-Shapes match CAMEL WorkforceEventBase + workforce.events.TokenDeltaEvent so
-``main._apply_event`` needs no special cases.
+Shapes are the lifecycle payloads ``main._apply_event`` reads (plus
+workforce.events.TokenDeltaEvent), so it needs no special cases.
 """
 
 from __future__ import annotations

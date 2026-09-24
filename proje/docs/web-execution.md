@@ -35,7 +35,7 @@ rendered rather than statically fetched.
 
 Direct/Workforce routing, compact activity/SSE events, exact-call
 memoization, and the per-agent search budget stay at the product
-boundary. CAMEL `SearchToolkit` / `BrowserToolkit` are not bound.
+boundary. No generic search/browser toolkit is bound.
 
 ## Deep research: survey vs iter
 

@@ -72,13 +72,6 @@ def test_disabled_reading_is_reported_through_the_missing_channel() -> None:
     assert "missing.append(" in source and "(GITHUB_READ," in source
 
 
-def test_the_camel_path_drops_the_kwarg_instead_of_crashing() -> None:
-    from execution import adapter
-
-    source = inspect.getsource(adapter.run_workforce_in_thread)
-    assert 'kwargs.pop("reads_github", None)' in source
-
-
 def test_routing_and_the_job_pass_github_through() -> None:
     import main
 

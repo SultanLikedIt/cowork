@@ -1,15 +1,12 @@
-camel-ai==0.2.80
-# CAMEL 0.2.80 imports FastMCP from mcp.server; MCP 2.0 removed that export.
-mcp==1.28.1
-# LangGraph is installed from PyPI in Dockerfile (separate RUN) -- it is NOT
-# in the camel offline wheel bundle, so it cannot appear in this --no-index
-# requirements file. See Dockerfile "LangGraph dual-path" step.
-# Pin for docs/CI reference: langgraph==0.6.7
 fastapi==0.121.2
 uvicorn==0.51.0
 openai==2.49.0
 python-dotenv==1.2.2
 python-multipart==0.0.32
+# The Workforce and Single paths (execution/langgraph_runtime/).
+langgraph==0.6.7
+# OpenBot remote AG-UI bridge (openbot/agui_agent.py).
+ag-ui-protocol>=0.1.15
 # Docling is the primary parser for PDF, DOCX, PPTX, XLSX, and HTML uploads.
 # The adapter persists Docling's canonical document model for reference reuse.
 docling==2.114.0
@@ -19,41 +16,21 @@ torch==2.6.0; platform_system == "Linux"
 torchvision==0.21.0; platform_system == "Linux"
 # python-docx writes the .docx export of a job's final answer.
 python-docx==1.2.0
-# python-pptx writes .pptx artifacts (document_export.build_pptx). Already
-# pulled in transitively by docling; pinned explicitly here so it is not
-# silently dropped if that transitive dependency ever changes.
+# python-pptx writes .pptx artifacts (document_pptx / document_export).
 python-pptx==1.0.2
-# reportlab writes the .pdf export. Pure-Python wheel; its only real
-# dependency is pillow>=9.0.0, which the existing pinned Pillow 10.4.0
-# already satisfies -- so it does NOT disturb camel-ai's pillow<11.0.0
-# constraint.
-# Verified with `pip check` after installing offline from the bundle.
+# reportlab writes the .pdf fallback renderer.
 reportlab==5.0.0
 pandas==3.0.5
 openpyxl==3.1.5
 # Used by web_search.py to call the self-hosted SearXNG instance over the
-# Docker network (see docker-compose.yml's searxng service). Replaces the
-# former ddgs/duckduckgo_search dependency -- no external search API or key.
+# Docker network (see docker-compose.yml's searxng service).
 requests==2.34.2
-# ag-ui-protocol is installed in Dockerfile (PyPI) for OpenBot AG-UI bridge.
-# JS-capable web acquisition. Crawl4AI (Playwright/Chromium, self-hosted --
-# no external API/service, airgap-compatible) owns navigation, redirects and
-# JS rendering; Trafilatura extracts clean prose and Parsel/lxml provide
-# deterministic HTML/XML/link/table selectors on the rendered DOM.
-#
-# crawl4ai==0.9.2 and playwright==1.62.0 are deliberately NOT listed as
-# requirement lines here (see Dockerfile for the actual install command).
-# crawl4ai depends on psutil>=6.1.1; camel-ai==0.2.80 (above) depends on
-# psutil<6. `pip install -r requirements.txt` resolves every line in ONE
-# pass, and pip checks declared-dependency compatibility between ALL lines
-# in that pass regardless of what's already installed -- so having both
-# camel-ai and crawl4ai as requirement lines here is unsatisfiable even
-# though each is individually installable (verified: pip raises
-# ResolutionImpossible either way). Installing this file directly (not via
-# Docker) needs the same two extra steps as the Dockerfile: install
-# crawl4ai==0.9.2 and playwright==1.62.0 in their own separate `pip
-# install` command, then `playwright install chromium`, then (after this
-# file) `pip install --no-deps "psutil>=6.1.1"`.
+# JS-capable web acquisition. Crawl4AI (Playwright/Chromium, self-hosted)
+# owns navigation, redirects and JS rendering; Trafilatura extracts clean
+# prose and Parsel/lxml provide deterministic HTML/XML/link/table selectors
+# on the rendered DOM. After installing, run `playwright install chromium`.
+crawl4ai==0.9.2
+playwright==1.62.0
 trafilatura==2.1.0
 parsel==1.11.0
 lxml==6.1.1

@@ -1,4 +1,4 @@
-import { BookOpen, Check, Clock, Code2, FileText, Globe, PanelLeft, Plus, Search } from 'lucide-react'
+import { BookOpen, Check, Clock, Code2, FileText, Globe, PanelLeft, Search } from 'lucide-react'
 
 import { BotIcon } from '../icons.jsx'
 import { GitHubLogo, HackerNewsLogo, JiraLogo, OutlookLogo, RedditLogo } from '../brandLogos.jsx'
@@ -213,7 +213,6 @@ export default function HomeView({
   onSkillsChange,
   deepResearch,
   onDeepResearchChange,
-  onAddAgent,
   workers = [],
   workspaceName,
   workspaceId,
@@ -278,12 +277,11 @@ export default function HomeView({
 
           {isWorkforce ? (
             // A grid rather than one row: with the service agents there can
-            // be seven cards plus Add, which a single row squeezes into
-            // slivers. Columns come from the column's own width (auto-fill,
-            // 11.5rem minimum), not the viewport, because the sidebar
-            // changes how wide this column is at any given screen size. At
-            // full width that is four columns: built-in agents first, then
-            // the services, then Add -- two even rows when all are present.
+            // be eight cards, which a single row squeezes into slivers.
+            // Columns come from the column's own width (auto-fill, 11.5rem
+            // minimum), not the viewport, because the sidebar changes how
+            // wide this column is at any given screen size. At full width
+            // that is four columns: built-in agents first, then the services.
             <div className="mt-5 grid w-full grid-cols-[repeat(auto-fill,minmax(11.5rem,1fr))] gap-2">
               {builtIn.map((agent) => (
                 <AgentAvatar
@@ -304,33 +302,6 @@ export default function HomeView({
                   showLabel
                 />
               ))}
-              <SimpleTooltip label="Add an agent for this session">
-                <button
-                  type="button"
-                  onClick={onAddAgent}
-                  aria-label="Add an agent"
-                  className={cn(
-                    // Card-shaped so it takes its grid cell like the others
-                    // instead of a small square floating in a wide cell;
-                    // dashed so it reads as a slot to fill, not an agent.
-                    'group flex min-w-0 items-center gap-2.5 rounded-lg border border-dashed border-border/70',
-                    'bg-transparent px-3 py-2.5 text-left text-muted-foreground',
-                    'transition-colors duration-150',
-                    'hover:border-border hover:bg-muted/40 hover:text-foreground',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                  )}
-                >
-                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[11px] border border-border/60 bg-muted/40">
-                    <Plus className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                  <span className="flex min-w-0 flex-col">
-                    <span className="truncate text-[13px] font-medium leading-5">Add agent</span>
-                    <span className="text-[11px] leading-[1.35] text-muted-foreground">
-                      Your own specialist
-                    </span>
-                  </span>
-                </button>
-              </SimpleTooltip>
             </div>
           ) : (
             // The lone Single Agent card is held to the width one grid

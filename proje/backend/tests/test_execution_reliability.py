@@ -17,13 +17,12 @@ No pytest suite exists in this repo (see test_upload.py) -- run directly:
 import asyncio
 import asyncio
 import json
-import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import artifacts as artifacts_module
-import camel_service
+from execution.langgraph_runtime import openai_chat
 import capabilities
 import capability_routing
 import code_exec
@@ -65,9 +64,8 @@ def _workspace(with_xlsx: bool = False) -> Path:
 def test_routing_never_depends_on_a_model() -> None:
     """UI-selected Single strategy never constructs a routing agent."""
 
-    class _Exploding:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("no model call may happen during routing")
+    async def _exploding(*args, **kwargs):
+        raise AssertionError("no model call may happen during routing")
 
     import main
     import artifact_intent
@@ -78,9 +76,7 @@ def test_routing_never_depends_on_a_model() -> None:
         ("https://example.org/p sayfasına git, tabloyu çek, excel dosyası ver", False),
         ("Summarize the attached PDF", True),
     ]
-    with patch.object(camel_service, "ChatAgent", _Exploding), patch.object(
-        camel_service, "get_model", lambda *a, **k: None
-    ):
+    with patch.object(openai_chat, "complete_chat", _exploding):
         for topic, has_files in prompts:
             tracker = UsageTracker()
             single = main._routing_for_ui_mode(
@@ -105,9 +101,7 @@ def test_routing_never_depends_on_a_model() -> None:
                 "llm",
             ).normalized()
 
-        with patch.object(camel_service, "ChatAgent", _Exploding), patch.object(
-            camel_service, "get_model", lambda *a, **k: None
-        ), patch.object(
+        with patch.object(openai_chat, "complete_chat", _exploding), patch.object(
             artifact_intent, "classify_artifact_intent", fake_classify
         ):
             tracker = UsageTracker()
@@ -360,152 +354,6 @@ def test_per_run_text_budget_across_web_tools() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_finalization_turns_an_empty_run_into_a_real_answer() -> None:
-    """The Case B failure: valid XLSX created, job reported failed.
-
-    CAMEL's streaming loop breaks out the moment the iteration cap is reached
-    while the model is still emitting tool calls, leaving no text at all. The
-    work happened; only the summary is missing.
-    """
-    root = _workspace()
-    bound = capabilities.resolve_tools(
-        {capabilities.ARTIFACTS},
-        capabilities.ToolContext(workspace_root=str(root)),
-    )
-    bound.artifact_tools.create_xlsx_artifact("prices.xlsx", json.dumps([{"a": 1}]))
-
-    class _Agent:
-        _internal_tools = {"create_xlsx_artifact": object()}
-        step_timeout = None
-
-        def remove_tools(self, names):
-            for name in names:
-                self._internal_tools.pop(name, None)
-
-        async def astep(self, prompt):
-            class _Msg:
-                content = "I created prices.xlsx with the extracted table."
-
-            class _Response:
-                msg = _Msg()
-
-            assert not self._internal_tools, "tools must be unbound before finalizing"
-            return _Response()
-
-    emitted: list = []
-    text = asyncio.run(
-        camel_service._finalize_without_tools(
-            _Agent(), UsageTracker(), "t.0", emitted.append, bound
-        )
-    )
-    check("finalize: an answer is produced", "prices.xlsx" in text, text[:120])
-    check("finalize: the text is streamed to the UI", bool(emitted), str(emitted))
-
-    # The shape production actually uses. DIRECT builds its agent with
-    # stream=True, so astep returns AsyncStreamingChatAgentResponse -- which
-    # has no `.msg` at all. Reading `.msg` on it raises, and the surrounding
-    # except would swallow that, so the real answer would silently never
-    # appear and every run would land on the deterministic fallback.
-    class _StreamingAgent:
-        _internal_tools = {"create_xlsx_artifact": object()}
-        step_timeout = None
-
-        def remove_tools(self, names):
-            for name in names:
-                self._internal_tools.pop(name, None)
-
-        async def astep(self, prompt):
-            chunks = ["I created ", "prices.xlsx ", "with the extracted table."]
-
-            class _Streaming:
-                info = {"usage": {"prompt_tokens": 10, "completion_tokens": 5,
-                                  "total_tokens": 15}}
-
-                def __aiter__(self):
-                    async def gen():
-                        accumulated = ""
-                        for chunk in chunks:
-                            accumulated += chunk
-
-                            class _Msg:
-                                content = accumulated
-
-                            class _Partial:
-                                msg = _Msg()
-
-                            yield _Partial()
-
-                    return gen()
-
-                def __await__(self):
-                    async def settle():
-                        return self
-
-                    return settle().__await__()
-
-            return _Streaming()
-
-    streamed: list = []
-    tracker = UsageTracker()
-    text = asyncio.run(
-        camel_service._finalize_without_tools(
-            _StreamingAgent(), tracker, "t.0", streamed.append, bound
-        )
-    )
-    check(
-        "finalize: a STREAMING response is consumed correctly",
-        text == "I created prices.xlsx with the extracted table.",
-        repr(text),
-    )
-    check(
-        "finalize: streaming deltas reach the UI incrementally",
-        len(streamed) == 3,
-        str(len(streamed)),
-    )
-    check(
-        "finalize: the finalization call's tokens are attributed",
-        tracker.snapshot()["total_tokens"] == 15,
-        str(tracker.snapshot()),
-    )
-
-    # If the finalization call itself fails, the fallback must still be
-    # truthful -- built from artifacts that really exist. The failure below is
-    # deliberate, so its (correct) warning traceback is silenced to keep this
-    # suite's output readable.
-    camel_service.stabilization_logger.setLevel(logging.CRITICAL)
-
-    class _BrokenAgent(_Agent):
-        _internal_tools = {}
-
-        async def astep(self, prompt):
-            raise RuntimeError("model down")
-
-    text = asyncio.run(
-        camel_service._finalize_without_tools(
-            _BrokenAgent(), UsageTracker(), "t.0", emitted.append, bound
-        )
-    )
-    check("finalize: the fallback names the real file", "prices.xlsx" in text, text[:160])
-    check(
-        "finalize: the fallback does not claim success it cannot prove",
-        "reached its tool-use limit" in text,
-        text[:160],
-    )
-
-    # With no artifacts at all it must not invent any.
-    empty = capabilities.resolve_tools(
-        {capabilities.ARTIFACTS},
-        capabilities.ToolContext(workspace_root=str(_workspace())),
-    )
-    text = camel_service._describe_produced_artifacts(empty)
-    check(
-        "finalize: no artifacts means no claims",
-        "produced no files" in text and "fabricated" in text,
-        text[:160],
-    )
-    camel_service.stabilization_logger.setLevel(logging.WARNING)
-
-
 def test_concurrent_execution_is_bounded() -> None:
     check(
         "code execution has a host-wide concurrency ceiling",
@@ -534,7 +382,6 @@ def main() -> None:
     test_extracted_scratch_is_not_shown_as_a_deliverable()
     test_identical_artifact_creation_is_memoized()
     test_per_run_text_budget_across_web_tools()
-    test_finalization_turns_an_empty_run_into_a_real_answer()
     test_concurrent_execution_is_bounded()
 
     print()

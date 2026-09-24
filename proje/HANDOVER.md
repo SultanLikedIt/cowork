@@ -93,26 +93,11 @@ git branch -vv     # * main
 3. **21 Ağustos – 3 Eylül 2026** — 84 commit: LangGraph Workforce supervisor,
    web faz kontrolcüsü, belge üretimi düzeltmeleri, deep research, local
    computer köprüsü, AgentSearch sidecar.
-
-**CAMEL kodu hâlâ duruyor — bu kasıtlı.**
-
-`backend/camel_service.py` (4.700+ satır) silinmedi. İstersen tek satır env
-değişikliğiyle eski davranışa dönebilirsin:
-
-```env
-AGENT_EXECUTOR=camel      # eski CAMEL yolu
-AGENT_EXECUTOR=langgraph  # guncel yol -- teslimde bunu kullan
-```
-
-Anahtar `backend/execution/adapter.py` içinde (41 satır, okuması kolay).
-Uygulamanın geri kalanı `camel_service`'i doğrudan çağırmaz, hep adapter'ı
-çağırır — bu yüzden iki yol yan yana yaşayabiliyor.
-
-> **Ama dikkat:** kod default'u (env boşsa) **`camel`**'dir, `langgraph` değil.
-> Klasör adı `agent-webapp-langgraph` olsa bile. `.env`'ye yazmazsan eski yol
-> çalışır ve LangGraph'a özel bazı özellikler (`reuses_uploaded_document`,
-> `opens_on_user_computer`) **sessizce kaybolur** — hata vermez, sadece
-> çalışmaz. "Niye yüklediğim şablonu görmedi?" sorusunun cevabı çoğu zaman budur.
+4. **24 Eylül 2026** — CAMEL tamamen kaldırıldı: `camel_service.py`
+   (4.700+ satır), CAMEL Single yolu, `AGENT_EXECUTOR` anahtarı, `camel-ai`
+   bağımlılığı ve vendor'daki CAMEL kaynağı silindi. Tek çalıştırıcı
+   `backend/execution/langgraph_runtime/`. Geçiş notları:
+   [`docs/archive/langgraph-migration.md`](docs/archive/langgraph-migration.md).
 
 Eski repolarda kalan, bu dala hiç girmemiş birkaç terk edilmiş deney dalı var
 (`bsaltalii/recovery/orchestration-stable-web` — 7 commit "Routing V2" denemesi,
@@ -120,26 +105,22 @@ Eski repolarda kalan, bu dala hiç girmemiş birkaç terk edilmiş deney dalı v
 bırakıldı ve sonraki 84 commit'lik iş onların yerine geçti. Referans dışında
 ihtiyaç duyulması beklenmiyor.
 
-### İki executor — özet
+### Çalıştırıcı
 
-| `AGENT_EXECUTOR` | Ne çalışır | Dosya |
-| --- | --- | --- |
-| `langgraph` | Single + Workforce, LangGraph grafında | `execution/langgraph_runtime/` |
-| `camel` (veya boş/bilinmeyen) | Eski CAMEL yolu | `camel_service.py` |
-
-Seçim `backend/execution/adapter.py`'de yapılır. Ayrıntı ve tarihçe için
-yukarıdaki köken bölümüne bak.
+Single ve Workforce, LangGraph grafında çalışır: `execution/langgraph_runtime/`
+(`single.py`, `workforce.py`). Seçilecek başka bir yol yoktur.
 
 ### Portlar
 
-Eski CAMEL yığınıyla **yan yana** çalışabilsin diye host portları farklıdır:
+8080/8000'i kullanan başka bir yığınla **yan yana** çalışabilsin diye host
+portları farklıdır:
 
-| Servis | Bu repo | Eski Camel yığını |
-| --- | --- | --- |
-| Arayüz | http://127.0.0.1:8081 | :8080 |
-| API | http://127.0.0.1:8001 | :8000 |
-| AgentSearch | http://127.0.0.1:3939 | (ayrı kurulum) |
-| SearXNG | yayınlanmaz (Docker ağı) | — |
+| Servis | Adres |
+| --- | --- |
+| Arayüz | http://127.0.0.1:8081 |
+| API | http://127.0.0.1:8001 |
+| AgentSearch | http://127.0.0.1:3939 |
+| SearXNG | yayınlanmaz (Docker ağı) |
 
 Container **içinde** backend hâlâ 8000 dinler; host'a **8001** olarak açılır.
 
@@ -245,7 +226,6 @@ En az şunlar gerçek olmalı:
 MODEL_BASE_URL=https://senin-gateway/v1
 MODEL_NAME=kullandigin-model
 MODEL_API_KEY=anahtar
-AGENT_EXECUTOR=langgraph
 ```
 
 Compose **bilerek** model default'u yazmaz; boş bırakırsan model çağrıları
@@ -339,7 +319,7 @@ Kapatmak için `RERANKER_ENABLED=false`; CPU thread sayısı `RERANKER_THREADS` 
 
 - [ ] Kaynak yerinde: klasörle geldiyse `vendorgent-search` dolu, klonladıysan
       `git submodule update --init --recursive` çalıştı
-- [ ] Kökte `.env` var; üç `MODEL_*` alanı dolu; `AGENT_EXECUTOR=langgraph`
+- [ ] Kökte `.env` var; üç `MODEL_*` alanı dolu
 - [ ] `docker compose up --build` hatasız bitti
 - [ ] http://127.0.0.1:8081 ve http://127.0.0.1:8001/docs açılıyor
 - [ ] Single kısa soruya cevap veriyor
@@ -357,7 +337,6 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `MODEL_BASE_URL` | ✅ | OpenAI uyumlu endpoint; sondaki `/v1` önemli |
 | `MODEL_NAME` | ✅ | O endpoint'in beklediği model id |
 | `MODEL_API_KEY` | ✅ | Gateway anahtarı (Ollama için gelenek: `ollama`) |
-| `AGENT_EXECUTOR` | — | `langgraph` \| `camel` (boşsa `camel`) |
 | `AGENT_SEARCH_ENABLED` | — | `false` yaparsan yalnız SearXNG |
 | `AGENT_SEARCH_BASE_URL` | — | Sidecar adresi |
 | `SEARXNG_BASE_URL` | — | Host'ta backend çalıştırırken gerekir |
@@ -497,15 +476,11 @@ görünen kod çalışan koddur, çıktı gerçekten basılan çıktıdır. Yük
 Excel/CSV'yi analiz eder, grafik çizer, grafikleri rapora gömer. Denenecek
 cümleler: § 4.4; ayrıntı: [`docs/coding-agent.md`](docs/coding-agent.md).
 
-### 4.10 Manuel agent
+### 4.10 Manuel agent (kaldırıldı)
 
-Workforce havuzuna isim + açıklama ile agent eklenebilir (**en fazla 10**).
-SQLite'da kalır. Research / Document / Coding'in yerine geçmez, ek uzmandır.
-
-> ⚠️ Manuel agent'lar **yalnız CAMEL yolunda** çalışır
-> (`camel_service.add_manual_worker`). `AGENT_EXECUTOR=langgraph` altında —
-> yani uygulamanın varsayılan kurulumunda — listede görünür ama hiçbir işe
-> atanmaz. Bilinen açık, § 11.
+Arayüzdeki "Add agent" 24.09.2026'da CAMEL ile birlikte kaldırıldı: yalnız
+CAMEL yolunda çalışıyordu, LangGraph'ta listede görünüp hiçbir işe
+atanmıyordu. Eski kayıtlar `manual_workers` tablosunda durur, okunmaz.
 
 ### 4.11 Ne beklememeli
 
@@ -529,12 +504,11 @@ FastAPI (backend/main.py)
     SQLite  DATA_DIR/app.db
     upload  → Docling  → job workspace (sources/ + artifacts/)
         │
-        ├─ mode=single  → execution.adapter.run_single_agent
-        │                    camel ChatAgent  VEYA  LangGraph single
+        ├─ mode=single  → langgraph_runtime.single.run_single_agent
         │
         └─ mode=multi   → artifact_intent + turn_resolution
-                             execution.adapter.run_workforce_in_thread
-                               camel Workforce  VEYA  LangGraph supervisor
+                             langgraph_runtime.workforce.run_workforce_in_thread
+                               LangGraph supervisor
                                  Research / Document / Coding / Assistant
                                  web_controller: SEARCH → SELECT → FETCH → ANSWER
                                  document_model / document_html / openpyxl
@@ -555,9 +529,6 @@ FastAPI (backend/main.py)
 | Document Agent | Word/PDF/PPTX/HTML/Excel yazma, şablon doldurma |
 | Coding Agent | Kodu yazar, **çalıştırır**, hata varsa düzeltir, gerçek çıktıyı açıklar; yüklenen Excel/CSV'yi analiz eder, grafik (PNG) çizer. Yazdığı xlsx/csv istenen dosyaysa Document atlanır; rapor istendiyse Document grafikleri PDF/Word'e gömer ([`docs/coding-agent.md`](docs/coding-agent.md)) |
 | Assistant | Genel; "bilgisayarımda aç" dahil |
-
-CAMEL yolunda (`camel_service.py`) benzer sabit havuz + coordinator'ın gerekirse
-ürettiği dinamik işçi vardır.
 
 ### 5.2 Niyet sınıflandırması
 
@@ -665,9 +636,6 @@ agent-webapp-langgraph/
 | `main.py` | FastAPI: upload, run-pipeline, jobs, SSE, workspace, export, execute |
 | `db.py` | SQLite, migrasyonlar, conversation/job |
 | `model_config.py` | `MODEL_*` env, UsageTracker (token + süre) |
-| `execution/adapter.py` | camel / langgraph anahtarı |
-| `execution/executor_config.py` | `AGENT_EXECUTOR` okuma |
-| `camel_service.py` | CAMEL Single + Workforce (büyük dosya) |
 | `execution/langgraph_runtime/single.py` | LangGraph Single |
 | `execution/langgraph_runtime/workforce.py` | LangGraph Workforce (asıl işçi grafı) |
 | `execution/langgraph_runtime/openai_chat.py` | Chat Completions, retry, truncation |
@@ -719,9 +687,10 @@ agent-webapp-langgraph/
 
 | Dosya | Görev |
 | --- | --- |
-| `workforce_callback.py` | CAMEL event → queue |
+| `workforce_callback.py` | Workforce thread'inin olaylarını SSE kuyruğuna taşır |
+| `workforce/answer_format.py` | Son cevabın temizlenmesi + yazma efekti, sohbet özeti |
 | `tool_call_log.py` | Tool audit |
-| `stream_protocol.py` | SSE şekli |
+| `stream_protocol.py` | Model metninden tool-call işaretlerini temizler |
 | `outlook.py` | Outlook köprü istemcisi, e-posta gövdesi, posta okuma istemcisi, `/integrations/outlook` |
 | `mail_controller.py` | Posta kutusu fazları: PLAN→SEARCH→SELECT→READ, alıntı çiti, ek indirme |
 | `jira_client.py` / `jira_query.py` / `jira_controller.py` | Jira: REST istemcisi (Cloud + Server/DC), model alanları → JQL, PLAN→SEARCH→SELECT→READ→ANSWER |
@@ -731,10 +700,8 @@ agent-webapp-langgraph/
 | `runtime_context.py` | Job context |
 | `golden_prompts.py` | Gerçek kullanıcı cümleleriyle regresyon |
 
-Vendor dizinleri: `backend/vendor/camel-source/` (CAMEL 0.2.80 kaynağı,
-inceleme için), `camel-offline-bundle/` (Windows wheel),
-`camel-offline-bundle-linux/` (Docker build cache, gitignore),
-`docling-models/` (ağırlıklar, gitignore).
+Vendor dizinleri: `docling-models/` ve `bge-reranker-v2-m3/` (ağırlıklar,
+gitignore).
 
 ### Frontend
 
@@ -793,7 +760,7 @@ Backend kök path'lerini dinler; tarayıcı `/api` öneki ekler (nginx/Vite soya
 | GET | `/jobs/{id}/artifacts/{path}` | Üretilen dosyayı indir |
 | POST | `/jobs/{id}/export/{fmt}` | Cevabı md/txt/docx/pdf yap |
 | POST | `/execute` | Kod çalıştır (UI'daki Run) |
-| GET/POST | `/workers` | Havuz + manuel agent |
+| GET | `/workers` | İşçi havuzu |
 | GET/POST/PATCH/DELETE | `/workspaces` | Workspace |
 | DELETE | `/conversations/{id}` | Sohbet sil |
 | GET | `/skills` | Skill listesi |
@@ -872,23 +839,14 @@ venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-`requirements.txt` tek geçişte **crawl4ai ile camel-ai'yi birlikte çözemez**
-(psutil pin çatışması: camel-ai `<6` ister, crawl4ai `>=6.1.1`). Dockerfile ile
-aynı ek adımlar, bu sırayla:
-
-```powershell
-pip install crawl4ai==0.9.2 playwright==1.62.0
-python -m playwright install chromium
-pip install --no-deps "psutil>=6.1.1"
-pip install "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
-pip install pytest pytest-asyncio
-```
-
-PDF'ler Playwright Chromium ile basılır (crawl4ai ile aynı tarayıcı). Yerelde bir kez:
+Ardından tarayıcı ve test araçları:
 
 ```powershell
 python -m playwright install chromium
+pip install "matplotlib==3.11.2" pytest pytest-asyncio pypdf
 ```
+
+Web sayfaları ve PDF'ler bu Playwright Chromium ile açılır/basılır.
 
 Chromium yoksa PDF otomatik olarak reportlab ile üretilir.
 
@@ -930,15 +888,7 @@ Compose SearXNG'yi host'a **yayınlamaz** (`expose` only). Host'tan vurmak için
 `docker-compose.yml`'ye geçici `ports: ["8080:8080"]` ekle, ya da backend'i de
 Compose'ta çalıştır.
 
-### Offline wheel (Windows, ağ yok)
-
-```powershell
-cd backend
-venv\Scripts\python -m pip install --no-index --find-links vendor\camel-offline-bundle -r requirements.txt
-```
-
-Crawl4AI / Playwright / Docling / LangGraph bu bundle'da eksik kalabilir. Tam
-air-gap ayrı bir proje işidir.
+Ağsız (air-gap) kurulum desteklenmiyor; bağımlılıklar PyPI'den kurulur.
 
 ---
 
@@ -952,7 +902,7 @@ Gerçek Chromium **yok**; crawl testleri sahte engine kullanır.
 Host'ta venv yoksa **container içinde** koş:
 
 ```powershell
-docker compose exec backend pip install pytest pytest-asyncio
+docker compose exec backend pip install pytest pytest-asyncio pypdf
 docker compose exec backend python -m pytest tests -q
 ```
 
@@ -1009,8 +959,6 @@ Docker ayaktayken sırayla:
 - Frontend: Vite anında; Docker image için `docker compose up -d --build frontend`
 - Backend Python: yerelde `--reload`; **Docker'da mutlaka rebuild**
 - `docker-compose.yml` / Dockerfile: her hâlükârda rebuild
-- CAMEL pin `0.2.80` — rastgele yükseltme
-- `requirements.txt` ile crawl4ai aynı `pip install -r` satırında olamaz
 
 ### Log
 
@@ -1049,17 +997,16 @@ Kodda duruyor, **henüz bitmedi**:
 2. **İki docx'te "içerik A, biçim B" ayrımı zayıf** — şablon seçimi kırılgan.
 3. **CI yalnız `main`'e push'ta ve backend'e dokunan PR'da koşar**
    (`.github/workflows/backend-tests.yml`). Dal üstünde çalışırken testleri
-   elle koş. Son ölçüm (2026-09-23): **1579 geçti, 1 kaldı** — kalan
-   `test_social_wiring::test_the_role_is_scheduled_and_never_answers_alone`,
-   `_select_roles`'u `fast_path_role` olmadan çağırıyor; önceden de bozuktu.
+   elle koş. Son ölçüm (2026-09-24, CAMEL kaldırıldıktan sonra): **1409
+   geçti, 0 kaldı**. Aradaki fark silinen, yalnız CAMEL yolunu test eden
+   dosyalardır.
 4. **OpenRouter sağlayıcısı OpenInference** deepseek-v4-flash cevabının
    tamamını `reasoning` alanına yazıp `content`'i boş bırakıyor (finish=stop).
    Coding Agent bunu yakalıyor (`complete_chat(reasoning_fallback=True)` +
    150 sn sınır + bir yeniden deneme); **Research / Document / Assistant
    yakalamıyor** — o sağlayıcıya düşen bir Document çağrısı 400 sn bekleyip
    boş döndü. Kalıcı çözüm adayı: OpenRouter'da `provider.ignore`.
-5. **Manuel agent'lar LangGraph yolunda kullanılmıyor** (§ 4.10).
-6. **Coding Agent'ın kod çalıştırması gerçek sandbox değildir** — süreç
+5. **Coding Agent'ın kod çalıştırması gerçek sandbox değildir** — süreç
    seviyesinde sınır (`code_exec.py` başındaki not). Güvenilmeyen girdi için
    ayrı, ağsız bir container gerekir.
 
@@ -1073,8 +1020,6 @@ Kodda duruyor, **henüz bitmedi**:
 - Testlerin canlı `/data`'ya sohbet yazması (`conftest.py` izolasyonu)
 - CI'ın `langgraph`'ı hiç kurmaması — suite collection'da 4 hatayla düşüyor,
   647 testin hiçbiri çalışmıyordu (workflow'a Dockerfile'daki kurulum adımı eklendi)
-- Turn-resolution testlerinin `camel_service`'i patch'lemesi — `AGENT_EXECUTOR=langgraph`
-  altında, yani uygulamanın gerçekte çalıştığı ayarda, sahte fonksiyon hiç çağrılmıyordu
 - Kaynak başlığında site menüsü kalması (`_clean_source_title`, nav kelimeleri) ve
   Deep anahtarının iş sürerken kilitlenmemesi — teslimdeki açık 1 ve 4
 - Coding Agent'ın kodu çalıştırmadan çıktı tahmin etmesi (PR #13): artık gerçekten
@@ -1144,12 +1089,6 @@ Kodda duruyor, **henüz bitmedi**:
 - 422 `document_parse_timeout` büyük taramada → `DOCLING_PARSE_TIMEOUT_SECONDS`'ı artır
 - Frontend upload listesinde pptx/html yok; bunlar **çıktı** olarak üretilir
 
-### Executor karışıklığı
-
-`AGENT_EXECUTOR` yazılmazsa **camel** çalışır. LangGraph-only kwargs
-(`reuses_uploaded_document`, `opens_on_user_computer`) camel fallback'inde
-**sessizce düşer** — "niye şablonu görmedi" sorusunun cevabı çoğu zaman budur.
-
 ### Son işe SQLite'dan bakmak
 
 ```powershell
@@ -1166,7 +1105,7 @@ Devralan kişi için ilk gün:
 2. Workforce'ta "İstanbul hakkında kısa bir PDF hazırla" çalıştır; sağ paneli
    izle — hangi işçi, hangi tool, kaç token.
 3. `backend/main.py` içindeki `_run_job`'ı oku; oradan
-   `execution/adapter.py` → `langgraph_runtime/workforce.py` zincirini takip et.
+   `langgraph_runtime/workforce.py` zincirini takip et.
 4. `backend/tests/test_web_controller.py` ve `test_document_export.py`'yi koş —
    sistemin gerçekten neyi garanti ettiğini testler anlatır.
 5. Bölüm 11'deki 4 açık maddeden birini seç ve düzelt; hepsinin yeri işaret edildi.
@@ -1175,7 +1114,7 @@ Konu bazlı derin referanslar:
 
 | Dosya | Ne zaman bak |
 | --- | --- |
-| [`docs/langgraph-migration.md`](docs/langgraph-migration.md) | Camel ↔ LangGraph geçiş notları |
+| [`docs/archive/langgraph-migration.md`](docs/archive/langgraph-migration.md) | CAMEL → LangGraph geçiş notları (arşiv) |
 | [`docs/web-execution.md`](docs/web-execution.md) | Arama + sayfa açma |
 | [`docs/document-ingestion.md`](docs/document-ingestion.md) | Upload / Docling |
 | [`docs/document-generation.md`](docs/document-generation.md) | PDF / Word / PowerPoint üretimi |

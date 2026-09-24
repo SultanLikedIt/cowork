@@ -3,7 +3,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    platform: linux/amd64  # matches the manylinux/x86_64 offline wheel bundle
     # Crawl4AI runs a real headless Chromium; Docker's default 64MB /dev/shm
     # is a known cause of Chromium crashing under memory pressure. Also
     # passing --disable-dev-shm-usage to the browser itself (crawl4ai_engine.py)
@@ -16,8 +15,6 @@ services:
       MODEL_BASE_URL: ${MODEL_BASE_URL:-}
       MODEL_NAME: ${MODEL_NAME:-}
       MODEL_API_KEY: ${MODEL_API_KEY:-}
-      # camel (default) | langgraph — see docs/langgraph-migration.md
-      AGENT_EXECUTOR: ${AGENT_EXECUTOR:-camel}
       # backend/web_search.py calls this over the Docker network -- the
       # "searxng" hostname resolves via Compose's default network, no port
       # publishing needed. See searxng/settings.yml for the JSON API config.

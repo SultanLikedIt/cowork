@@ -15,7 +15,7 @@ bazlı derinleştirmesidir.
 | [document-generation.md](document-generation.md) | PDF/DOCX/PPTX üretimi: tipli bloklar, doğrulama, Chromium |
 | [web-execution.md](web-execution.md) | SearXNG + AgentSearch + Crawl4AI web path |
 | [agent-search.md](agent-search.md) | brcrusoe72/agent-search sidecar |
-| [langgraph-migration.md](langgraph-migration.md) | CAMEL ↔ LangGraph geçişi, `AGENT_EXECUTOR` |
+| [archive/langgraph-migration.md](archive/langgraph-migration.md) | CAMEL → LangGraph geçişinin notları (geçiş tamamlandı; CAMEL kaldırıldı) |
 | [scheduling.md](scheduling.md) | Zamanlanmış ve izleme görevleri |
 | [local-computer.md](local-computer.md) | "Bilgisayarımda aç" host köprüsü |
 | [outlook.md](outlook.md) | Outlook ile e-posta: zamanlanmış görev sonuçları |

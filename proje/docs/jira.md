@@ -183,8 +183,6 @@ kalanı etkilenmez.
   eklenebilir.
 - Pano/sprint API'si yok; "bu sprint" `sprint in openSprints()` ile aranır
   (Jira Software gerekir; yoksa filtre düşülür ve söylenir).
-- `AGENT_EXECUTOR=camel` altında Jira Agent yoktur; istek sıradan sohbet
-  cevabına düşer.
 - Ekler (attachment) okunmaz.
 
 ---

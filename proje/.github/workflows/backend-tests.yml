@@ -29,23 +29,9 @@ jobs:
         working-directory: backend
         run: |
           pip install -r requirements.txt
-          # crawl4ai/playwright are deliberately excluded from requirements.txt
-          # (see the comment above their versions there): crawl4ai needs
-          # psutil>=6.1.1, camel-ai pins psutil<6, and pip's single-pass
-          # resolver rejects both lines together even though each installs
-          # fine on its own. Same two-step install the Dockerfile and local
-          # dev setup use.
-          pip install crawl4ai==0.9.2 playwright==1.62.0
-          # LangGraph is the executor the app actually ships with
-          # (AGENT_EXECUTOR=langgraph) but it is not in requirements.txt --
-          # same separate step the Dockerfile uses. Without it four test
-          # modules fail at collection with ModuleNotFoundError and pytest
-          # aborts before running anything.
-          pip install "langgraph==0.6.7" "ag-ui-protocol>=0.1.15"
           # Coding Agent charts; its own Dockerfile layer, same pin.
           pip install "matplotlib==3.11.2"
-          pip install --no-deps "psutil>=6.1.1"
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio pypdf
 
       # Chromium is NOT installed here: no test launches a real browser.
       # All web_tools/crawl4ai tests mock get_crawl4ai_engine with a fake
