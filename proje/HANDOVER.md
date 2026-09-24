@@ -386,6 +386,8 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `DOCUMENT_PDF_TIMEOUT_SECONDS` | — | Chromium PDF basma zaman aşımı (varsayılan 45) |
 | `DOCUMENT_LLM_REASONING_EFFORT` | — | Document LLM çağrısı için OpenRouter `reasoning.effort` (`low`/`medium`/`high`); boş = sağlayıcı varsayılanı |
 | `DOCUMENT_LLM_PROVIDER_SORT` | — | Document LLM çağrısı için OpenRouter sağlayıcı sıralaması (`throughput`/`latency`/`price`); boş = varsayılan |
+| `CODING_LLM_REASONING_EFFORT` / `CODING_LLM_PROVIDER_SORT` | — | Coding Agent çağrıları için aynı iki ayar; boş bırakılması önerilir ([`docs/coding-agent.md`](docs/coding-agent.md)) |
+| `CODING_LLM_TIMEOUT_SECONDS` | — | Coding Agent'ın tek model çağrısı için üst sınır (varsayılan 150); aşılırsa kesilip bir kez yeniden denenir |
 | `DATA_DIR` | — | Docker'da `/data`; yerelde `backend/` |
 | `PYTEST_USE_REAL_DATA_DIR` | — | **Test için canlı DB. Kullanma.** |
 
@@ -450,6 +452,10 @@ Bu PDF'in içeriğini yüklediğim docx şablonuna yaz
 deniz kaplumbağaları hakkında görselli powerpoint
 guncel dolar
 Python script yaz ve çalıştır
+1 ile 10000 arasındaki asal sayıların toplamı kaç? kodla hesapla
+aylık %3 faizle 100.000 TL 24 ayda ne olur, ay ay tablo olarak excel ver
+(Excel ekli) bu excel'deki satışları bölgelere göre analiz et, en çok ciro yapan 3 ürünü söyle
+(Excel ekli) bölgelere ve aylara göre analiz et, grafikli bir pdf rapor hazırla
 ```
 
 ### 4.5 Çıktıyı nerede görürsün
@@ -485,11 +491,21 @@ olan bir model çağrısı birkaç saniye daha sürebilir.
 Cevaptaki Python bloklarında Run düğmesi (`POST /execute`). Workspace'e
 hapsedilmiş, zaman sınırlı interpreter — **güvenlik duvarı değil**.
 
+Workforce'ta buna gerek kalmadan **Coding Agent kodu kendisi çalıştırır**:
+yazar → çalıştırır → hata olursa düzeltir → gerçek çıktıyı açıklar. Cevapta
+görünen kod çalışan koddur, çıktı gerçekten basılan çıktıdır. Yüklenen
+Excel/CSV'yi analiz eder, grafik çizer, grafikleri rapora gömer. Denenecek
+cümleler: § 4.4; ayrıntı: [`docs/coding-agent.md`](docs/coding-agent.md).
+
 ### 4.10 Manuel agent
 
 Workforce havuzuna isim + açıklama ile agent eklenebilir (**en fazla 10**).
-SQLite'da kalır, her Workforce job'ında yeniden bağlanır. Research / Document /
-Coding'in yerine geçmez, ek uzmandır.
+SQLite'da kalır. Research / Document / Coding'in yerine geçmez, ek uzmandır.
+
+> ⚠️ Manuel agent'lar **yalnız CAMEL yolunda** çalışır
+> (`camel_service.add_manual_worker`). `AGENT_EXECUTOR=langgraph` altında —
+> yani uygulamanın varsayılan kurulumunda — listede görünür ama hiçbir işe
+> atanmaz. Bilinen açık, § 11.
 
 ### 4.11 Ne beklememeli
 
@@ -537,7 +553,7 @@ FastAPI (backend/main.py)
 | GitHub Agent | Herkese açık GitHub'da depo arar; bağlantısı verilen depo / dosya / issue / PR'ı okur (salt okunur); kanıt toplar, cevabı yazmaz |
 | Knowledge Agent | Workspace'e yüklenen belgelerde arar (FTS5 + BGE reranker); `[K#]` atıflı özet toplar, cevabı yazmaz ([`docs/knowledge.md`](docs/knowledge.md)) |
 | Document Agent | Word/PDF/PPTX/HTML/Excel yazma, şablon doldurma |
-| Coding Agent | Kod; araştırma/belge işi buraya düşmemeli |
+| Coding Agent | Kodu yazar, **çalıştırır**, hata varsa düzeltir, gerçek çıktıyı açıklar; yüklenen Excel/CSV'yi analiz eder, grafik (PNG) çizer. Yazdığı xlsx/csv istenen dosyaysa Document atlanır; rapor istendiyse Document grafikleri PDF/Word'e gömer ([`docs/coding-agent.md`](docs/coding-agent.md)) |
 | Assistant | Genel; "bilgisayarımda aç" dahil |
 
 CAMEL yolunda (`camel_service.py`) benzer sabit havuz + coordinator'ın gerekirse
@@ -694,7 +710,9 @@ agent-webapp-langgraph/
 | `document_pptx.py` | Slaytları .pptx'e çizer; yazıyı ölçüp sığdırır, uzun tablo/listeyi dengeli böler |
 | `document_verify.py` | Üretilen PDF/DOCX'i teslimden önce yeniden açıp kontrol eder |
 | `workspace.py` | sources/artifacts sınırları, dosya araçları |
-| `code_exec.py` | Sınırlı Python |
+| `code_exec.py` | Sınırlı Python (workspace, ağ yok, temizlenmiş env, süre sınırı) |
+| `code_controller.py` | Coding Agent fazları: WRITE → RUN → FIX → ANSWER; kod/çıktı bloklarını sunucu ekler; `CHART:` satırları |
+| `code_data.py` | Yüklenen veri dosyalarını Coding'e tanıtır: yol, okuma çağrısı (ayraç/kodlama), sayfalar, sütunlar, ilk satırlar |
 | `local_computer.py` | Host'ta dosya açma |
 
 ### Destek
@@ -1025,16 +1043,25 @@ Devam ettirme yok — kullanıcı yeniden gönderir.
 
 Kodda duruyor, **henüz bitmedi**:
 
-1. **Kaynak başlığında site menüsü kalabiliyor** ("Facebook Instagram Expand…").
-   `_TITLE_CHROME_RE` çerez/consent metnini keser, navigasyon çöpünü kesmez.
-2. **"Yapamam / maalesef yerine getiremiyorum" bazen süzgeçten geçip kullanıcıya
+1. **"Yapamam / maalesef yerine getiremiyorum" bazen süzgeçten geçip kullanıcıya
    ulaşıyor.** `_looks_like_web_access_refusal` kelime listesine bakıyor; asıl
    sinyal **dosyanın üretilip üretilmediği** olmalı.
-3. **İki docx'te "içerik A, biçim B" ayrımı zayıf** — şablon seçimi kırılgan.
-4. **Deep anahtarı iş sürerken kilitlenmiyor.**
-5. **CI yalnız `main`'e push'ta koşar** (`.github/workflows/backend-tests.yml`).
-   Dal üstünde çalışırken testleri elle koşmayı unutma — PR açmadan CI seni
-   uyarmaz. Son ölçüm: **652 geçti, 0 kaldı**.
+2. **İki docx'te "içerik A, biçim B" ayrımı zayıf** — şablon seçimi kırılgan.
+3. **CI yalnız `main`'e push'ta ve backend'e dokunan PR'da koşar**
+   (`.github/workflows/backend-tests.yml`). Dal üstünde çalışırken testleri
+   elle koş. Son ölçüm (2026-09-23): **1579 geçti, 1 kaldı** — kalan
+   `test_social_wiring::test_the_role_is_scheduled_and_never_answers_alone`,
+   `_select_roles`'u `fast_path_role` olmadan çağırıyor; önceden de bozuktu.
+4. **OpenRouter sağlayıcısı OpenInference** deepseek-v4-flash cevabının
+   tamamını `reasoning` alanına yazıp `content`'i boş bırakıyor (finish=stop).
+   Coding Agent bunu yakalıyor (`complete_chat(reasoning_fallback=True)` +
+   150 sn sınır + bir yeniden deneme); **Research / Document / Assistant
+   yakalamıyor** — o sağlayıcıya düşen bir Document çağrısı 400 sn bekleyip
+   boş döndü. Kalıcı çözüm adayı: OpenRouter'da `provider.ignore`.
+5. **Manuel agent'lar LangGraph yolunda kullanılmıyor** (§ 4.10).
+6. **Coding Agent'ın kod çalıştırması gerçek sandbox değildir** — süreç
+   seviyesinde sınır (`code_exec.py` başındaki not). Güvenilmeyen girdi için
+   ayrı, ağsız bir container gerekir.
 
 ### Yakın geçmişte düzeltilenler (regresyon olursa buraya bak)
 
@@ -1048,6 +1075,13 @@ Kodda duruyor, **henüz bitmedi**:
   647 testin hiçbiri çalışmıyordu (workflow'a Dockerfile'daki kurulum adımı eklendi)
 - Turn-resolution testlerinin `camel_service`'i patch'lemesi — `AGENT_EXECUTOR=langgraph`
   altında, yani uygulamanın gerçekte çalıştığı ayarda, sahte fonksiyon hiç çağrılmıyordu
+- Kaynak başlığında site menüsü kalması (`_clean_source_title`, nav kelimeleri) ve
+  Deep anahtarının iş sürerken kilitlenmemesi — teslimdeki açık 1 ve 4
+- Coding Agent'ın kodu çalıştırmadan çıktı tahmin etmesi (PR #13): artık gerçekten
+  çalıştırıyor. Aynı işte düzeltilenler: rapora kaynak kodun basılması ("yazı çok
+  kısa" yedeği), modelin kendi `PdfPages` PDF'ini tasarımlı raporun yerine
+  geçirmesi, başarısız hesap için boş PDF yazılması, kod yorumundaki URL'nin
+  "Kaynaklar"a girmesi
 
 ---
 
@@ -1061,6 +1095,16 @@ Kodda duruyor, **henüz bitmedi**:
 | "Task timed out" | Model yavaş veya kuyrukta; timeout 600 s |
 | Yarıda kesik rapor | Answer `max_tokens`; LangGraph tavanı bir kez 2× dener |
 | JSON intent boş dönüyor | Reasoning modeli bütçeyi düşünmeye yakıyor; token tavanları bilinçli yüksek |
+
+### Coding Agent
+
+| Belirti | Bak |
+| --- | --- |
+| Grafik hiç çizilmiyor, cevap "grafik üretme" diyor | İmajda matplotlib yok: `docker compose up -d --build backend` |
+| "Kod Ajanı … kod üretemedi" | Log'da `stage=coding_write` satırı: `provider=OpenInference` + `content empty` → sağlayıcı sorunu (§ 11 açık 4); tekrar gönder |
+| Excel analizi Coding'e gitmedi, önizlemeden cevap geldi | İstekte analiz kelimesi yok (analiz, özetle, toplam, grafik, en yüksek…) veya dosya xlsx/csv değil (`capabilities._TABULAR_ANALYSIS_RE`) |
+| `.xls` okunamıyor | xlrd kurulu değil; dosyayı `.xlsx` kaydedip yükle |
+| Süre paneli | `LLM · code writing`, `Code run`, `LLM · code fix`, `Data file profiling` |
 
 ### Docker / port
 

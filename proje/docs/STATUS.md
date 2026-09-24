@@ -8,8 +8,8 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 
 | Alan | Değer |
 |---|---|
-| Repo | `omeryavuzarslan/agent-webapp-langgraph` (güncel). Köken: `bsaltalii/agent-webapp`, 19.08.2026 |
-| Branch | **`outlook`** — Outlook e-posta entegrasyonu (üzerinde çalışılıyor). Öncesi: `schedule` (zamanlanmış görevler + zincirler), onun öncesi `main` |
+| Repo | `SultanLikedIt/cowork` (güncel). Devralınan kod: 11.09.2026 (`0836338`); köken `bsaltalii/agent-webapp` |
+| Branch | **`main`** — son birleşen: PR #13 Coding Agent (24.09.2026). Özellik işleri kendi dalında + PR ile gelir |
 | Executor | `AGENT_EXECUTOR=langgraph` (kod default'u `camel` — env'de yazılmalı) |
 | Portlar | Arayüz 8081, API 8001, AgentSearch 3939 (container içi backend 8000) |
 | Modlar | Single = tools-free chat; Workforce = artifact intent + web phase controller |
@@ -19,6 +19,16 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 | Reranker | SELECT = BGE `bge-reranker-v2-m3` (in-process CPU, `reranker.py`); ağırlıklar `backend/vendor/bge-reranker-v2-m3` (veya `RERANKER_MODEL_PATH`); yoksa LLM SELECT |
 
 ## Son tamamlanan işler
+
+- **Coding Agent (PR #13, 23–24.09.2026):** kodu gerçekten çalıştırır
+  (yaz → çalıştır → düzelt → gerçek çıktıyı anlat), yüklenen Excel/CSV'yi
+  analiz eder, matplotlib grafiklerini sohbette gösterir ve PDF/Word'e gömer.
+  Grafikler için backend imajı yeniden build edilmeli. Ayrıntı:
+  [coding-agent.md](coding-agent.md)
+- Bundan önce main'e girenler: Knowledge Agent / belge kütüphanesi (#8, #9),
+  PowerPoint tipli slaytlar (#10), uzun yapıştırılan isteği brief sayma (#11),
+  yüklenen dosyadan üretilen dosyada kaynak (#12), GitHub (#6), Jira (#5),
+  Reddit + Hacker News, Outlook okuma/gönderme, zamanlanmış görevler
 
 - **Outlook e-posta (faz 1, 18.09.2026):** zamanlanmış görev sonuçları klasik
   Outlook masaüstünden e-postayla gider. Köprüde (`scripts/local_computer_bridge.py`)
