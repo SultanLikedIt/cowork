@@ -102,7 +102,16 @@ _MESSAGE = (
 def _blocked(*args, **kwargs):
     raise NetworkDisabled(_MESSAGE)
 
-socket.socket = _blocked
+# Still a CLASS, not a function: ssl does `class SSLSocket(socket)` when it
+# is imported, and subclassing a function raised "function() argument 'code'
+# must be code, not str" -- so every library that imports ssl (python-pptx
+# via xml.sax.saxutils -> urllib.request -> http.client, anything using
+# urllib or http) failed to import at all. Creating one is what is blocked.
+class _BlockedSocket(socket.socket):
+    def __init__(self, *args, **kwargs):
+        raise NetworkDisabled(_MESSAGE)
+
+socket.socket = _BlockedSocket
 socket.create_connection = _blocked
 socket.socketpair = _blocked
 try:

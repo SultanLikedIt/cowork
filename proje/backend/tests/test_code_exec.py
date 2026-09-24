@@ -306,6 +306,43 @@ def test_network_is_disabled_by_default() -> None:
     )
 
 
+def test_libraries_that_import_ssl_still_import() -> None:
+    """The guard once replaced socket.socket with a function; ssl subclasses
+    it at import time, so python-pptx (and anything reaching urllib/http)
+    died with "function() argument 'code' must be code, not str"."""
+    tools = CodeExecutionTools(_workspace())
+    result = tools.run_python(
+        "import ssl, urllib.request, http.client, xml.sax.saxutils\n"
+        "print('IMPORTED')\n"
+    )
+    check("guard: ssl-importing modules load", "IMPORTED" in result["stdout"], result)
+
+
+def test_every_way_out_is_still_blocked() -> None:
+    tools = CodeExecutionTools(_workspace())
+    result = tools.run_python(
+        "import socket, urllib.request\n"
+        "attempts = {\n"
+        "    'socket()': lambda: socket.socket(),\n"
+        "    'socket(AF_INET)': lambda: socket.socket(socket.AF_INET, socket.SOCK_STREAM),\n"
+        "    'getaddrinfo': lambda: socket.getaddrinfo('example.com', 80),\n"
+        "    'urlopen': lambda: urllib.request.urlopen('http://93.184.216.34', timeout=3),\n"
+        "}\n"
+        "for name, attempt in attempts.items():\n"
+        "    try:\n"
+        "        attempt()\n"
+        "        print('OPEN', name)\n"
+        "    except Exception as exc:\n"
+        "        print('BLOCKED', name, type(exc).__name__)\n"
+    )
+    check("guard: nothing opens", "OPEN" not in result["stdout"], result["stdout"])
+    check(
+        "guard: all four attempts were refused",
+        result["stdout"].count("BLOCKED") == 4,
+        result["stdout"],
+    )
+
+
 def test_harness_files_are_outside_the_workspace() -> None:
     """Executed code must not be able to see or rewrite its own harness."""
     root = _workspace()

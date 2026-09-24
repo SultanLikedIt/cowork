@@ -308,3 +308,142 @@ def test_coding_llm_options_come_from_the_environment(monkeypatch) -> None:
     assert workforce._coding_llm_timeout() == 20.0
     monkeypatch.setenv("CODING_LLM_TIMEOUT_SECONDS", "nan-ish")
     assert workforce._coding_llm_timeout() == 150.0
+
+
+# --------------------------------------------------------------------------
+# Follow-ups: files from earlier turns, program-written reports
+# --------------------------------------------------------------------------
+
+
+def _earlier_job(tmp_path: Path, name: str = "earlierjob-1234") -> Path:
+    earlier = tmp_path / "workspaces" / name
+    (earlier / "artifacts").mkdir(parents=True)
+    return earlier
+
+
+def test_earlier_turn_data_files_are_copied_in(tmp_path, monkeypatch) -> None:
+    import db
+
+    current = tmp_path / "workspaces" / "current-job"
+    current.mkdir(parents=True)
+    earlier = _earlier_job(tmp_path)
+    (earlier / "artifacts" / "faiz.xlsx").write_bytes(b"xlsx")
+    (earlier / "artifacts" / "rapor.pdf").write_bytes(b"%PDF")
+    (earlier / "artifacts" / "grafik.png").write_bytes(b"png")
+    monkeypatch.setattr(
+        db, "workspace_roots_for_conversation", lambda cid: [str(current), str(earlier)]
+    )
+    copied = workforce._import_earlier_results(str(current), "conv-1")
+    assert copied == ["sources/onceki-turlar/earlierj/faiz.xlsx"]
+    assert (current / copied[0]).read_bytes() == b"xlsx"
+    # Nothing without a conversation, and the current job never copies itself.
+    assert workforce._import_earlier_results(str(current), None) == []
+
+
+def test_a_follow_up_reads_the_excel_the_last_turn_made(tmp_path, monkeypatch) -> None:
+    import db
+    import openpyxl
+
+    current = tmp_path / "workspaces" / "current-job"
+    current.mkdir(parents=True)
+    earlier = _earlier_job(tmp_path)
+    wb = openpyxl.Workbook()
+    wb.active.append(["ay", "bakiye"])
+    wb.active.append([24, 203279.41])
+    wb.save(earlier / "artifacts" / "faiz_tablosu.xlsx")
+    monkeypatch.setattr(
+        db, "workspace_roots_for_conversation", lambda cid: [str(current), str(earlier)]
+    )
+    program = (
+        "import pandas as pd\n"
+        "df = pd.read_excel('sources/onceki-turlar/earlierj/faiz_tablosu.xlsx')\n"
+        "print('SON BAKIYE', df['bakiye'].iloc[-1])\n"
+    )
+    seen = _script(
+        monkeypatch,
+        {
+            "coding_write": [f"MODE: run\nPLAN: Oku.\n```python\n{program}```"],
+            "coding_answer": ["Son bakiye 203.279,41 TL."],
+        },
+    )
+    request = "bu excel tablosundaki son bakiyeyi söyle"
+    result = workforce.run_workforce_in_thread(
+        Callback(),
+        workforce.UsageTracker(),
+        None,
+        request,
+        "job-follow",
+        lambda handle: None,
+        workspace_root=str(current),
+        job_capabilities=frozenset({capabilities.CODE_EXEC}),
+        original_request=request,
+        conversation_id="conv-1",
+    )
+    write_prompt = seen["coding_write"][0]
+    assert "sources/onceki-turlar/earlierj/faiz_tablosu.xlsx" in write_prompt
+    assert "bu sohbette daha önce üretildi" in write_prompt
+    assert "SON BAKIYE 203279.41" in result.result
+
+
+def test_a_program_written_report_is_not_delivered_when_document_follows(
+    tmp_path, monkeypatch
+) -> None:
+    program = (
+        "open('artifacts/sunum.pptx', 'wb').write(b'raw')\n"
+        "open('artifacts/veri.csv', 'w').write('a,1')\n"
+        "print('ok')\n"
+    )
+    _script(
+        monkeypatch,
+        {
+            "coding_write": [f"MODE: run\nPLAN: x.\n```python\n{program}```"],
+            "coding_answer": ["Hazır."],
+        },
+    )
+    documents: list[str] = []
+
+    async def fake_document(**kwargs):
+        documents.append(kwargs.get("prior_notes") or "")
+        return "Sunum hazır."
+
+    monkeypatch.setattr(workforce, "_run_document_worker", fake_document)
+    root = tmp_path / "job"
+    root.mkdir()
+    request = "veriyi hesapla ve powerpoint sunum yap"
+    workforce.run_workforce_in_thread(
+        Callback(),
+        workforce.UsageTracker(),
+        None,
+        request,
+        "job-pptx",
+        lambda handle: None,
+        workspace_root=str(root),
+        job_capabilities=frozenset({capabilities.CODE_EXEC, capabilities.ARTIFACTS}),
+        original_request=request,
+        wants_artifact=True,
+        artifact_type="pptx",
+    )
+    delivered = sorted(p.name for p in (root / "artifacts").iterdir())
+    assert delivered == ["veri.csv"]
+    assert (root / ".coding-discarded" / "sunum.pptx").is_file()
+    # Document still ran, and was not told the program delivered a pptx.
+    assert documents
+    files_line = next(
+        line for line in documents[0].splitlines() if "Oluşturulan dosyalar" in line
+    )
+    assert "`veri.csv`" in files_line and "sunum.pptx" not in files_line
+
+
+def test_without_document_a_program_written_file_stays(tmp_path, monkeypatch) -> None:
+    import code_controller
+
+    root = tmp_path / "job"
+    (root / "artifacts").mkdir(parents=True)
+    (root / "artifacts" / "x.pdf").write_bytes(b"%PDF")
+    result = code_controller.CodeResult(
+        code="x",
+        runs=[code_controller.CodeRun(code="x", result={"ok": True, "files_written": ["artifacts/x.pdf"]})],
+    )
+    # Only called when Document follows; the helper itself moves what it is given.
+    assert workforce._discard_program_reports(str(root), result) == ["artifacts/x.pdf"]
+    assert result.runs[0].result["files_written"] == []
