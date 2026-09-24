@@ -46,6 +46,7 @@ class ArtifactIntentResult(BaseModel):
     reads_email: bool = False
     reads_social: bool = False
     reads_jira: bool = False
+    reads_confluence: bool = False
     reads_github: bool = False
     reads_documents: bool = False
 
@@ -131,6 +132,10 @@ class ArtifactIntent:
     # same reason again: "jira" also appears in "jira nedir" and "jira'ya
     # girilecek bir bug raporu yaz", neither of which wants tickets read.
     reads_jira: bool = False
+    # "izin politikası ne diyor", "deploy runbook'unu özetle" -- the answer is
+    # on the company Confluence wiki. The classifier decides, except that a
+    # link to the configured Confluence always counts (_with_confluence_links).
+    reads_confluence: bool = False
     # "en populer Rust web framework'leri", "bu repoyu ozetle <link>" -- the
     # job reads public GitHub as the SOURCE. The classifier decides, except
     # that a GitHub link the user typed always counts (see
@@ -175,6 +180,7 @@ class ArtifactIntent:
             reads_email=bool(self.reads_email),
             reads_social=bool(self.reads_social),
             reads_jira=bool(self.reads_jira),
+            reads_confluence=bool(self.reads_confluence),
             reads_github=bool(self.reads_github),
             reads_documents=bool(self.reads_documents),
         )
@@ -192,6 +198,21 @@ def _with_github_links(topic: str, classified: bool) -> bool:
     return github_query.has_github_link(topic or "")
 
 
+def _with_confluence_links(topic: str, classified: bool) -> bool:
+    """A link to this deployment's Confluence means Confluence is read. The
+    user chose the page, and the space allowlist still decides whether it
+    can be opened (confluence_controller)."""
+    if classified:
+        return True
+    import confluence_client
+    import confluence_query
+
+    config = confluence_client.load_config()
+    if not config.configured:
+        return False
+    return bool(confluence_query.page_refs(topic or "", config))
+
+
 INTENT_SYSTEM_PROMPT = (
     "You classify ONE user request (any language, including typos) for "
     "workforce routing. Respond with JSON only: "
@@ -207,6 +228,7 @@ INTENT_SYSTEM_PROMPT = (
     '"reads_email": true | false, '
     '"reads_social": true | false, '
     '"reads_jira": true | false, '
+    '"reads_confluence": true | false, '
     '"reads_github": true | false, '
     '"reads_documents": true | false}.\n\n'
     "wants_artifact is true ONLY when the user wants a new file created and "
@@ -224,8 +246,8 @@ INTENT_SYSTEM_PROMPT = (
     "needs_web_research is false only for pure chat, attached-file-only "
     "analysis, or code/math on given data with no external lookup -- and "
     "false when one of the dedicated readers below answers it on its own "
-    "(the user's mailbox, Reddit / Hacker News discussion, their Jira, or "
-    "GitHub): 'popular / "
+    "(the user's mailbox, Reddit / Hacker News discussion, their Jira, their "
+    "Confluence wiki, or GitHub): 'popular / "
     "trending / most starred repositories on GitHub' is a GitHub lookup, not "
     "web research, even though it is current data.\n\n"
     "needs_code_execution is true when the task requires writing, running, "
@@ -371,6 +393,21 @@ INTENT_SYSTEM_PROMPT = (
     '- "gecen hafta kapanan tasklari ozetle" -> reads_jira true\n'
     '- "jira nedir nasil kullanilir" -> reads_jira false\n'
     '- "jira ya girilecek bir bug raporu yaz" -> reads_jira false\n'
+    "\nreads_confluence is true when the answer must come from the user's "
+    "OWN company wiki (Confluence): internal policies, procedures, runbooks, "
+    "how-tos, onboarding, architecture or meeting pages, or a Confluence "
+    "page link. It is false for questions ABOUT Confluence the product, "
+    "false when the user wants text written FOR Confluence, and false for "
+    "public facts the web answers. When the wiki alone answers, "
+    "needs_web_research is false.\n"
+    "\nreads_confluence examples (key named, independent of the values above):\n"
+    '- "confluence da izin politikasi ne diyor" -> reads_confluence true\n'
+    '- "wikideki deploy runbook unu ozetle" -> reads_confluence true\n'
+    '- "ENG space inde son guncellenen sayfalari listele" -> reads_confluence true\n'
+    '- "onboarding dokumanindaki adimlari excel yap" -> reads_confluence true, '
+    "wants_artifact true, artifact_type xlsx\n"
+    '- "confluence nedir" -> reads_confluence false\n'
+    '- "confluence a koyacagim bir toplanti notu sablonu yaz" -> reads_confluence false\n'
     "\nreads_github is true when the answer should come from public GitHub "
     "-- finding repositories (popular, trending, best, alternatives, "
     "libraries for a purpose), or reading a repository, file, issue or pull "
@@ -541,6 +578,9 @@ def fallback_from_regex(topic: str) -> ArtifactIntent:
         # And the same for Jira: a fallback does not get to decide to read
         # company tickets the classifier never saw a request for.
         reads_jira=False,
+        # Only for a link to this deployment's Confluence the user typed:
+        # see _with_confluence_links.
+        reads_confluence=_with_confluence_links(topic, False),
         # The one reader a fallback may turn on, and only for a GitHub link
         # the user typed: see _with_github_links.
         reads_github=_with_github_links(topic, False),
@@ -574,6 +614,7 @@ def from_persisted(usage: Optional[dict]) -> Optional[ArtifactIntent]:
         reads_email=bool(usage.get("reads_email")),
         reads_social=bool(usage.get("reads_social")),
         reads_jira=bool(usage.get("reads_jira")),
+        reads_confluence=bool(usage.get("reads_confluence")),
         reads_github=bool(usage.get("reads_github")),
         reads_documents=bool(usage.get("reads_documents")),
         email_unaddressed=bool(usage.get("email_unaddressed")),
@@ -684,6 +725,7 @@ async def classify_artifact_intent(
         reads_email=result.reads_email,
         reads_social=result.reads_social,
         reads_jira=result.reads_jira,
+        reads_confluence=_with_confluence_links(topic, result.reads_confluence),
         reads_github=_with_github_links(topic, result.reads_github),
         reads_documents=result.reads_documents,
     ).normalized()

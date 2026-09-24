@@ -21,6 +21,7 @@ bazlı derinleştirmesidir.
 | [outlook.md](outlook.md) | Outlook ile e-posta: zamanlanmış görev sonuçları |
 | [social-reach.md](social-reach.md) | Reddit okuma: kurulum, çerez yenileme, güvenlik |
 | [jira.md](jira.md) | Jira okuma: kurulum (Cloud / Server), ne sorulabilir, VPN, güvenlik |
+| [confluence.md](confluence.md) | Confluence okuma: Jira hesabıyla kurulum, space izin listesi, güvenlik |
 | [github.md](github.md) | GitHub okuma: depo arama, bağlantı okuma, token, sınırlar, güvenlik |
 | [coding-agent.md](coding-agent.md) | Coding Agent: kodu yazar → çalıştırır → düzeltir → gerçek çıktıdan anlatır |
 | [knowledge.md](knowledge.md) | Workspace belge arama (Knowledge Agent): nasıl çalışır, ölçümler, eval, sınırlar |
