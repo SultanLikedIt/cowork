@@ -99,6 +99,21 @@ göre analiz et, grafikli pdf rapor hazırla" → 3 grafik, 3 sayfalık tasarım
 PDF (grafikler ilgili paragrafların arkasında, kod yok), 152 sn — bir düzeltme
 turu dahil; bunun ~66 sn'si Document.
 
+## Takip istekleri ("bu excel'i grafikleştir")
+
+Her işin kendi klasörü var; önceki turun ürettiği dosya yeni işin klasöründe
+yoktur. Coding çalışırken aynı sohbetin önceki işlerinin `artifacts/`
+altındaki **veri dosyaları** (xlsx, xlsm, csv, tsv, json, txt, md)
+`sources/onceki-turlar/<iş>/` altına kopyalanır
+(`workforce._import_earlier_results`: son 5 iş, en fazla 20 dosya, dosya
+başına 20 MB). `code_data` bunları "bu sohbette daha önce üretildi" diye
+okuma çağrısıyla listeler.
+
+Coding'den sonra Document çalışacaksa (PDF/Word/PowerPoint istendi),
+programın kendisinin yazdığı rapor dosyaları (pdf/docx/pptx/html)
+teslim edilmez: `.coding-discarded/` altına taşınır ve cevaptaki dosya
+listesinden çıkar. Tasarımlı dosyayı Document yazar.
+
 ## Başarısızlık ve yavaş sağlayıcı
 
 - Coding sonuç üretemezse (kod gelmedi, 3 çalıştırma da hata verdi)
@@ -124,6 +139,13 @@ turu dahil; bunun ~66 sn'si Document.
   (`docker compose up -d --build backend`); build edilmeden grafikler kapalı
   kalır, geri kalan her şey çalışır.
 - Ağ yok (`code_exec._GUARD`). Ağ isteyen iş `MODE: write` ile kullanıcıya verilir.
+  Koruma `socket.socket`'i bir **sınıf** olarak bırakır, yalnız oluşturmayı
+  engeller: fonksiyonla değiştirildiğinde `ssl` import edilemiyordu ve
+  python-pptx, `urllib`/`http` kullanan her kütüphane import anında
+  `function() argument 'code' must be code, not str` ile çöküyordu.
+- Kod **nerede çalışır:** backend container'ının içinde, backend'in kendi
+  Python'u ile ayrı bir alt süreç; çalışma dizini işin klasörü
+  (`/data/workspaces/<iş-id>/`).
 - İş başına en fazla 12 çalıştırma, makine genelinde aynı anda 4 (`code_exec`).
 - **Gerçek sandbox değildir** — süreç seviyesinde sınırlama. Kasıtlı olarak
   koruyu söken kod kaçabilir. Ayrıntı `code_exec.py` başındaki not.

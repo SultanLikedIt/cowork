@@ -2947,6 +2947,113 @@ def _coding_notes_prose(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", prose).strip()
 
 
+_EARLIER_RESULT_SUFFIXES = frozenset(
+    {".xlsx", ".xlsm", ".csv", ".tsv", ".json", ".txt", ".md"}
+)
+EARLIER_RESULTS_DIRNAME = "onceki-turlar"
+MAX_EARLIER_JOBS = 5
+MAX_EARLIER_FILES = 20
+MAX_EARLIER_FILE_BYTES = 20 * 1024 * 1024
+
+
+def _import_earlier_results(
+    workspace_root: Optional[str], conversation_id: Optional[str]
+) -> list[str]:
+    """Copy data files earlier jobs of this conversation produced.
+
+    Into ``sources/onceki-turlar/<job>/`` of this job's workspace, where
+    code_data lists them with a read call like any upload. Data only (the
+    formats a program reads back); newest jobs first, bounded in jobs, files
+    and size. Returns the workspace-relative paths copied.
+    """
+    if not workspace_root or not conversation_id:
+        return []
+    import shutil
+
+    import db
+
+    current = Path(workspace_root).resolve()
+    try:
+        roots = db.workspace_roots_for_conversation(conversation_id)
+    except Exception:  # noqa: BLE001 - earlier files are a convenience
+        stabilization_logger.warning("could not list earlier workspaces", exc_info=True)
+        return []
+    copied: list[str] = []
+    jobs_seen = 0
+    for root in roots:
+        earlier = Path(root).resolve()
+        if earlier == current:
+            continue
+        jobs_seen += 1
+        if jobs_seen > MAX_EARLIER_JOBS:
+            break
+        artifacts_dir = earlier / "artifacts"
+        if not artifacts_dir.is_dir():
+            continue
+        for path in sorted(artifacts_dir.iterdir()):
+            if len(copied) >= MAX_EARLIER_FILES:
+                return copied
+            try:
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or path.suffix.lower() not in _EARLIER_RESULT_SUFFIXES
+                    or path.stat().st_size > MAX_EARLIER_FILE_BYTES
+                ):
+                    continue
+                target = (
+                    current / "sources" / EARLIER_RESULTS_DIRNAME / earlier.name[:8] / path.name
+                )
+                if target.exists():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                copied.append(target.relative_to(current).as_posix())
+            except OSError:
+                stabilization_logger.warning("could not copy %s", path, exc_info=True)
+    return copied
+
+
+_PROGRAM_REPORT_SUFFIXES = frozenset({".pdf", ".docx", ".pptx", ".html", ".htm"})
+DISCARDED_DIRNAME = ".coding-discarded"
+
+
+def _discard_program_reports(workspace_root: Optional[str], result: Any) -> list[str]:
+    """Move report files the program wrote out of artifacts/.
+
+    Only what this run wrote (``files_written``), and only report formats;
+    kept under ``.coding-discarded/`` rather than deleted. The run records
+    are updated so the reply does not list them as delivered.
+    """
+    if not workspace_root:
+        return []
+    root = Path(workspace_root)
+    moved: list[str] = []
+    for run in getattr(result, "runs", []) or []:
+        written = list(run.result.get("files_written") or [])
+        kept: list[str] = []
+        for relative in written:
+            suffix = Path(relative).suffix.lower()
+            if relative.startswith("artifacts/") and suffix in _PROGRAM_REPORT_SUFFIXES:
+                source = root / relative
+                if source.is_file() and not source.is_symlink():
+                    target = root / DISCARDED_DIRNAME / relative.split("/", 1)[1]
+                    try:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        source.replace(target)
+                        moved.append(relative)
+                        continue
+                    except OSError:
+                        stabilization_logger.warning(
+                            "could not move %s", relative, exc_info=True
+                        )
+                elif not source.exists():
+                    continue
+            kept.append(relative)
+        run.result["files_written"] = kept
+    return moved
+
+
 def _coding_charts(workspace_root: Optional[str], notes: str) -> list:
     """Charts the Coding Agent saved, as ImageEmbeds with their captions.
 
@@ -3013,6 +3120,8 @@ async def _run_coding(
     handle: CancellableWorkforce,
     unit_task_id: str,
     outcome_out: Optional[dict[str, Any]] = None,
+    conversation_id: Optional[str] = None,
+    document_follows: bool = False,
 ) -> str:
     """Coding Agent: write the code, run it, fix it, explain the real output.
 
@@ -3084,6 +3193,15 @@ async def _run_coding(
             base_complete(phase, system, user, schema), timeout=call_timeout
         )
     try:
+        # Files earlier turns of this conversation produced ("bu excel
+        # tablosunu grafikleştir" after an Excel was made). Each job has its
+        # own workspace, so without this the program looked for
+        # artifacts/faiz_tablosu.xlsx in a fresh, empty one and failed.
+        imported = await asyncio.to_thread(
+            _import_earlier_results, workspace_root, conversation_id
+        )
+        if imported:
+            progress("coding", f"önceki turlardan {len(imported)} dosya alındı")
         # The uploaded spreadsheets, described once: exact paths, how to read
         # them, sheets, columns and first rows -- instead of the model
         # guessing a sheet name and a separator and spending a fix on each.
@@ -3103,6 +3221,19 @@ async def _run_coding(
             progress=progress,
             cancelled=lambda: handle.cancelled,
         )
+        if document_follows:
+            # The prompt forbids writing PDF/Word/PowerPoint, and live the
+            # model did it anyway (python-pptx). Document writes the designed
+            # file next; a raw program-made copy beside it would be a second,
+            # worse deliverable with the same name.
+            discarded = await asyncio.to_thread(
+                _discard_program_reports, workspace_root, result
+            )
+            if discarded:
+                stabilization_logger.warning(
+                    "coding wrote report file(s) Document will write; discarded: %s",
+                    ", ".join(discarded),
+                )
         output = code_controller.render_answer(result)
         if outcome_out is not None:
             outcome_out["ok"] = result.ok
@@ -6030,6 +6161,8 @@ def _build_graph(
                 handle=handle,
                 unit_task_id=unit_id,
                 outcome_out=coding_outcome,
+                conversation_id=conversation_id,
+                document_follows=ROLE_DOCUMENT in roles[index + 1 :],
             )
         elif role == ROLE_MAIL:
             text = await _run_mail(

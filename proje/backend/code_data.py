@@ -267,7 +267,11 @@ def describe_workspace(workspace_root: str | Path) -> list[DataFile]:
 
     for path in tabular[:MAX_FILES]:
         if within_budget():
-            described.append(profile_file(root, path))
+            # Copied in by workforce._import_earlier_results: say so, so "bu
+            # excel" in a follow-up is matched to the file the last turn made.
+            earlier = "onceki-turlar" in path.relative_to(root).parts
+            label = f"{path.name} (bu sohbette daha önce üretildi)" if earlier else ""
+            described.append(profile_file(root, path, label=label))
         else:
             relative = path.relative_to(root).as_posix()
             described.append(DataFile(path=relative, kind=path.suffix.lstrip("."), label=path.name,
