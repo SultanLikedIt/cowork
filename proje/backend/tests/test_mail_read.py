@@ -200,6 +200,23 @@ def test_search_failure_becomes_a_reported_error_not_an_exception() -> None:
     assert "uydurma" in notes or "varmış gibi" in notes
 
 
+def test_a_stopped_bridge_is_reported_with_its_fix_not_the_raw_error() -> None:
+    raw = (
+        "Could not reach the local computer bridge at http://host.docker.internal:8765 "
+        "(HTTPConnectionPool(host='host.docker.internal', port=8765): Max retries exceeded)"
+    )
+    notes = mail_controller.render_notes(
+        mail_controller.MailResult(error=raw, error_code="bridge_unreachable")
+    )
+    assert "python scripts/local_computer_bridge.py" in notes
+    assert "HTTPConnectionPool" not in notes
+    # A code with no known cause still passes the bridge's own words through.
+    notes = mail_controller.render_notes(
+        mail_controller.MailResult(error="Folder is gone.", error_code="outlook_folder_unavailable")
+    )
+    assert "Folder is gone." in notes
+
+
 def test_one_unreadable_message_does_not_lose_the_others() -> None:
     async def search(**kwargs: Any) -> list[outlook.MailMessage]:
         return [_message(ident="good"), _message(ident="bad")]

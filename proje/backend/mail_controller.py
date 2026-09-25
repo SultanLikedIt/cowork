@@ -452,6 +452,41 @@ async def _extract_attachment_text(path: Any) -> str:
     return ""
 
 
+# What the user is told for the failures that have one known cause and one
+# fix. Handing the writer the raw detail instead (a urllib3 "Max retries
+# exceeded ... NewConnectionError" chain for a stopped bridge) got a
+# four-paragraph report guessing at firewalls, OAuth proxies and REST APIs,
+# none of which this setup has, and never naming the one command that fixes
+# it. Codes not listed fall back to the bridge's own detail.
+_FAILURE_REASONS = {
+    "bridge_unreachable": (
+        "Outlook köprüsü çalışmıyor. Outlook'un açık olduğu bilgisayarda, "
+        "proje klasöründe `python scripts/local_computer_bridge.py` komutunu "
+        "çalıştırıp isteği tekrar gönder."
+    ),
+    "bridge_outdated": (
+        "Çalışan Outlook köprüsü eski sürüm ve posta okuyamıyor. "
+        "`scripts/local_computer_bridge.py`'yi kapatıp bu sürümden yeniden başlat."
+    ),
+    "invalid_token": (
+        "Outlook köprüsü farklı bir token ile başlatılmış. Köprüyü `.env`'deki "
+        "LOCAL_COMPUTER_TOKEN ile yeniden başlat."
+    ),
+    "outlook_requires_token": (
+        "Outlook köprüsü token olmadan çalışıyor, bu yüzden posta uçları kapalı. "
+        "Köprüyü `.env`'deki LOCAL_COMPUTER_TOKEN ile yeniden başlat."
+    ),
+    "outlook_not_running": (
+        "Outlook açılamadı. Klasik Outlook masaüstü uygulaması kurulu ve bir "
+        "hesapla ayarlı olmalı (yeni Outlook uygulaması desteklenmiyor)."
+    ),
+    "outlook_unavailable": (
+        "Köprünün çalıştığı bilgisayarda Outlook otomasyonu yok: Windows, klasik "
+        "Outlook ve `pip install pywin32` gerekir."
+    ),
+}
+
+
 def render_notes(result: MailResult, *, request_text: str = "") -> str:
     """The evidence block handed to the next worker.
 
@@ -461,10 +496,13 @@ def render_notes(result: MailResult, *, request_text: str = "") -> str:
     so the block says so in the prompt itself, above and below the content.
     """
     if not result.ok:
+        reason = _FAILURE_REASONS.get(result.error_code or "", result.error)
         return (
             "POSTA KUTUSU OKUNAMADI\n"
-            f"Sebep: {result.error}\n"
-            "Kullanıcıya bunu açıkça söyle; posta içeriği varmış gibi cevap yazma."
+            f"Sebep: {reason}\n"
+            "Kullanıcıya bunu kısaca, bu sebebi ve çözümü aynen aktararak söyle. "
+            "Başka sebep tahmin etme (güvenlik duvarı, OAuth, port vb.), rapor "
+            "biçimine sokma; posta içeriği varmış gibi cevap yazma."
         )
     if not result.messages:
         scope = []
