@@ -2349,6 +2349,31 @@ _ROLE_PERSONAS = {
 _DEFAULT_ROLE_PERSONA = "You are a capable assistant. Complete the task thoroughly."
 
 
+def _email_body_instruction(email_to: Sequence[str]) -> str:
+    """What the Assistant must know when its reply is going to be mailed.
+
+    Without it the Assistant saw "bu raporu ali@...'ya gönder", had no tool to
+    send with, and either answered "e-posta gönderemiyorum" or wrote a fake
+    ``send_email(...)`` code block -- and that text is exactly what the server
+    then mailed (main._email_answer_from_prompt sends the reply as the body).
+    """
+    recipients = ", ".join(str(item) for item in email_to)
+    return (
+        f"\nEMAIL DELIVERY: after you finish, the server itself puts your reply "
+        f"into an Outlook e-mail to {recipients} (the user's uploaded or "
+        "generated files are attached automatically). So your reply IS the "
+        "e-mail. Write it for the recipient, in the user's language:\n"
+        "- First line exactly: 'Konu: <short subject>' (it becomes the subject "
+        "and is removed from the body).\n"
+        "- Then a greeting and the message the user asked for, using the "
+        "attached/prior material they referred to. If they told you what to "
+        "say, say that.\n"
+        "- Never say you cannot send e-mail, never write code, tool calls or "
+        "send_email(...), never describe your steps ('dosyayı okuyorum'), and "
+        "never address the user -- address the recipient."
+    )
+
+
 async def _run_mail(
     *,
     content: str,
@@ -6235,6 +6260,7 @@ def _build_graph(
     opens_on_user_computer: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
     sources_out: Optional[dict[str, Any]] = None,
+    email_to: Sequence[str] = (),
 ) -> Any:
     # Filled by _run_coding: {"ok": bool}. One Coding pass per job.
     coding_outcome: dict[str, Any] = {}
@@ -6411,6 +6437,8 @@ def _build_graph(
                     "\nReuse PRIOR notes only — do not invent a new research "
                     "pass. Summarize or reshape what is already present."
                 )
+            if role == ROLE_GENERAL and email_to:
+                extra += _email_body_instruction(email_to)
             text = await _run_llm_worker(
                 role=role,
                 content=content,
@@ -6553,6 +6581,7 @@ async def _run_workforce_async(
     reads_github: Optional[bool] = None,
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
+    email_to: Optional[Sequence[str]] = None,
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -6604,6 +6633,11 @@ async def _run_workforce_async(
         _request_wants_sources(request)
         and not _request_is_brief(request)
         and not _workspace_has_uploaded_sources(workspace_root)
+        # A mail request's text describes the MAIL ("mailde ... güvenilir
+        # sitelere yönlenmediğini yaz"), and those words tripped the keyword
+        # rules into a web search nobody asked for. Web work for a mail job
+        # comes only from the classifier's WEB_* capabilities.
+        and not email_to
     )
     roles = (
         [ROLE_GENERAL]
@@ -6614,7 +6648,7 @@ async def _run_workforce_async(
             wants_artifact=wants_artifact,
             wants_sources=wants_sources,
             skip_web_research=skip_web_research,
-            needs_live_data=_request_needs_live_data(request),
+            needs_live_data=_request_needs_live_data(request) and not email_to,
             reads_email=bool(reads_email),
             reads_social=bool(reads_social),
             reads_jira=bool(reads_jira),
@@ -6648,6 +6682,7 @@ async def _run_workforce_async(
         opens_on_user_computer=opens_on_user_computer,
         knowledge_files=knowledge_files,
         sources_out=sources_out,
+        email_to=tuple(email_to or ()),
     )
 
     final_state = await app.ainvoke(
@@ -6780,6 +6815,7 @@ def run_workforce_in_thread(
     reads_github: Optional[bool] = None,
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
+    email_to: Optional[Sequence[str]] = None,
 ) -> Any:
     """Sync entrypoint: runs one Workforce job on this thread's own event loop."""
     handle = CancellableWorkforce()
@@ -6814,6 +6850,7 @@ def run_workforce_in_thread(
                 reads_github=reads_github,
                 reads_documents=reads_documents,
                 knowledge_files=knowledge_files,
+                email_to=email_to,
             )
         )
     finally:

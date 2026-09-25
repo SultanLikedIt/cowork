@@ -92,6 +92,7 @@ from workspace import (
     WORKSPACE_TEXT_EXTENSIONS,
     WorkspaceSecurityError,
     _safe_child,
+    _source_directory,
     build_job_workspace,
     ensure_job_workspace,
     inspect_zip,
@@ -1288,17 +1289,23 @@ async def _email_answer_from_prompt(job: dict[str, Any]) -> Optional[str]:
             "gönderimi bu kurulumda kapalı (docs/outlook.md)."
         )
     notes: list[str] = []
-    attachments = await _email_attachments(job, notes)
-    title = document_export.short_report_title(
-        str(job.get("topic") or "").strip(), fallback="agent-webapp"
-    )
+    attachments = await _email_attachments(job, notes, include_uploads=True)
+    # The subject comes from the answer (the Assistant is told to open with
+    # "Konu: ..."), never from the request: the request is an instruction to
+    # this app ("bu raporu ali@...'ya gönderir misin, mailde şunu yaz"), and
+    # using it as the subject put that instruction in the recipient's inbox.
+    subject, body = _split_email_subject(str(job.get("result") or ""))
+    if not subject:
+        subject = (
+            Path(attachments[0][0]).stem if attachments else "agent-webapp'ten mesaj"
+        )
     action = outlook.agent_action()
     notes.append("Bu e-posta agent-webapp'te hazırlandı.")
     result = await asyncio.to_thread(
         outlook.send_mail,
         to=setting["to"],
-        subject=title,
-        html_body=outlook.render_email_html(title, str(job.get("result") or ""), notes=notes),
+        subject=subject,
+        html_body=outlook.render_email_html(subject, body, notes=notes),
         attachments=attachments,
         action=action,
     )
@@ -2046,6 +2053,14 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     bool(intent.reads_documents) and bool(job.get("knowledge_files"))
                 ),
                 knowledge_files=list(job.get("knowledge_files") or []),
+                # Who the answer will be mailed to after the run (see
+                # _email_answer_from_prompt), so the answering worker writes
+                # the mail itself instead of trying to "send" it.
+                email_to=(
+                    list(intent.email_to)
+                    if intent.sends_email and outlook.is_enabled()
+                    else []
+                ),
             )
             if not control.cancelled:
                 # The canonical text is fixed as of here -- everything from
@@ -3659,19 +3674,37 @@ _RUN_FAILURE_TEXT = {
 
 
 async def _email_attachments(
-    job: dict[str, Any], notes: list[str]
+    job: dict[str, Any], notes: list[str], *, include_uploads: bool = False
 ) -> list[tuple[str, bytes]]:
     """A job's artifacts as mail attachments, within the size cap.
 
-    Skipped files are named in ``notes`` so the body says what is missing
-    rather than the mail arriving quietly incomplete.
+    With ``include_uploads``, a job that produced no file attaches the files
+    uploaded to it instead: "bu raporu ali@...'ya gönder" with the report
+    attached means the report, and it used to arrive as a mail with nothing
+    attached. Skipped files are named in ``notes`` so the body says what is
+    missing rather than the mail arriving quietly incomplete.
     """
     attachments: list[tuple[str, bytes]] = []
     attached_bytes = 0
     root = _resolve_workspace_root(job)
     if not root:
         return attachments
-    for entry in _job_artifacts(job):
+    entries = [
+        {"filename": entry.get("filename"), "path": entry.get("path"),
+         "size_bytes": entry.get("size_bytes"), "bundle": entry.get("bundle")}
+        for entry in _job_artifacts(job)
+    ]
+    if include_uploads and not entries:
+        for upload in job.get("attachments") or []:
+            name = safe_filename(str(upload.get("filename") or ""))
+            if not name or str(upload.get("kind") or "file") != "file":
+                continue
+            entries.append({
+                "filename": name,
+                "path": f"sources/{_source_directory(str(upload.get('file_id') or ''))}/{name}",
+                "size_bytes": upload.get("total_size_bytes") or 0,
+            })
+    for entry in entries:
         name = str(entry.get("filename") or "")
         if entry.get("bundle") or not name:
             continue
@@ -3689,6 +3722,28 @@ async def _email_attachments(
         attachments.append((name, content))
         attached_bytes += len(content)
     return attachments
+
+
+_EMAIL_SUBJECT_RE = re.compile(
+    r"^\s*(?:\*\*|__)?\s*(?:Konu|Subject)\s*(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(.+?)\s*(?:\*\*|__)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_email_subject(answer: str) -> tuple[str, str]:
+    """("subject", body) from an answer that opens with a "Konu: ..." line.
+
+    The subject line is taken off the body so it does not appear twice.
+    Returns ("", answer) when the answer has no such line.
+    """
+    lines = (answer or "").strip().splitlines()
+    for index, line in enumerate(lines[:3]):
+        match = _EMAIL_SUBJECT_RE.match(line)
+        if match:
+            subject = match.group(1).strip().strip("*_ ")[:150]
+            body = "\n".join(lines[:index] + lines[index + 1 :]).strip()
+            return subject, body
+    return "", (answer or "").strip()
 
 
 def _prompt_delivery(job: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:

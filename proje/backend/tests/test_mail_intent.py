@@ -188,3 +188,77 @@ def test_chat_reports_a_failed_send(chat_job, monkeypatch) -> None:
         outlook, "send_mail", lambda **kwargs: outlook.SendResult(False, "bridge_unreachable", "köprü kapalı")
     )
     assert "hazırlanamadı" in asyncio.run(main._email_answer_from_prompt(job))
+
+
+# -- the mail itself: subject, body, attachments -------------------------------
+
+
+def test_the_subject_comes_from_the_answer_not_the_request(chat_job) -> None:
+    job, sent = chat_job
+    job["topic"] = (
+        "bu raporu outlook üzerinden ali@sirket.com adresine gönderir misin? "
+        "mailde deep research modunun sorunlarını anlat"
+    )
+    job["result"] = "Konu: Deep research modu hakkında\n\nMerhaba Ali,\n\nRapor ektedir."
+    asyncio.run(main._email_answer_from_prompt(job))
+    assert sent[0]["subject"] == "Deep research modu hakkında"
+    # The user's instruction to this app never reaches the recipient.
+    assert "gönderir misin" not in sent[0]["subject"]
+    assert "gönderir misin" not in sent[0]["html_body"]
+    # And the subject line is not repeated in the body.
+    assert "Konu:" not in sent[0]["html_body"]
+    assert "Rapor ektedir." in sent[0]["html_body"]
+
+
+def test_without_a_subject_line_the_request_is_still_not_the_subject(chat_job) -> None:
+    job, sent = chat_job
+    job["topic"] = "bunu ali@sirket.com adresine gönderir misin"
+    asyncio.run(main._email_answer_from_prompt(job))
+    assert "gönderir misin" not in sent[0]["subject"]
+    assert sent[0]["subject"] == "rapor"  # the attached file's name
+
+
+@pytest.mark.parametrize(
+    "line", ["Konu: Haftalık özet", "**Konu:** Haftalık özet", "Subject: Haftalık özet"]
+)
+def test_subject_line_forms(line) -> None:
+    subject, body = main._split_email_subject(f"{line}\n\nMetin.")
+    assert subject == "Haftalık özet" and body == "Metin."
+
+
+def test_the_uploaded_report_is_attached_when_nothing_was_generated(chat_job) -> None:
+    job, sent = chat_job
+    root = Path(job["workspace_root"])
+    (root / "artifacts" / "rapor.pdf").unlink()
+    main._ARTIFACT_CACHE.pop(job["job_id"], None)  # _run_job clears it the same way
+    source = root / "sources" / main._source_directory("23343376-7523") / "acik_kaynak.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"%PDF-report")
+    (source.parent / "acik_kaynak.pdf.extracted.txt").write_text("metin", encoding="utf-8")
+    job["attachments"] = [
+        {"file_id": "23343376-7523", "filename": "acik_kaynak.pdf", "kind": "file", "total_size_bytes": 11}
+    ]
+    job["result"] = "Konu: Rapor\n\nMerhaba, rapor ektedir."
+    asyncio.run(main._email_answer_from_prompt(job))
+    assert sent[0]["attachments"] == [("acik_kaynak.pdf", b"%PDF-report")]
+
+
+def test_the_assistant_is_told_its_reply_is_the_mail() -> None:
+    pytest.importorskip("langgraph")
+    from execution.langgraph_runtime import workforce
+
+    text = workforce._email_body_instruction(["ali@sirket.com"])
+    assert "ali@sirket.com" in text and "Konu:" in text
+    assert "never say you cannot send" in text.lower()
+    assert "send_email" in text  # named, so the model knows not to write it
+
+
+def test_a_mail_request_does_not_trigger_a_web_search_by_keyword() -> None:
+    pytest.importorskip("langgraph")
+    import inspect
+
+    from execution.langgraph_runtime import workforce
+
+    source = inspect.getsource(workforce._run_workforce_async)
+    assert "and not email_to" in source
+    assert "email_to=" in inspect.getsource(main._run_job)
