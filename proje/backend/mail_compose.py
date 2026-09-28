@@ -63,7 +63,9 @@ SYSTEM_PROMPT = (
     "2. Follow the user's instruction about what the mail should say. Use "
     "the MATERIAL below for facts; keep what matters, drop the rest. A mail "
     "is shorter than a report: a few short paragraphs or a short list.\n"
-    "3. If files are attached, say so in one sentence and name them.\n"
+    "3. If files are attached, say so in one sentence and name them. If "
+    "ATTACHED FILES is (yok), never say or imply that anything is attached, "
+    "even if the MATERIAL says so.\n"
     "4. Never: write code, tool calls or send_email(...); say you cannot "
     "send e-mail; describe your own steps ('dosyayı okuyorum'); address the "
     "user instead of the recipient; mention this application, agents or AI.\n"
@@ -96,10 +98,21 @@ _NARRATION_RE = re.compile(
     re.IGNORECASE,
 )
 _SUBJECT_REQUEST_RE = re.compile(r"(gönderir\s+misin|yollar\s+mısın|mail\s+at|adresine)", re.IGNORECASE)
+# "The file is attached" -- only true when a file is. Live: "sunu bu
+# e-postaya eklenmiştir" on a mail with no attachment.
+_ATTACHMENT_CLAIM_RE = re.compile(
+    r"(\bekte(?:ki|dir)?\b|\bekli\b|e-?postaya\s+ek|\beklenmiştir\b|\beklenmektedir\b"
+    r"|iliştiril\w*|\battached\b)",
+    re.IGNORECASE,
+)
 
 
-def problems(draft: EmailDraft) -> list[str]:
-    """Why this draft must not be mailed (empty list = usable)."""
+def problems(draft: EmailDraft, attachments: Optional[Sequence[str]] = None) -> list[str]:
+    """Why this draft must not be mailed (empty list = usable).
+
+    ``attachments`` is the list of attached file names; pass it so a draft
+    that claims an attachment on a mail without one is rejected.
+    """
     found: list[str] = []
     subject = (draft.subject or "").strip()
     body = (draft.body or "").strip()
@@ -115,6 +128,8 @@ def problems(draft: EmailDraft) -> list[str]:
         found.append("body says it cannot send e-mail")
     if _NARRATION_RE.search(body):
         found.append("body narrates its own steps")
+    if attachments is not None and not attachments and _ATTACHMENT_CLAIM_RE.search(body):
+        found.append("body says a file is attached, but no file is attached")
     return found
 
 
@@ -201,7 +216,7 @@ async def compose_email(
             subject=" ".join((reply.subject or "").split())[:MAX_SUBJECT_CHARS].strip(" *_"),
             body=untrusted_content.strip_fence_leakage((reply.body or "").strip()),
         )
-        found = problems(draft)
+        found = problems(draft, attachments)
         if not found:
             return ComposedEmail(subject=draft.subject, body=draft.body, source=source)
         feedback = "; ".join(found)

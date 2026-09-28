@@ -1322,11 +1322,17 @@ async def _email_answer_from_prompt(
     )
     if not result.ok:
         return f"📧 E-posta hazırlanamadı ({recipients}): {result.message}"
+    # Said in the chat, so a mail that went out without the file is visible
+    # before the recipient notices it.
+    attached = (
+        f" Ek: {', '.join(name for name, _ in attachments)}."
+        if attachments else " Ek dosya yok."
+    )
     if action == "send":
-        return f"📧 E-posta gönderildi: {recipients}"
+        return f"📧 E-posta gönderildi: {recipients}.{attached}"
     return (
         f"📧 E-posta taslağı Outlook'ta açıldı: {recipients} — göndermek için "
-        "Outlook'taki Gönder düğmesine basın."
+        f"Outlook'taki Gönder düğmesine basın.{attached}"
     )
 
 
@@ -3697,6 +3703,41 @@ _RUN_FAILURE_TEXT = {
 }
 
 
+_MAIL_IMAGE_KINDS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "svg"})
+
+
+def _earlier_turn_files(job: dict[str, Any]) -> tuple[Optional[str], list[dict[str, Any]]]:
+    """The files the most recent earlier turn of this conversation produced.
+
+    "tamam şimdi bu sunumu ali@...'ya gönder" is its own job with its own
+    (usually absent) workspace; the deck lives in the previous job's. Live on
+    2026-09-28 the mail went out saying the deck was attached, with nothing
+    attached. Images are dropped when that turn also made a document: the
+    chart and photos are already inside the deck.
+    """
+    conversation_id = str(job.get("conversation_id") or "")
+    if not conversation_id:
+        return None, []
+    own = str(job.get("job_id") or "")
+    for root in db.workspace_roots_for_conversation(conversation_id):
+        if Path(root).name == own:
+            continue
+        try:
+            found = artifacts_module.scan_artifacts(root)
+        except OSError:
+            continue
+        found = [e for e in found if not e.get("bundle") and e.get("filename")]
+        if not found:
+            continue
+        documents = [e for e in found if str(e.get("kind") or "").lower() not in _MAIL_IMAGE_KINDS]
+        chosen = documents or found
+        return root, [
+            {"filename": e.get("filename"), "path": e.get("path"), "size_bytes": e.get("size_bytes")}
+            for e in chosen
+        ]
+    return None, []
+
+
 async def _email_attachments(
     job: dict[str, Any], notes: list[str], *, include_uploads: bool = False
 ) -> list[tuple[str, bytes]]:
@@ -3711,14 +3752,12 @@ async def _email_attachments(
     attachments: list[tuple[str, bytes]] = []
     attached_bytes = 0
     root = _resolve_workspace_root(job)
-    if not root:
-        return attachments
     entries = [
         {"filename": entry.get("filename"), "path": entry.get("path"),
          "size_bytes": entry.get("size_bytes"), "bundle": entry.get("bundle")}
-        for entry in _job_artifacts(job)
+        for entry in (_job_artifacts(job) if root else [])
     ]
-    if include_uploads and not entries:
+    if include_uploads and root and not entries:
         for upload in job.get("attachments") or []:
             name = safe_filename(str(upload.get("filename") or ""))
             if not name or str(upload.get("kind") or "file") != "file":
@@ -3728,6 +3767,10 @@ async def _email_attachments(
                 "path": f"sources/{_source_directory(str(upload.get('file_id') or ''))}/{name}",
                 "size_bytes": upload.get("total_size_bytes") or 0,
             })
+    if include_uploads and not entries:
+        root, entries = await asyncio.to_thread(_earlier_turn_files, job)
+    if not root:
+        return attachments
     for entry in entries:
         name = str(entry.get("filename") or "")
         if entry.get("bundle") or not name:
