@@ -164,7 +164,7 @@ Bu yolda **git kurmana bile gerek yok**:
 
 - `git clone` — gerek yok, dosyalar zaten elinde
 - `git submodule update --init` — gerek yok, `vendor/agent-search` dolu
-  (kontrol: `dir vendorgent-search` — `app`, `adapters`, `Dockerfile`
+  (kontrol: `dir vendor\agent-search` — `app`, `adapters`, `Dockerfile`
   görünmeli. Boşsa yanlış bir kopya almışsın demektir)
 
 Doğrudan [2.3 `.env` koy](#23-env-koy) adımına geç.
@@ -315,9 +315,9 @@ huggingface-cli download BAAI/bge-reranker-v2-m3 --local-dir backend\vendor\bge-
 
 Kapatmak için `RERANKER_ENABLED=false`; CPU thread sayısı `RERANKER_THREADS` (varsayılan 4).
 
-### 2.8 Kurulum checklist
+### 2.9 Kurulum checklist
 
-- [ ] Kaynak yerinde: klasörle geldiyse `vendorgent-search` dolu, klonladıysan
+- [ ] Kaynak yerinde: klasörle geldiyse `vendor\agent-search` dolu, klonladıysan
       `git submodule update --init --recursive` çalıştı
 - [ ] Kökte `.env` var; üç `MODEL_*` alanı dolu
 - [ ] `docker compose up --build` hatasız bitti
@@ -438,6 +438,9 @@ Python script yaz ve çalıştır
 aylık %3 faizle 100.000 TL 24 ayda ne olur, ay ay tablo olarak excel ver
 (Excel ekli) bu excel'deki satışları bölgelere göre analiz et, en çok ciro yapan 3 ürünü söyle
 (Excel ekli) bölgelere ve aylara göre analiz et, grafikli bir pdf rapor hazırla
+KAN'da yeni task aç: arama kutusu Türkçe karakterle sonuç getirmiyor     (JIRA_WRITE_ENABLED)
+KAN-7'yi Done'a çek
+Confluence'ta ENG'e 'Haftalık toplantı' sayfası oluştur: ...              (CONFLUENCE_WRITE_ENABLED)
 ```
 
 ### 4.5 Çıktıyı nerede görürsün
@@ -446,6 +449,10 @@ aylık %3 faizle 100.000 TL 24 ayda ne olur, ay ay tablo olarak excel ver
 - İndirilebilir dosya chip'i — `artifacts/` altındaki gerçek dosya
 - Sağ panel: hangi işçi, hangi tool, kaç token, kaç saniye
 - Kaynaklar tam `https://` URL olarak; başlıktaki çerez/banner çöpü ayıklanır
+- Jira / Confluence değişikliği istendiyse cevabın altında **onay kartı**:
+  ne yazılacağı aynen görünür; **Onayla** yazar ve bağlantı verir, **Vazgeç**
+  hiçbir şey yazmaz (`integration_actions.py`, `components/ApprovalCard.jsx`).
+  Kart, iş bittiği anda gelir: iş, öneri hazırlanana kadar "done" görünmez
 
 Birden fazla format istendiyse (pptx + html) **hepsi** üretilmeli. "Aç" dersen
 ve köprü açıksa **hepsi** açılmaya çalışılır, yalnız sonuncusu değil.
@@ -1007,9 +1014,8 @@ Kodda duruyor, **henüz bitmedi**:
 2. **İki docx'te "içerik A, biçim B" ayrımı zayıf** — şablon seçimi kırılgan.
 3. **CI yalnız `main`'e push'ta ve backend'e dokunan PR'da koşar**
    (`.github/workflows/backend-tests.yml`). Dal üstünde çalışırken testleri
-   elle koş. Son ölçüm (2026-09-24, CAMEL kaldırıldıktan sonra): **1409
-   geçti, 0 kaldı**. Aradaki fark silinen, yalnız CAMEL yolunu test eden
-   dosyalardır.
+   elle koş. Son ölçüm (2026-09-28, Jira / Confluence onaylı yazma ile):
+   **1546 geçti, 0 kaldı**.
 4. **OpenRouter sağlayıcısı OpenInference** deepseek-v4-flash cevabının
    tamamını `reasoning` alanına yazıp `content`'i boş bırakıyor (finish=stop).
    Coding Agent bunu yakalıyor (`complete_chat(reasoning_fallback=True)` +
@@ -1019,8 +1025,26 @@ Kodda duruyor, **henüz bitmedi**:
 5. **Coding Agent'ın kod çalıştırması gerçek sandbox değildir** — süreç
    seviyesinde sınır (`code_exec.py` başındaki not). Güvenilmeyen girdi için
    ayrı, ağsız bir container gerekir.
+6. **Jira / Confluence yazma açıkken ağdaki herkes onaylayabilir.** Giriş yok ve
+   compose portları tüm arayüzlerde yayınlıyor (`"8001:8000"`). Onay kartı
+   modeli ve kayıt metnindeki talimatları durdurur, ağdaki başka bir kişiyi
+   durdurmaz. Tek makinede kullanım için portları `127.0.0.1:` ile sınırla.
+7. **Yazma isteğini tanıma bir anahtar kelime kapısına bağlı.** Model çağrısı
+   yalnız istek Jira / Confluence / wiki'yi, bir kayıt anahtarını, bir proje ya
+   da space anahtarını, bir sayfa bağlantısını ya da izinli space'lerdeki son
+   50 sayfadan birinin başlığını geçiriyorsa yapılır. Bunların hiçbiri yoksa
+   ("şu sayfaya yorum yaz" + eski bir sayfa adı) kart çıkmaz ve cevap "yapamam"
+   der. Ortak niyet sınıflandırıcısına `writes_jira` / `writes_confluence`
+   eklemek kalıcı çözümdür, ama önce intent eval'e vaka eklenmeli.
 
 ### Yakın geçmişte düzeltilenler (regresyon olursa buraya bak)
+
+- Onay kartının yalnız sayfa yenilenince görünmesi: iş "done" yayımlandıktan
+  sonra öneri hazırlanıyordu, arayüz ilk "done"da dinlemeyi bırakıyordu. Durum
+  artık e-posta ve öneri adımlarından sonra yayımlanıyor
+  (`tests/test_approval_stream.py`)
+- Jira yorum isteğinin Coding Agent'a gidip "yorum eklendi" yazan bir script
+  üretmesi: Jira / Confluence değişikliği isteyen işte `code_exec` verilmez
 
 - Tablo stili şablonda yoksa Word çıktısının tamamen düşmesi
 - PPTX tek slayt kalırken HTML'in dolu gelmesi (PPTX `body` okumalı, `summary` değil)
@@ -1131,8 +1155,8 @@ Konu bazlı derin referanslar:
 | [`docs/scheduling.md`](docs/scheduling.md) | Zamanlanmış ve izleme görevleri |
 | [`docs/local-computer.md`](docs/local-computer.md) | "Bilgisayarımda aç" köprüsü |
 | [`docs/agent-search.md`](docs/agent-search.md) | AgentSearch sidecar |
-| [`docs/jira.md`](docs/jira.md) | Jira okuma: kurulum, VPN, güvenlik |
-| [`docs/confluence.md`](docs/confluence.md) | Confluence okuma: kurulum, space izin listesi, güvenlik |
+| [`docs/jira.md`](docs/jira.md) | Jira okuma ve onaylı yazma: kurulum, VPN, güvenlik |
+| [`docs/confluence.md`](docs/confluence.md) | Confluence okuma ve onaylı yazma: kurulum, space izin listesi, güvenlik |
 | [`docs/github.md`](docs/github.md) | GitHub okuma: token, sınırlar, güvenlik |
 | [`docs/knowledge.md`](docs/knowledge.md) | Workspace belge arama: ölçümler, eval, sınırlar |
 | [`docs/backend-reliability-harness.md`](docs/backend-reliability-harness.md) | Deterministik güvenilirlik harness'ı |

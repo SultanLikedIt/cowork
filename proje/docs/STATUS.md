@@ -9,7 +9,7 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 | Alan | Değer |
 |---|---|
 | Repo | `SultanLikedIt/cowork` (güncel). Devralınan kod: 11.09.2026 (`0836338`); köken `bsaltalii/agent-webapp` |
-| Branch | **`main`** — son birleşen: PR #13 Coding Agent (24.09.2026). Özellik işleri kendi dalında + PR ile gelir |
+| Branch | **`main`**. Özellik işleri kendi dalında + PR ile gelir. Açık: PR #22 Jira / Confluence onaylı yazma (`confluence-write`) |
 | Executor | LangGraph (`execution/langgraph_runtime/`); CAMEL 24.09.2026'da kaldırıldı |
 | Portlar | Arayüz 8081, API 8001, AgentSearch 3939 (container içi backend 8000) |
 | Modlar | Single = tools-free chat; Workforce = artifact intent + web phase controller |
@@ -20,6 +20,14 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
 
 ## Son tamamlanan işler
 
+- **Jira / Confluence onaylı yazma (PR #22, 28.09.2026):** Jira'da kayıt aç,
+  yorum ekle, durum değiştir; Confluence'ta yeni sayfa ve sayfaya yorum. Ajan
+  önerir, cevabın altındaki onay kartında **Onayla** ile yazılır
+  (`jira_actions.py`, `confluence_actions.py`, ortak `integration_actions.py`,
+  migration `0013`, `ApprovalCard.jsx`). Varsayılan kapalı:
+  `JIRA_WRITE_ENABLED`, `CONFLUENCE_WRITE_ENABLED`. Ortak niyet
+  sınıflandırıcısına dokunulmadı. Ayrıntı: [jira.md](jira.md#yazma-onaylı),
+  [confluence.md](confluence.md#yazma-onaylı)
 - **CAMEL kaldırıldı (24.09.2026):** `camel_service.py` (4.7k satır), CAMEL
   Single yolu, `AGENT_EXECUTOR` anahtarı, `camel-ai` bağımlılığı ve vendor'daki
   CAMEL kaynağı (2141 dosya) silindi. Niyet, takip turu ve sohbet özeti
@@ -67,8 +75,11 @@ tasarım geçmişi: [`archive/rebuild.md`](archive/rebuild.md), [`archive/NOTES.
   uygulamasında COM yok). Köprü kapalıysa / PC uykudaysa e-posta bekler, ~6 saat
   denenir, sonra `failed`. Gönderim sırasında backend çökerse aynı e-posta tekrar
   gidebilir (en az bir kez teslim)
-- Ajanın kendi yazdığı e-posta (taslak olarak Outlook'ta açma), gelen kutusu
-  okuma ve takvim **henüz yok** — sonraki fazlar
+- Outlook takvim **henüz yok** (e-posta taslağı ve gelen kutusu okuma var:
+  [outlook.md](outlook.md))
+- Jira / Confluence yazma açıkken, giriş olmadığı ve portlar tüm ağ
+  arayüzlerinde açık olduğu için aynı ağdaki biri de değişiklik onaylayabilir
+  (HANDOVER § 11, madde 6)
 - Kaynak başlığında site navigasyonu kalabiliyor (`_TITLE_CHROME_RE` yalnız
   consent/cookie metnini keser)
 - `_looks_like_web_access_refusal` kelime listesine bakıyor; "Maalesef bu isteğin
@@ -92,6 +103,6 @@ cd backend
 python -m pytest tests -q
 ```
 
-Son ölçüm (24.09.2026): **1409 geçti, 0 kaldı** (container içinde, `camel-ai` kaldırılmış halde).
+Son ölçüm (28.09.2026, PR #22 dalında): **1546 geçti, 0 kaldı** (container içinde).
 
 CI (`.github/workflows/backend-tests.yml`) yalnız `main`'e push'ta koşar.

@@ -204,6 +204,60 @@ Köprüyü bu sürümle **yeniden başlatman** gerekir (okuma uçları yeni). Ko
 > posta kutusuna erişemez — varsayılan `false` olmasının sebebi budur.
 > Ayrıntı: [`docs/outlook.md`](docs/outlook.md#posta-kutusunu-okuma).
 
+### 5.7 Jira ve Confluence
+
+**Okuma.** Şirket Jira'sını ve Confluence'ını okur (Confluence yalnız izin
+verilen space'lerde). Atlassian Cloud'da tek hesap ikisine de yeter:
+
+```env
+JIRA_ENABLED=true
+JIRA_URL=https://sirketiniz.atlassian.net
+JIRA_USERNAME=ad.soyad@sirket.com
+JIRA_API_TOKEN=...                 # id.atlassian.com > Security > API tokens
+CONFLUENCE_ENABLED=true
+CONFLUENCE_SPACES=ENG,HR           # ajan YALNIZ bu space'lerde arar, okur ve yazar
+```
+
+Kontrol: `curl http://127.0.0.1:8001/integrations/jira/status` ve
+`.../integrations/confluence/status` → `"ok": true`.
+
+```text
+bana atanan açık jira işlerini listele
+KAN-12 ne durumda, son yorumlarda ne konuşulmuş
+confluence'ta izin politikası ne diyor
+```
+
+**Onaylı yazma** (ayrı anahtarlar, varsayılan kapalı):
+
+```env
+JIRA_WRITE_ENABLED=true            # kayıt aç, yorum ekle, durum değiştir
+CONFLUENCE_WRITE_ENABLED=true      # yeni sayfa, sayfaya yorum
+```
+
+```text
+KAN'da yeni task aç: arama kutusu Türkçe karakterle sonuç getirmiyor
+KAN-12'ye yorum ekle: test ortamında düzeldi
+KAN-7'yi Done'a çek
+Confluence'ta ENG'e 'Haftalık toplantı' sayfası oluştur: katılımcılar ...; kararlar ...
+'Deploy runbook' sayfasına yorum yaz: adım 3 güncellendi
+```
+
+Ajan değişikliği **yalnız önerir**: cevabın altında ne yazılacağını gösteren bir
+**onay kartı** çıkar. **Onayla** → yazılır ve kart kayda / sayfaya bağlantı
+verir; **Vazgeç** → hiçbir şey yazılmaz. Kayıt anahtarı, üst sayfa ve
+yorumlanacak sayfa yalnız senin yazdığın ya da bağlantısını verdiğin olabilir.
+Silme, mevcut sayfayı düzenleme, alan düzenleme ve toplu işlem yoktur;
+zamanlanmış görevler değişiklik önermez.
+
+Token'ın bu işlemler için yetkisi olmalı — yazmayı açmadan önce hesabın neye
+yetkili olduğunu kontrol et. Ayrıntı: [`docs/jira.md`](docs/jira.md#yazma-onaylı),
+[`docs/confluence.md`](docs/confluence.md#yazma-onaylı).
+
+> ⚠️ Uygulamada giriş yok ve portlar tüm ağ arayüzlerinde açık. Yazma açıkken
+> aynı ağdaki biri de öneri oluşturup onaylayabilir. Yalnız kendi makinende
+> kullanıyorsan `docker-compose.yml`'de portları `127.0.0.1:8081:80`,
+> `127.0.0.1:8001:8000` biçimine çevir.
+
 ---
 
 ## 6. Köprü (local computer bridge)
@@ -300,6 +354,9 @@ docker compose exec backend python -m pytest tests -q   # container içinde (ön
 | Taranmış PDF boş geliyor | `DOCLING_ENABLE_OCR=true`; GPU yoksa Tesseract yedeği |
 | Zamanlanmış görev çalışmadı | Bilgisayar açık mıydı; `SCHEDULING_ENABLED`; Scheduled ekranında run durumu |
 | E-posta gitmiyor | Köprü çalışıyor mu (`:8765/health`), klasik Outlook açık ve hesabı tanımlı mı → [`docs/outlook.md`](docs/outlook.md) |
+| Jira / Confluence onay kartı çıkmıyor | `JIRA_WRITE_ENABLED` / `CONFLUENCE_WRITE_ENABLED` açık mı, istek Workforce'ta mı; rebuild sonrası açık sekmede Ctrl+F5 (eski sayfa kartı gösteremez) |
+| "Jira / Confluence değişikliği hazırlanamadı: ..." | Satırın devamı sebebi söyler (proje / space belirtilmedi, kayıt anahtarı yazılmadı, o duruma geçiş yok…); isteği düzeltip tekrar gönder |
+| Onayla → "Failed" | Kartta Jira / Confluence'ın kendi mesajı yazar; çoğu zaman token yetkisi ya da zorunlu bir alan |
 | `docker compose build` registry hatası | Docker Desktop'ın ağı/DNS'i; genelde geçici, tekrar dene |
 | Port dolu | 8081/8001/3939 başka bir şey tarafından kullanılıyor olabilir |
 
@@ -314,6 +371,9 @@ Daha uzun liste: [HANDOVER § 12](HANDOVER.md#12-sorun-giderme).
   aynı bilgisayarda).
 - Zamanlanmış e-postanın alıcılarını görevi oluşturan kişi yazar; model alıcı
   seçemez.
+- Jira / Confluence'a yazma her zaman onay kartından geçer; model tek başına
+  hiçbir şey yazamaz. Bir istekte tek değişiklik; silme ve mevcut sayfayı
+  düzenleme yoktur.
 - Çalışan bir job restart'ta `interrupted` olur, kaldığı yerden devam etmez.
 
 ---
@@ -327,3 +387,5 @@ Daha uzun liste: [HANDOVER § 12](HANDOVER.md#12-sorun-giderme).
 | [`docs/README.md`](docs/README.md) | Konu bazlı belgelerin indeksi |
 | [`docs/scheduling.md`](docs/scheduling.md) | Zamanlanmış görevler, zincirler, e-posta kuralları |
 | [`docs/outlook.md`](docs/outlook.md) | Outlook kurulumu, güvenlik, sorun giderme |
+| [`docs/jira.md`](docs/jira.md) | Jira okuma ve onaylı yazma |
+| [`docs/confluence.md`](docs/confluence.md) | Confluence okuma ve onaylı yazma |

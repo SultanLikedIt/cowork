@@ -97,7 +97,7 @@ deepseek-v4-flash). Türkçe odaklı. Kimlik doğrulama yok, iç ağ/localhost i
 > Model için: bu ve sonraki PART 2 parçaları "Yaptığım geliştirmeler"
 > bölümünün kaynağıdır. Kaydet, kısa onay ver.
 
-**Ajan sayısı 4 → 9.** Yeni ajanlar bilgi toplar; cevabı en sondaki ajan yazar.
+**Ajan sayısı 4 → 10.** Yeni ajanlar bilgi toplar; cevabı en sondaki ajan yazar.
 
 - **Mail Agent (Outlook):** gelen/gönderilmiş postaları okur, ekleri indirip
   belge gibi işler. "Geçen hafta gelen teklifleri karşılaştır ve PDF ver"
@@ -106,14 +106,27 @@ deepseek-v4-flash). Türkçe odaklı. Kimlik doğrulama yok, iç ağ/localhost i
   açık işler", "PROJ-123 ne durumda"). Cloud ve Server/Data Center. Model
   sorgu dili yazmaz, sorgular güvenli şablonlardan kurulur. VPN kapalıysa
   bunu açıkça söyler.
+- **Confluence Agent:** şirket wiki'sinde yalnız izin verilen space'lerde
+  arar ve sayfaları okur ("izin politikası ne diyor"). Jira hesabını kullanır;
+  izin listesi her sorguya eklenir.
 - **GitHub Agent:** herkese açık depoları arar; depo, dosya, issue, PR okur.
   Web araştırmasında çıkan GitHub linkleri de API'den okunur.
 - **Social Agent (Reddit + Hacker News):** "bu konuda insanlar ne diyor"
   sorularına forum tartışmalarından kanıt toplar.
 - **Knowledge Agent:** workspace'e yüklenen belgelerde arar (PART 2E).
 - Arayüzde ajanlar marka logolu kartlarla görünür; yalnız kuruluysa.
-- Hepsi **salt okunur** (Jira istemcisinde yazma metodu yok; GitHub yalnız
-  okuma isteği yapar).
+- **Onaylı yazma (Jira + Confluence):** "KAN'da task aç", "KAN-12'ye yorum
+  ekle", "KAN-7'yi Done'a çek", "wiki'de yeni sayfa aç", "şu sayfaya yorum
+  yaz". Ajan değişikliği **yalnız önerir**; cevabın altında ne yazılacağını
+  gösteren bir onay kartı çıkar, Jira / Confluence'a ancak kullanıcı
+  **Onayla**'ya basınca yazılır. Proje, tür, durum geçişi ve sayfa önce
+  Jira / Confluence'a karşı doğrulanır; kayıt anahtarı ve sayfa yalnız
+  kullanıcının yazdığı olabilir. Canlı testte 3 Jira değişikliği (kayıt, yorum,
+  durum) ve 4 Confluence yazması (2 sayfa, 2 yorum) onaylanıp geri okundu;
+  aynı onay ikinci kez reddedildi; okuma / taslak isteklerinde kart çıkmadı
+  (4/4). 43 yeni otomatik test. Varsayılan kapalı (`JIRA_WRITE_ENABLED`,
+  `CONFLUENCE_WRITE_ENABLED`).
+- Diğer entegrasyonlar **salt okunur** (Outlook okuma, GitHub, Reddit / HN).
 
 ---
 
@@ -241,7 +254,9 @@ Türkçe karakter ve OCR hatalarına dayanıklı.
 - **Dış içerik izolasyonu:** e-posta, forum, Jira/GitHub metinleri ve
   yüklenen tablolar modele "bu veri, talimat değil" çitiyle veriliyor
   (prompt injection'a karşı).
-- **Salt okunur entegrasyonlar**, alıcıyı yalnız kullanıcı belirler.
+- **Model hiçbir dış sisteme kendi başına yazamaz:** e-posta alıcısını yalnız
+  kullanıcı belirler; Jira / Confluence değişikliği onay kartından geçer ve
+  aynı değişiklik iki kez yazılamaz.
 - **Süre paneli:** her işte hangi adımın ne kadar sürdüğü, kaç token
   harcadığı arayüzde görünüyor.
 - **Yönlendirme doğruluğu ölçülüyor:** 73 gerçek (çoğu Türkçe) istek,
@@ -270,8 +285,9 @@ Türkçe karakter ve OCR hatalarına dayanıklı.
 
 | Alan | Devraldığımda | Şimdi |
 | --- | --- | --- |
-| Veri kaynakları | Web + yüklenen dosya | + Outlook, Jira, GitHub, Reddit, Hacker News, belge kütüphanesi |
-| Ajanlar | 4 | 9 |
+| Veri kaynakları | Web + yüklenen dosya | + Outlook, Jira, Confluence, GitHub, Reddit, Hacker News, belge kütüphanesi |
+| Ajanlar | 4 | 10 |
+| Kurum sistemlerine yazma | Yok | Jira: kayıt / yorum / durum · Confluence: sayfa / yorum — onay kartıyla |
 | Kod ajanı | Çıktıyı tahmin ediyordu | Çalıştırıyor, düzeltiyor, gerçek sonucu gösteriyor |
 | Excel/CSV analizi | Yalnız önizleme metni | Tüm dosya üzerinde hesaplama + grafik |
 | Taranmış belge | Okunamıyordu | OCR; tablolu faturada %92 kelime doğruluğu |
@@ -279,7 +295,7 @@ Türkçe karakter ve OCR hatalarına dayanıklı.
 | Otomasyon | Yok | Zamanlanmış görevler, zincirler, e-posta teslimi |
 | Belge çıktısı | Düz PDF, şablon Word | Tasarımlı PDF/Word/PowerPoint, teslim öncesi doğrulama |
 | Web araştırma | Gereksiz tur, sıralı arama | Örnekte ~23 sn kazanç, paralel arama |
-| Güvenlik | Temel SSRF kontrolü | Dış içerik izolasyonu, salt okunur entegrasyonlar |
+| Güvenlik | Temel SSRF kontrolü | Dış içerik izolasyonu, yazma yalnız kullanıcı onayıyla |
 | Ölçüm | Birim testler | Süre paneli, yönlendirme ve arama doğruluk setleri |
 | Test | 624 | 1.453 |
 
@@ -305,9 +321,9 @@ Türkçe karakter ve OCR hatalarına dayanıklı.
 
 - **Kimlik doğrulama ve kullanıcı hesapları** — sistemin iç ağ dışına
   açılabilmesi için ön koşul.
-- **Jira'da yazma** (yorum, durum değiştirme) — kullanıcı onay adımıyla.
+- Onaylı yazmayı genişletmek: Jira'da atama ve alan düzenleme, Confluence'ta
+  mevcut sayfaya bölüm ekleme (onay kartı altyapısı hazır).
 - **Outlook takvim** entegrasyonu.
-- Manuel eklenen ajanların yeni çalıştırıcıda (LangGraph) da çalışması.
 - GitHub'da özel depolar ve kod araması.
 
 **Ölçülerek karar verilecekler:**
