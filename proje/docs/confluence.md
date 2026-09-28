@@ -1,12 +1,15 @@
-# Confluence okuma
+# Confluence okuma ve onaylı yazma
 
 Ajanın şirket Confluence'ında **yalnız izin verilen space'lerde** sayfa arayıp
 okumasını ve cevaba kanıt olarak katmasını sağlar. "İzin politikası ne diyor",
 "deploy runbook'unu özetle", "ENG'de bu hafta güncellenen sayfalar",
 "onboarding adımlarını Excel yap" gibi istekler bu yolu kullanır.
 
-**Sadece okur.** Sayfa oluşturma, düzenleme, yorum yazma yoktur;
-`backend/confluence_client.py` yalnız `GET` gönderir.
+**Varsayılan olarak yalnız okur.** `CONFLUENCE_WRITE_ENABLED=true` ile iki
+değişiklik açılır — **yeni sayfa** ve **sayfaya yorum** — ikisi de yalnız izinli
+space'lerde ve arayüzde **onay kartı** ile: Confluence'a yalnız kullanıcı
+Onayla'ya bastığında yazılır. Mevcut bir sayfa düzenlenmez, taşınmaz, silinmez.
+Ayrıntı: [Yazma (onaylı)](#yazma-onaylı).
 
 ---
 
@@ -85,10 +88,60 @@ Ayar değiştirdikten hemen sonra 60 saniyelik önbelleği atlamak için:
 
 | Dosya | Görev |
 | --- | --- |
-| `confluence_client.py` | REST istemcisi: yalnız GET, tek uç (`/rest/api/content/search`), izin listesi denetimi, hata sınıflandırma |
+| `confluence_client.py` | REST istemcisi: okuma tek uçtan (`/rest/api/content/search`), izin listesi denetimi, hata sınıflandırma; onaydan sonra `create_page` / `add_comment` |
 | `confluence_query.py` | CQL kurma, bağlantı ayrıştırma, storage → metin |
 | `confluence_controller.py` | PLAN→SEARCH→SELECT→READ→ANSWER, notlar |
-| `confluence_api.py` | `/integrations/confluence/status` ve `/recheck` |
+| `confluence_api.py` | `/integrations/confluence/status` ve `/recheck`; onay kartının `/actions/{id}/apply` ve `/cancel` uçları |
+| `confluence_actions.py` | Onaylı yazma: tanıma, öneri + doğrulama, Markdown → storage, onayda yazma |
+| `integration_actions.py` | Jira ile ortak onay / vazgeç döngüsü (`integration_actions` tablosu) |
+
+---
+
+## Yazma (onaylı)
+
+`.env`'de `CONFLUENCE_WRITE_ENABLED=true` (ve backend yeniden başlatılır).
+Token'ın o space'te sayfa oluşturma ve yorum yetkisi olmalı. Workforce modunda:
+
+```text
+Confluence'ta SALES space'ine 'Haftalık satış toplantısı' sayfası oluştur: katılımcılar Ali ve Ayşe; kararlar: ...
+'Sales' sayfasının altına 'Q4 hedefleri' adında bir sayfa aç, içinde kısa bir yapılacaklar listesi olsun
+bu raporu wiki'ye yeni sayfa olarak ekle                    (önceki cevap sayfanın içeriği olur)
+https://site.atlassian.net/wiki/spaces/SALES/pages/123 sayfasına yorum ekle: onaylandı
+'Template - Business review' sayfasına yorum yaz: bu şablonu Q4 için kullanalım
+```
+
+Yeni sayfada **cevabın kendisi sayfanın taslağıdır**: sohbette sayfanın
+içeriğini görürsünüz, altında kart çıkar (space, başlık, üst sayfa ve içeriğin
+Confluence'taki görünümü). **Onayla** → sayfa / yorum oluşur, kart bağlantı
+verir; **Vazgeç** → hiçbir şey yazılmaz.
+
+Nasıl çalışır (`backend/confluence_actions.py`, Jira ile aynı yapı):
+
+1. **Tanıma** — istek Confluence'ı / wiki'yi anıyorsa, bu Confluence'ta bir
+   sayfa bağlantısı içeriyorsa, izinli bir space anahtarını ya da izinli
+   space'lerdeki bir sayfanın başlığını geçiriyorsa küçük bir model çağrısı
+   değişikliğin türünü söyler (`create_page` / `add_comment` / `none`).
+   Ortak niyet sınıflandırıcısına dokunulmadı.
+2. **Çalışma** — Assistant'a yeni sayfada "cevabın sayfanın taslağı" denir
+   (verilmeyen bilgi uydurmaz); yorumda "onaya sunulacak" denir. Kod
+   çalıştırılmaz.
+3. **Öneri + doğrulama** — space izin listesinde mi; o başlıkta sayfa zaten
+   var mı; üst sayfa ya da yorumlanacak sayfa **kullanıcının bağlantısını
+   verdiği ya da başlığını yazdığı** bir sayfa mı (model sayfa uyduramaz).
+   Markdown burada Confluence storage biçimine çevrilir; **ham HTML kapalı**
+   olduğundan gövde bir makro ya da script taşıyamaz.
+4. **Onay** — kayıttaki değişiklik aynen gönderilir; iki tık iki sayfa açamaz.
+   Cloud'da API v2 (`/wiki/api/v2/pages`, `/footer-comments`), Server/DC'de
+   v1 (`/rest/api/content`).
+
+Bilerek olmayanlar: **mevcut sayfayı düzenleme** (Confluence her düzenlemede
+gövdenin tamamını değiştirir; tek bir onaylı düzenleme insanların yazdığını
+silebilir), taşıma, silme, ek yükleme, etiket. Zamanlanmış görevler değişiklik
+önermez.
+
+> ⚠️ Bu uygulamada giriş yoktur ve portlar tüm ağ arayüzlerinde açıktır.
+> Yazma açıkken aynı ağdaki biri de öneri oluşturup onaylayabilir; yalnız
+> kendi makinenizde kullanıyorsanız portları `127.0.0.1:` ile sınırlayın.
 
 ---
 
@@ -117,9 +170,11 @@ Ayar değiştirdikten hemen sonra 60 saniyelik önbelleği atlamak için:
   güncel gövdesi.
 - Makro çıktıları (Jira tablosu, dahil edilen sayfa gibi) okunmaz; makronun
   içindeki düz metin ve kod blokları okunur.
-- Atlassian Cloud'un v1 REST API'si (`/wiki/rest/api/content/search`)
-  kullanılıyor. Atlassian bu ucu kaldırırsa istemcinin v2'ye taşınması
-  gerekir.
+- Okuma, Atlassian Cloud'un v1 REST API'sini (`/wiki/rest/api/content/search`)
+  kullanıyor. Atlassian bu ucu kaldırırsa okumanın v2'ye taşınması gerekir
+  (yazma zaten v2'de).
+- Yeni sayfa arama dizinine birkaç saniye / dakika içinde düşer; hemen
+  ardından "şu sayfayı özetle" denirse bulunamayabilir.
 - Kısa bağlantılar (`/wiki/x/AbCd`) tanınmaz; sayfanın tam adresi
   yapıştırılmalı.
 

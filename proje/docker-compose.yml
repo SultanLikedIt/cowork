@@ -183,6 +183,9 @@ services:
       JIRA_PERSONAL_TOKEN: ${JIRA_PERSONAL_TOKEN:-}
       JIRA_CONNECT_TIMEOUT_SECONDS: ${JIRA_CONNECT_TIMEOUT_SECONDS:-5}
       JIRA_TIMEOUT_SECONDS: ${JIRA_TIMEOUT_SECONDS:-20}
+      # Create / comment / transition, each proposed by a run and written
+      # only when the user approves it in the UI (backend/jira_actions.py).
+      JIRA_WRITE_ENABLED: ${JIRA_WRITE_ENABLED:-false}
       # Reading the company Confluence, read-only (backend/confluence_client.py,
       # docs/confluence.md). Uses the Jira account unless CONFLUENCE_* overrides
       # are set; on Atlassian Cloud the address is JIRA_URL + /wiki. Only the
@@ -195,6 +198,10 @@ services:
       CONFLUENCE_USERNAME: ${CONFLUENCE_USERNAME:-}
       CONFLUENCE_API_TOKEN: ${CONFLUENCE_API_TOKEN:-}
       CONFLUENCE_PERSONAL_TOKEN: ${CONFLUENCE_PERSONAL_TOKEN:-}
+      # New pages and page comments, only in CONFLUENCE_SPACES, each proposed
+      # by a run and written only when the user approves it in the UI
+      # (backend/confluence_actions.py).
+      CONFLUENCE_WRITE_ENABLED: ${CONFLUENCE_WRITE_ENABLED:-false}
       # Reading public GitHub, read-only (backend/github_client.py,
       # docs/github.md). On by default: public repositories need no account.
       # Without a token the limit is 60 requests an hour for the whole

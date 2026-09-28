@@ -335,3 +335,36 @@ export function getOutlookStatus(options = {}) {
 export function sendOutlookTest(to, options = {}) {
   return jsonRequest('/integrations/outlook/test', 'POST', { to }, options)
 }
+
+// --- Jira changes waiting for approval (backend/jira_actions.py) -------------
+// Only an action a run already proposed can be applied; these take its id and
+// nothing else, so the card cannot send fields of its own.
+
+export function applyJiraAction(actionId, options = {}) {
+  return request(`/integrations/jira/actions/${encodeURIComponent(actionId)}/apply`, {
+    ...options,
+    method: 'POST',
+  })
+}
+
+export function cancelJiraAction(actionId, options = {}) {
+  return request(`/integrations/jira/actions/${encodeURIComponent(actionId)}/cancel`, {
+    ...options,
+    method: 'POST',
+  })
+}
+
+// Same two buttons for Confluence (backend/confluence_actions.py).
+export function applyConfluenceAction(actionId, options = {}) {
+  return request(`/integrations/confluence/actions/${encodeURIComponent(actionId)}/apply`, {
+    ...options,
+    method: 'POST',
+  })
+}
+
+export function cancelConfluenceAction(actionId, options = {}) {
+  return request(`/integrations/confluence/actions/${encodeURIComponent(actionId)}/cancel`, {
+    ...options,
+    method: 'POST',
+  })
+}

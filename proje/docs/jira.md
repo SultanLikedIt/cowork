@@ -1,11 +1,13 @@
-# Jira okuma
+# Jira okuma ve onaylı yazma
 
 Ajanın **şirket Jira'sındaki kayıtları** arayıp okumasını ve cevaba kanıt
 olarak katmasını sağlar. "Bana atanan açık işler", "PROJ-123 ne durumda",
 "bu sprintte kalan bugları Excel yap" gibi istekler bu yolu kullanır.
 
-**Sadece okur.** Kayıt açma, düzenleme, durum değiştirme, yorum yazma yoktur;
-`backend/jira_client.py` içinde bunları yapabilecek bir fonksiyon da yoktur.
+**Varsayılan olarak yalnız okur.** `JIRA_WRITE_ENABLED=true` ile üç değişiklik
+açılır — kayıt açma, yorum ekleme, durum değiştirme — ve her biri arayüzde
+**onay kartı** ile gelir: Jira'ya yalnız kullanıcı Onayla'ya bastığında yazılır.
+Ayrıntı: [Yazma (onaylı)](#yazma-onaylı).
 
 Jira Cloud (`*.atlassian.net`) ve Jira Server / Data Center desteklenir.
 
@@ -115,7 +117,8 @@ artifact_intent (reads_jira)  →  Jira Agent  →  Assistant veya Document Agen
 | `backend/jira_client.py` | HTTP istemcisi: Cloud/Server farkları, kimlik, hata sınıflandırma, durum kontrolü |
 | `backend/jira_query.py` | Model çıktısı → JQL; doğrulama ve tırnaklama |
 | `backend/jira_controller.py` | Faz sırası, bütçeler, sonraki işçiye giden notlar |
-| `backend/jira_api.py` | `/integrations/jira/status`, `/recheck` |
+| `backend/jira_api.py` | `/integrations/jira/status`, `/recheck`; onay kartının `/actions/{id}/apply` ve `/cancel` uçları |
+| `backend/jira_actions.py` | Onaylı yazma: tanıma, öneri + doğrulama, onayda yazma ([Yazma](#yazma-onaylı)) |
 
 Bilerek yapılan tercihler:
 
@@ -162,10 +165,68 @@ kalanı etkilenmez.
 
 ---
 
+## Yazma (onaylı)
+
+`.env`'de `JIRA_WRITE_ENABLED=true` (ve backend yeniden başlatılır). Token'ın
+ilgili yetkileri olmalı (kayıt açma, yorum, durum geçişi). Workforce modunda:
+
+```text
+KAN'da yeni task aç: rapor sayfası mobilde yavaş açılıyor
+KAN'da bug aç: PDF'te Türkçe karakterler bozuk. Adımlar: ...
+KAN-12'ye yorum ekle: test ortamında düzeldi
+bu özeti KAN-5'e yorum olarak ekle          (önceki cevabın özeti yorum olur)
+KAN-7'yi Done'a çek
+SAM1-8'i In Progress'e çek
+```
+
+Cevabın altında bir **onay kartı** çıkar: ne yazılacaksa (proje, tür, başlık,
+açıklama / yorum metni / hedef durum) aynen görünür. **Onayla** → Jira'ya
+yazılır ve kart kayda bağlantı verir; **Vazgeç** → hiçbir şey yazılmaz.
+
+Nasıl çalışır (`backend/jira_actions.py`):
+
+1. **Tanıma** — istek Jira'yı, bir kayıt anahtarını ya da bir proje anahtarını
+   anıyorsa küçük bir model çağrısı değişikliğin türünü söyler
+   (`create_issue` / `add_comment` / `transition` / `none`). Ortak niyet
+   sınıflandırıcısına dokunulmadı; diğer istekler hiç etkilenmez.
+2. **Çalışma** — iş her zamanki gibi koşar (gerekirse Jira Agent kaydı okur).
+   Cevaplayan Assistant'a "değişiklik onaya sunulacak" denir; "Jira'yı
+   değiştiremem" demez, "yaptım" da demez. Jira değişikliği bir kod işi
+   sayılmaz (Coding Agent çalışmaz).
+3. **Öneri** — işten sonra bir model çağrısı alanları doldurur, sonra kod her
+   alanı Jira'ya karşı doğrular: proje var mı, tür o projede var mı ("bug"
+   yoksa Task olarak açılır ve kartta söylenir), durum şu an mümkün bir geçiş
+   mi. Öneri `integration_actions` tablosuna `proposed` olarak yazılır.
+4. **Onay** — `POST /integrations/jira/actions/{id}/apply` kayıttaki
+   değişikliği aynen gönderir. `proposed → applying` tek bir koşullu
+   güncellemedir: iki tık aynı kaydı iki kez açamaz.
+
+Bilerek yapılan tercihler:
+
+- **Model Jira'ya hiç yazmaz.** Başkalarının yazdığı kayıt metnini okuyor;
+  oradaki bir "tüm bugları kapat" satırı bir API çağrısına dönüşemez. En
+  kötü ihtimalle kartta tuhaf bir metin görürsünüz ve Vazgeç'e basarsınız.
+- **Kayıt anahtarı yalnız kullanıcının yazdığıysa kabul edilir.** Model
+  başka bir anahtar önerirse değişiklik hazırlanmaz.
+- **Onay ucu alan almaz**, yalnız önceden hazırlanmış bir önerinin kimliğini
+  alır: bu uç Jira'ya rastgele içerik yazdırmak için kullanılamaz.
+- **Zamanlanmış görevler değişiklik önermez** — onaylayacak kimse yoktur.
+- **Silme, alan düzenleme, atama, toplu işlem yok.** Bir istekte tek değişiklik.
+- Jira'ya ulaşılamadıysa (DNS, sıra dolu) öneri `proposed` kalır ve tekrar
+  onaylanabilir; Jira isteği reddettiyse `failed` olur ve sebep kartta yazar.
+
+> ⚠️ Bu uygulamada giriş yoktur ve portlar tüm ağ arayüzlerinde açıktır
+> (`docker-compose.yml`). Yazma açıkken, aynı ağdaki biri de öneri oluşturup
+> onaylayabilir. Yalnız kendi makinenizde kullanıyorsanız portları
+> `127.0.0.1:` ile sınırlayın.
+
+---
+
 ## Güvenlik
 
-- **Salt okunur.** İstemcide yazma yapan hiçbir çağrı yoktur (tek POST, Cloud'un
-  sayım uç noktasıdır ve yalnız okur).
+- **Okuma yazmaz.** Okuma yolundaki tek POST, Cloud'un sayım uç noktasıdır ve
+  yalnız okur. Yazan üç çağrı (`create_issue`, `add_comment`, `transition`)
+  yalnız onaydan sonra `jira_actions.apply`'dan çağrılır.
 - **Adres sabittir.** İstekler yalnız `JIRA_URL`'ye gider; model çıktısı yalnız
   sorgu parametrelerine ulaşır, kayıt anahtarları doğrulanır. Yönlendirmeler
   izlenmez (çoğu zaman bir SSO giriş sayfasıdır).
@@ -179,8 +240,8 @@ kalanı etkilenmez.
 
 ## Sınırlar
 
-- Yazma yok (kayıt açma, yorum, durum değiştirme) — ileride onaylı bir akışla
-  eklenebilir.
+- Yazma yalnız üç değişiklikle ve onayla (yukarıda); silme, alan düzenleme,
+  atama ve toplu değişiklik yok.
 - Pano/sprint API'si yok; "bu sprint" `sprint in openSprints()` ile aranır
   (Jira Software gerekir; yoksa filtre düşülür ve söylenir).
 - Ekler (attachment) okunmaz.

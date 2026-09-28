@@ -747,3 +747,105 @@ def load_recent_workspace_messages(
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------
+# Proposed changes to outside systems, waiting for approval (jira_actions.py)
+# --------------------------------------------------------------------------
+
+
+def _action_row(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["payload"] = json.loads(item.pop("payload_json") or "{}")
+    item["result"] = json.loads(item.pop("result_json") or "null")
+    return item
+
+
+def insert_integration_action(
+    action_id: str,
+    job_id: str,
+    system: str,
+    kind: str,
+    payload: dict[str, Any],
+    created_at: float,
+) -> None:
+    with _write_lock, _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO integration_actions (
+                action_id, job_id, system, kind, payload_json, status,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?)
+            """,
+            (
+                action_id,
+                job_id,
+                system,
+                kind,
+                json.dumps(payload, ensure_ascii=False),
+                created_at,
+                created_at,
+            ),
+        )
+
+
+def get_integration_action(action_id: str) -> Optional[dict[str, Any]]:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM integration_actions WHERE action_id = ?", (action_id,)
+        ).fetchone()
+        return _action_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_integration_actions(job_id: str) -> list[dict[str, Any]]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM integration_actions
+            WHERE job_id = ?
+            ORDER BY created_at ASC
+            """,
+            (job_id,),
+        ).fetchall()
+        return [_action_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def move_integration_action(
+    action_id: str,
+    *,
+    from_status: str,
+    to_status: str,
+    at: float,
+    result: Optional[dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> bool:
+    """Move one action between statuses, only if it is still in ``from_status``.
+
+    One conditional UPDATE, so of two concurrent approvals exactly one wins
+    and the other gets False -- the same change is never applied twice.
+    """
+    with _write_lock, _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE integration_actions
+            SET status = ?, updated_at = ?,
+                result_json = COALESCE(?, result_json),
+                error = COALESCE(?, error)
+            WHERE action_id = ? AND status = ?
+            """,
+            (
+                to_status,
+                at,
+                json.dumps(result, ensure_ascii=False) if result is not None else None,
+                error,
+                action_id,
+                from_status,
+            ),
+        )
+        return cursor.rowcount == 1

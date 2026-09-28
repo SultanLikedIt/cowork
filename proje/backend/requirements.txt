@@ -14,6 +14,10 @@ docling==2.114.0
 # download.pytorch.org separately — see Dockerfile.
 torch==2.6.0; platform_system == "Linux"
 torchvision==0.21.0; platform_system == "Linux"
+# Markdown -> Confluence storage format for approved new pages and comments
+# (confluence_actions.to_storage). Already in the image through rich; pinned
+# here so that stays true.
+markdown-it-py==4.2.0
 # python-docx writes the .docx export of a job's final answer.
 python-docx==1.2.0
 # python-pptx writes .pptx artifacts (document_pptx / document_export).

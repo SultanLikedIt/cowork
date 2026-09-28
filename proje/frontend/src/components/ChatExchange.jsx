@@ -57,6 +57,7 @@ import {
   userFacingProgress,
 } from '../stages.js'
 import { cn } from '../lib/utils.js'
+import ApprovalCard from './ApprovalCard.jsx'
 import { MarkSlot, StatusDot } from './ui/badge.jsx'
 import { Button } from './ui/button.jsx'
 import {
@@ -1239,6 +1240,15 @@ export default function ChatExchange({ job, onSwitchToWorkforce, onRepeat }) {
             onSwitch={() => onSwitchToWorkforce(job.topic)}
           />
         )}
+
+        {/* A Jira / Confluence change this run proposed. Nothing was
+            written: the card shows the exact change and writes it only on
+            Approve. */}
+        {!isActive &&
+          Array.isArray(job.integration_actions) &&
+          job.integration_actions.map((action) => (
+            <ApprovalCard key={action.action_id} action={action} />
+          ))}
 
         {/* Below the answer, above the footer: the answer explains the work,
             this is the work. Rendered for failed runs too -- a run that
