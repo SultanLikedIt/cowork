@@ -6261,6 +6261,7 @@ def _build_graph(
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
     sources_out: Optional[dict[str, Any]] = None,
     email_to: Sequence[str] = (),
+    answer_instruction: str = "",
 ) -> Any:
     # Filled by _run_coding: {"ok": bool}. One Coding pass per job.
     coding_outcome: dict[str, Any] = {}
@@ -6439,6 +6440,11 @@ def _build_graph(
                 )
             if role == ROLE_GENERAL and email_to:
                 extra += _email_body_instruction(email_to)
+            if role == ROLE_GENERAL and answer_instruction:
+                # A follow-up step the server runs after this reply (e.g. a
+                # Jira change shown for approval, jira_actions.py), so the
+                # reply does not answer "I cannot do that" to it.
+                extra += answer_instruction
             text = await _run_llm_worker(
                 role=role,
                 content=content,
@@ -6582,6 +6588,7 @@ async def _run_workforce_async(
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
     email_to: Optional[Sequence[str]] = None,
+    answer_instruction: str = "",
 ) -> Any:
     request = (original_request or content or "").strip()
     skip_web_research = _is_reformat_followup(request) and _has_prior_turn_material(
@@ -6683,6 +6690,7 @@ async def _run_workforce_async(
         knowledge_files=knowledge_files,
         sources_out=sources_out,
         email_to=tuple(email_to or ()),
+        answer_instruction=answer_instruction,
     )
 
     final_state = await app.ainvoke(
@@ -6816,6 +6824,7 @@ def run_workforce_in_thread(
     reads_documents: Optional[bool] = None,
     knowledge_files: Optional[Sequence[tuple[str, str]]] = None,
     email_to: Optional[Sequence[str]] = None,
+    answer_instruction: str = "",
 ) -> Any:
     """Sync entrypoint: runs one Workforce job on this thread's own event loop."""
     handle = CancellableWorkforce()
@@ -6851,6 +6860,7 @@ def run_workforce_in_thread(
                 reads_documents=reads_documents,
                 knowledge_files=knowledge_files,
                 email_to=email_to,
+                answer_instruction=answer_instruction,
             )
         )
     finally:

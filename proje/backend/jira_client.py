@@ -29,9 +29,12 @@ What had to be right, and where it lives
 
 Security notes
 --------------
-* **Read-only by construction.** Every request here is a GET except
-  ``count`` (Cloud's approximate-count endpoint is POST-only and reads).
-  There is no method that creates, edits, transitions or comments.
+* **Reads never write.** Every read here is a GET except ``count``
+  (Cloud's approximate-count endpoint is POST-only and reads). The write
+  methods (``create_issue``, ``add_comment``, ``transition``) are called
+  from one place only, ``jira_actions.apply``, after a person pressed
+  Approve on the exact change -- never by a model and never by a Jira Agent
+  run (docs/jira.md, "Yazma").
 * **The host is fixed by configuration.** Paths are module constants plus
   validated issue keys (``ISSUE_KEY_RE``) that are URL-quoted; model output
   only ever reaches query-string values. ``_url`` refuses anything that
@@ -78,7 +81,7 @@ MAX_CONCURRENT_CALLS = int(os.environ.get("JIRA_MAX_CONCURRENT") or 4)
 MAX_QUEUE_WAIT_SECONDS = 60
 _CALL_SLOTS = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_CALLS))
 
-_USER_AGENT = "agent-webapp/1.0 (+jira read-only)"
+_USER_AGENT = "agent-webapp/1.0 (+jira)"
 
 SEARCH_FIELDS = (
     "summary",
@@ -149,6 +152,11 @@ class JiraConfig:
     personal_token: str = field(default="", repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
+    # JIRA_WRITE_ENABLED: proposing changes (create / comment / transition)
+    # for approval. Off by default: the token's own rights are the real
+    # limit, and a read-only deployment should not start offering writes
+    # because someone upgraded the code.
+    write_enabled: bool = False
 
     @property
     def is_cloud(self) -> bool:
@@ -213,6 +221,7 @@ def load_config(environ: Optional[Mapping[str, str]] = None) -> JiraConfig:
         deployment = _detect_deployment(base_url)
     return JiraConfig(
         enabled=_flag(env, "JIRA_ENABLED", False),
+        write_enabled=_flag(env, "JIRA_WRITE_ENABLED", False),
         base_url=base_url,
         deployment=deployment,
         username=str(env.get("JIRA_USERNAME") or "").strip(),
@@ -239,6 +248,12 @@ def is_configured() -> bool:
     """Enabled and complete. Deliberately NOT a reachability check -- see
     ``main._routing_for_workforce`` for why routing must not probe the network."""
     return load_config().configured
+
+
+def is_write_enabled() -> bool:
+    """Configured for reading, and JIRA_WRITE_ENABLED is on."""
+    cfg = load_config()
+    return cfg.configured and cfg.write_enabled
 
 
 # --------------------------------------------------------------------------
@@ -651,6 +666,70 @@ class JiraClient:
         )
         return [u for u in data if isinstance(u, dict)] if isinstance(data, list) else []
 
+    def projects(self) -> list[dict[str, Any]]:
+        """Projects this account can see: ``[{"key", "name", "id"}, ...]``."""
+        data = self._request("GET", "/rest/api/2/project")
+        return [p for p in data if isinstance(p, dict)] if isinstance(data, list) else []
+
+    def project_issue_types(self, project_key: str) -> list[dict[str, Any]]:
+        """Issue types that can be created in ``project_key`` (no sub-tasks).
+
+        ``/rest/api/2/project/{key}`` lists them on Cloud and Server/DC alike;
+        the older createmeta endpoint is deprecated on Cloud.
+        """
+        key = validate_project_key(project_key)
+        data = _as_dict(self._request("GET", f"/rest/api/2/project/{quote(key, safe='')}"))
+        return [
+            t for t in (data.get("issueTypes") or [])
+            if isinstance(t, dict) and not t.get("subtask")
+        ]
+
+    def transitions(self, key: str) -> list[dict[str, Any]]:
+        """Workflow moves available on ``key`` right now, with their target status."""
+        key = validate_issue_key(key)
+        data = _as_dict(self._request(
+            "GET", f"/rest/api/2/issue/{quote(key, safe='')}/transitions"
+        ))
+        return [t for t in (data.get("transitions") or []) if isinstance(t, dict)]
+
+    # --- writes (jira_actions.apply only, after approval) -------------------
+
+    def create_issue(
+        self, *, project_key: str, issue_type_id: str, summary: str, description: str = ""
+    ) -> dict[str, Any]:
+        """Create one issue; returns ``{"id", "key", "self"}``.
+
+        API v2 on both deployments: it takes the description as a wiki-markup
+        string, where Cloud's v3 would demand an ADF document tree.
+        """
+        fields: dict[str, Any] = {
+            "project": {"key": validate_project_key(project_key)},
+            "issuetype": {"id": str(issue_type_id)},
+            "summary": str(summary),
+        }
+        if description:
+            fields["description"] = str(description)
+        data = self._request("POST", "/rest/api/2/issue", body={"fields": fields})
+        return _as_dict(data)
+
+    def add_comment(self, key: str, body: str) -> dict[str, Any]:
+        key = validate_issue_key(key)
+        data = self._request(
+            "POST", f"/rest/api/2/issue/{quote(key, safe='')}/comment", body={"body": str(body)}
+        )
+        return _as_dict(data)
+
+    def transition(self, key: str, transition_id: str) -> None:
+        """Apply one workflow move. Jira answers 204 with no body."""
+        key = validate_issue_key(key)
+        if not re.fullmatch(r"[0-9]{1,10}", str(transition_id or "")):
+            raise JiraError("bad_request", "geçersiz Jira geçiş kimliği")
+        self._request(
+            "POST",
+            f"/rest/api/2/issue/{quote(key, safe='')}/transitions",
+            body={"transition": {"id": str(transition_id)}},
+        )
+
 
 def _as_dict(data: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
@@ -660,6 +739,16 @@ def validate_issue_key(value: Any) -> str:
     key = str(value or "").strip().upper()
     if not ISSUE_KEY_RE.match(key):
         raise JiraError("bad_request", f"geçersiz Jira anahtarı: {key[:40]!r}")
+    return key
+
+
+PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,29}$")
+
+
+def validate_project_key(value: Any) -> str:
+    key = str(value or "").strip().upper()
+    if not PROJECT_KEY_RE.match(key):
+        raise JiraError("bad_request", f"geçersiz Jira proje anahtarı: {key[:40]!r}")
     return key
 
 

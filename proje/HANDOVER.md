@@ -347,6 +347,7 @@ Tam şablon: [`.env.example`](.env.example). Özet:
 | `OUTLOOK_AGENT_ACTION` | — | Sohbette istenen e-posta: `draft` (varsayılan, Outlook'ta taslak) \| `send` |
 | `OUTLOOK_READ_ENABLED` | — | Ajan posta kutusunu okuyabilsin (Gelen Kutusu + Gönderilmiş Öğeler, salt okunur). Varsayılan `false`; `OUTLOOK_ENABLED` de gerekir |
 | `JIRA_ENABLED` / `JIRA_URL` | — | Şirket Jira'sını okuma (salt okunur). Cloud: `JIRA_USERNAME` + `JIRA_API_TOKEN`; Server/DC: `JIRA_PERSONAL_TOKEN` ([`docs/jira.md`](docs/jira.md)) |
+| `JIRA_WRITE_ENABLED` | — | Varsayılan `false`. `true`: kayıt açma / yorum / durum değiştirme, her biri arayüzde onay kartıyla ([`docs/jira.md`](docs/jira.md#yazma-onaylı)) |
 | `CONFLUENCE_ENABLED` / `CONFLUENCE_SPACES` | — | Şirket Confluence'ını okuma (salt okunur), yalnız listelenen space'lerde. Jira hesabını kullanır; ayrı sunucu için `CONFLUENCE_URL` + `CONFLUENCE_PERSONAL_TOKEN` ([`docs/confluence.md`](docs/confluence.md)) |
 | `GITHUB_ENABLED` / `GITHUB_TOKEN` | `true` / — | Herkese açık GitHub okuma (salt okunur). Token opsiyonel ama önerilir: tokensiz sınır tüm backend için saatte 60 istek ([`docs/github.md`](docs/github.md)) |
 | `SCHEDULING_ENABLED` | — | Zamanlanmış görevler (varsayılan `true`); diğer `SCHEDULE_*` için `.env.example` |
@@ -524,7 +525,7 @@ FastAPI (backend/main.py)
 | --- | --- |
 | Research Agent | SearXNG/AgentSearch + sayfa açma + kanıt notları |
 | Mail Agent | Outlook posta kutusunu okur (opsiyonel); kanıt toplar, cevabı yazmaz |
-| Jira Agent | Şirket Jira'sında arar, kayıtları okur (opsiyonel, salt okunur); kanıt toplar, cevabı yazmaz |
+| Jira Agent | Şirket Jira'sında arar, kayıtları okur (opsiyonel, salt okunur); kanıt toplar, cevabı yazmaz. Yazma ayrı bir adımdır: iş bitince değişiklik önerilir, kullanıcı onaylarsa yazılır (`jira_actions.py`) |
 | Confluence Agent | Şirket Confluence'ında yalnız izinli space'lerde arar, sayfaları okur (opsiyonel, salt okunur); kanıt toplar, cevabı yazmaz ([`docs/confluence.md`](docs/confluence.md)) |
 | GitHub Agent | Herkese açık GitHub'da depo arar; bağlantısı verilen depo / dosya / issue / PR'ı okur (salt okunur); kanıt toplar, cevabı yazmaz |
 | Knowledge Agent | Workspace'e yüklenen belgelerde arar (FTS5 + BGE reranker); `[K#]` atıflı özet toplar, cevabı yazmaz ([`docs/knowledge.md`](docs/knowledge.md)) |
@@ -696,6 +697,7 @@ agent-webapp-langgraph/
 | `outlook.py` | Outlook köprü istemcisi, e-posta gövdesi, posta okuma istemcisi, `/integrations/outlook` |
 | `mail_controller.py` | Posta kutusu fazları: PLAN→SEARCH→SELECT→READ, alıntı çiti, ek indirme |
 | `jira_client.py` / `jira_query.py` / `jira_controller.py` | Jira: REST istemcisi (Cloud + Server/DC), model alanları → JQL, PLAN→SEARCH→SELECT→READ→ANSWER |
+| `jira_actions.py` | Onaylı Jira yazma: istek tanıma, öneri + Jira'ya karşı doğrulama, `integration_actions` tablosu, onayda yazma |
 | `confluence_client.py` / `confluence_query.py` / `confluence_controller.py` | Confluence: REST istemcisi (tek CQL ucu, space izin listesi), model alanları → CQL, storage → metin, PLAN→SEARCH→SELECT→READ→ANSWER |
 | `github_client.py` / `github_query.py` / `github_controller.py` | GitHub: REST istemcisi (yalnız GET, ETag önbelleği), bağlantı ayrıştırma + doğrulama, PLAN→SEARCH→SELECT→READ→ANSWER; web araştırmasındaki github.com adresleri de buradan okunur |
 | `knowledge_index.py` / `knowledge_controller.py` / `knowledge_api.py` | Workspace belge arama: pasaj indeksi (`knowledge.db`), PLAN→SEARCH→RANK→EXPAND→ANSWER, kütüphane uçları |
@@ -771,6 +773,7 @@ Backend kök path'lerini dinler; tarayıcı `/api` öneki ekler (nginx/Vite soya
 | GET | `/integrations/outlook/status` | E-posta hazır mı (köprü, token, Outlook) |
 | POST | `/integrations/outlook/test` | Test e-postası |
 | GET | `/integrations/jira/status` | Jira bağlı mı (yapılandırma, erişim, kullanıcı); `POST .../recheck` önbelleksiz |
+| POST | `/integrations/jira/actions/{id}/apply`, `.../cancel` | Onay kartı: önerilen Jira değişikliğini yaz / vazgeç (`JIRA_WRITE_ENABLED`) |
 | GET/POST/DELETE | `/workspaces/{id}/documents` | Workspace belge kütüphanesi; `GET /workspaces/{id}/knowledge/search?q=` ham arama |
 
 OpenAPI/Swagger: http://127.0.0.1:8001/docs

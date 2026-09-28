@@ -57,6 +57,7 @@ import confluence_api
 import confluence_client
 import github_api
 import github_client
+import jira_actions
 import jira_api
 import jira_client
 import knowledge_api
@@ -801,6 +802,11 @@ class UsageTelemetry(BaseModel):
     # "bana atanan isler" -- this job read the user's Jira. Same audit
     # reasoning again: the classification is stored, never the tickets.
     reads_jira: Optional[bool] = None
+    # "KAN'da task aç", "KAN-12'ye yorum ekle", "KAN-7'yi Done'a çek" -- the
+    # kind of Jira change this job asked for (jira_actions.detect_write), or
+    # None. The change itself is only proposed; it is written when a person
+    # approves it (integration_actions table).
+    jira_write_action: Optional[str] = None
     # "izin politikası ne diyor" -- this job read the company Confluence.
     reads_confluence: Optional[bool] = None
     # "bu repoyu ozetle" -- this job read public GitHub. Stored for the same
@@ -881,6 +887,9 @@ class JobStatusResponse(BaseModel):
     # something only Workforce can do, so the UI can offer the switch
     # instead of leaving the user to work out why the answer is thin.
     suggests_workforce: bool = False
+    # Jira changes this run proposed, each waiting for (or past) the user's
+    # approval -- rendered as approval cards (jira_actions.public).
+    jira_actions: list[dict[str, Any]] = Field(default_factory=list)
     task_plan: list[TaskPlanEntry] = Field(default_factory=list)
     planning_fallback: bool = False
     planning_errors: list[str] = Field(default_factory=list)
@@ -1466,6 +1475,13 @@ def _job_snapshot(job_id: str) -> JobStatusResponse:
     job["skills"] = _skill_summaries(job)
     job["artifacts"] = _job_artifacts(job)
     job["suggests_workforce"] = _suggests_workforce(job)
+    # Read from the table, not the job dict: approving happens after the job
+    # finished, and the table is the one record of what was written.
+    if (job.get("usage") or {}).get("jira_write_action") and job.get("status") in {
+        "done",
+        "partial",
+    }:
+        job["jira_actions"] = jira_actions.actions_for_job(job_id)
     control = _JOB_CONTROLS.get(job_id)
     if control is None:
         # Rehydrated from the DB after a restart: nothing in this process
@@ -2072,6 +2088,15 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     if intent.sends_email and outlook.is_enabled()
                     else []
                 ),
+                # A Jira change proposed after the run (jira_actions), so the
+                # answering worker does not reply "I cannot edit Jira".
+                answer_instruction=(
+                    jira_actions.answer_instruction(
+                        str(job["usage"].get("jira_write_action"))
+                    )
+                    if job["usage"].get("jira_write_action")
+                    else ""
+                ),
             )
             if not control.cancelled:
                 # The canonical text is fixed as of here -- everything from
@@ -2142,6 +2167,14 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     "`.com` eksik olabilir). Güvenlik gereği adres "
                     "tahmin edilmez — adresi tam yazıp tekrar isteyin."
                 ).strip()
+            # A Jira change the request asked for is prepared here and only
+            # PROPOSED: it is written when the user approves the card
+            # (jira_actions.apply). propose_for_job never raises.
+            jira_notice = await jira_actions.propose_for_job(
+                job, tracker=control.usage_tracker
+            )
+            if jira_notice:
+                job["result"] = f"{job['result']}\n\n{jira_notice}".strip()
     except Exception as exc:  # noqa: BLE001 - surfaced as a bounded job error
         if not control.cancelled:
             job["status"] = "error"
@@ -2790,6 +2823,26 @@ async def submit_job(
         and wants_local_open(resolved_ask)
     ):
         needs_external_work = True
+    # "KAN'da task aç", "KAN-12'ye yorum ekle": a Jira change, proposed after
+    # the run for the user to approve (jira_actions.py). Asked of its own
+    # small model call, only when writing is switched on and the request
+    # names Jira, an issue key or a project key -- the shared intent
+    # classifier is deliberately left untouched. A scheduled run has nobody
+    # to press Approve, so it never proposes one. A follow-up ("bunu KAN-5'e
+    # yorum olarak ekle") must still reach Workforce, same override as above.
+    jira_write_action: Optional[str] = None
+    if (
+        req.mode == "multi"
+        and origin == "user"
+        and jira_client.is_write_enabled()
+        and await asyncio.to_thread(jira_actions.might_write, resolved_ask)
+    ):
+        detected = await jira_actions.detect_write(
+            resolved_ask, tracker=control.usage_tracker
+        )
+        if detected in jira_actions.KINDS:
+            jira_write_action = detected
+            needs_external_work = True
     knowledge_files: list[tuple[str, str]] = []
     file_kinds = [
         str(record.get("kind") or "") for record in records
@@ -2860,6 +2913,15 @@ async def submit_job(
                 needs_code_execution=False,
                 reuses_uploaded_document=False,
             )
+    # A Jira change is never a programming job. Live, "KAN-1'e yorum ekle:
+    # ..." was classified needs_code_execution, and the Coding Agent wrote a
+    # script that printed "KAN-1'e yorum eklendi" -- a reply claiming a write
+    # that had not happened. The change is proposed after the run instead.
+    if jira_write_action and capabilities.CODE_EXEC in routing.capabilities:
+        routing = dataclasses.replace(
+            routing,
+            capabilities=frozenset(routing.capabilities - {capabilities.CODE_EXEC}),
+        )
     # Nobody is at the computer when a scheduled run finishes, and the local
     # bridge would open the file on whichever machine hosts it.
     if (
@@ -2983,6 +3045,7 @@ async def submit_job(
                 if artifact_intent_result is not None
                 else None
             ),
+            jira_write_action=jira_write_action,
             reads_confluence=(
                 artifact_intent_result.reads_confluence
                 if artifact_intent_result is not None

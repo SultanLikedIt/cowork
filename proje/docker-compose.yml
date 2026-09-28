@@ -183,6 +183,9 @@ services:
       JIRA_PERSONAL_TOKEN: ${JIRA_PERSONAL_TOKEN:-}
       JIRA_CONNECT_TIMEOUT_SECONDS: ${JIRA_CONNECT_TIMEOUT_SECONDS:-5}
       JIRA_TIMEOUT_SECONDS: ${JIRA_TIMEOUT_SECONDS:-20}
+      # Create / comment / transition, each proposed by a run and written
+      # only when the user approves it in the UI (backend/jira_actions.py).
+      JIRA_WRITE_ENABLED: ${JIRA_WRITE_ENABLED:-false}
       # Reading the company Confluence, read-only (backend/confluence_client.py,
       # docs/confluence.md). Uses the Jira account unless CONFLUENCE_* overrides
       # are set; on Atlassian Cloud the address is JIRA_URL + /wiki. Only the
