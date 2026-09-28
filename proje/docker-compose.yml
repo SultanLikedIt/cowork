@@ -198,6 +198,10 @@ services:
       CONFLUENCE_USERNAME: ${CONFLUENCE_USERNAME:-}
       CONFLUENCE_API_TOKEN: ${CONFLUENCE_API_TOKEN:-}
       CONFLUENCE_PERSONAL_TOKEN: ${CONFLUENCE_PERSONAL_TOKEN:-}
+      # New pages and page comments, only in CONFLUENCE_SPACES, each proposed
+      # by a run and written only when the user approves it in the UI
+      # (backend/confluence_actions.py).
+      CONFLUENCE_WRITE_ENABLED: ${CONFLUENCE_WRITE_ENABLED:-false}
       # Reading public GitHub, read-only (backend/github_client.py,
       # docs/github.md). On by default: public repositories need no account.
       # Without a token the limit is 60 requests an hour for the whole

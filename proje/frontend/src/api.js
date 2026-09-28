@@ -353,3 +353,18 @@ export function cancelJiraAction(actionId, options = {}) {
     method: 'POST',
   })
 }
+
+// Same two buttons for Confluence (backend/confluence_actions.py).
+export function applyConfluenceAction(actionId, options = {}) {
+  return request(`/integrations/confluence/actions/${encodeURIComponent(actionId)}/apply`, {
+    ...options,
+    method: 'POST',
+  })
+}
+
+export function cancelConfluenceAction(actionId, options = {}) {
+  return request(`/integrations/confluence/actions/${encodeURIComponent(actionId)}/cancel`, {
+    ...options,
+    method: 'POST',
+  })
+}

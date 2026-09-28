@@ -41,6 +41,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
+import integration_actions
 import jira_client
 import jira_query
 import untrusted_content
@@ -596,27 +597,9 @@ async def _propose(job: dict[str, Any], *, tracker: Any, complete: Any) -> Optio
 # The request never reached Jira, so pressing Approve again is safe.
 _NOT_SENT_CODES = frozenset({"not_configured", "dns", "busy"})
 
-
-class ApplyError(Exception):
-    def __init__(self, status: int, detail: str) -> None:
-        super().__init__(detail)
-        self.status = status
-        self.detail = detail
-
-
-def public(action: dict[str, Any]) -> dict[str, Any]:
-    """What the UI gets for one action. Nothing in a row is secret."""
-    return {
-        "action_id": action.get("action_id"),
-        "system": action.get("system"),
-        "kind": action.get("kind"),
-        "status": action.get("status"),
-        "payload": action.get("payload") or {},
-        "result": action.get("result"),
-        "error": action.get("error"),
-        "created_at": action.get("created_at"),
-        "updated_at": action.get("updated_at"),
-    }
+# The approve / cancel lifecycle is shared with Confluence.
+ApplyError = integration_actions.ApplyError
+public = integration_actions.public
 
 
 def _send(kind: str, payload: dict[str, Any], client: jira_client.JiraClient) -> dict[str, Any]:
@@ -646,66 +629,31 @@ def _send(kind: str, payload: dict[str, Any], client: jira_client.JiraClient) ->
 
 def apply(action_id: str, *, client: Optional[jira_client.JiraClient] = None) -> dict[str, Any]:
     """Write one approved change. Blocking; raises ApplyError for the API."""
-    import db
 
-    action = db.get_integration_action(action_id)
-    if action is None or action.get("system") != SYSTEM:
-        raise ApplyError(404, "Böyle bir Jira değişikliği yok.")
-    if not jira_client.is_write_enabled():
-        raise ApplyError(409, "Jira'ya yazma bu kurulumda kapalı (JIRA_WRITE_ENABLED).")
-    if not db.move_integration_action(
-        action_id, from_status="proposed", to_status="applying", at=time.time()
-    ):
-        current = db.get_integration_action(action_id) or {}
-        raise ApplyError(409, f"Bu değişiklik zaten işlendi (durum: {current.get('status')}).")
-    client = client or jira_client.JiraClient(jira_client.load_config())
-    try:
-        result = _send(str(action["kind"]), action.get("payload") or {}, client)
-    except jira_client.JiraError as exc:
-        retry = exc.code in _NOT_SENT_CODES
-        message = exc.detail + (f" {exc.remedy}" if exc.remedy else "")
-        db.move_integration_action(
-            action_id,
-            from_status="applying",
-            to_status="proposed" if retry else "failed",
-            at=time.time(),
-            error=message,
+    def send(action: dict[str, Any]) -> dict[str, Any]:
+        return _send(
+            str(action["kind"]),
+            action.get("payload") or {},
+            client or jira_client.JiraClient(jira_client.load_config()),
         )
-        logger.warning("jira action %s failed (%s): %s", action_id, exc.code, exc.detail)
-    except Exception as exc:  # noqa: BLE001 - recorded on the row, never left "applying"
-        db.move_integration_action(
-            action_id,
-            from_status="applying",
-            to_status="failed",
-            at=time.time(),
-            error=f"Beklenmeyen hata ({type(exc).__name__}).",
-        )
-        logger.exception("jira action %s crashed", action_id)
-    else:
-        db.move_integration_action(
-            action_id, from_status="applying", to_status="applied", at=time.time(), result=result
-        )
-        logger.info("jira action %s applied: %s", action_id, result.get("key"))
-    return public(db.get_integration_action(action_id) or action)
+
+    return integration_actions.apply(
+        action_id,
+        system=SYSTEM,
+        enabled=jira_client.is_write_enabled(),
+        disabled_message="Jira'ya yazma bu kurulumda kapalı (JIRA_WRITE_ENABLED).",
+        send=send,
+        error_types=(jira_client.JiraError,),
+        not_sent_codes=_NOT_SENT_CODES,
+    )
 
 
 def cancel(action_id: str) -> dict[str, Any]:
-    import db
-
-    action = db.get_integration_action(action_id)
-    if action is None or action.get("system") != SYSTEM:
-        raise ApplyError(404, "Böyle bir Jira değişikliği yok.")
-    if not db.move_integration_action(
-        action_id, from_status="proposed", to_status="cancelled", at=time.time()
-    ):
-        raise ApplyError(409, f"Bu değişiklik artık iptal edilemez (durum: {action.get('status')}).")
-    return public(db.get_integration_action(action_id) or action)
+    return integration_actions.cancel(action_id, system=SYSTEM)
 
 
 def actions_for_job(job_id: str) -> list[dict[str, Any]]:
-    import db
-
-    return [public(a) for a in db.list_integration_actions(job_id) if a.get("system") == SYSTEM]
+    return [a for a in integration_actions.actions_for_job(job_id) if a.get("system") == SYSTEM]
 
 
 __all__ = [

@@ -1,4 +1,5 @@
-"""Read-only Confluence REST client (Cloud and Server / Data Center).
+"""Confluence REST client (Cloud and Server / Data Center): reads, plus two
+writes that only run after a person approved them.
 
 One endpoint does all the work: ``GET /rest/api/content/search`` with a CQL
 query. It exists on Cloud (under ``/wiki``) and on Server/DC, it can expand
@@ -14,8 +15,10 @@ Confluence that runs elsewhere.
 
 Security notes
 --------------
-* **Read-only by construction.** Every request is a GET; there is no method
-  that creates, edits, comments or moves anything.
+* **Reads never write.** Every read is a GET. The two writes,
+  ``create_page`` and ``add_comment``, are called from one place only,
+  ``confluence_actions.apply``, after a person pressed Approve on the exact
+  change. Nothing here edits, moves or deletes an existing page.
 * **Space allowlist.** ``CONFLUENCE_SPACES`` is required: without it the
   integration counts as not configured. Every query this client sends is
   restricted to those spaces (``build_space_clause``), and ``get_page``
@@ -35,7 +38,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 stabilization_logger = logging.getLogger("agent_webapp.stabilization")
 
@@ -50,7 +53,7 @@ MAX_CONCURRENT_CALLS = int(os.environ.get("CONFLUENCE_MAX_CONCURRENT") or 4)
 MAX_QUEUE_WAIT_SECONDS = 60
 _CALL_SLOTS = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_CALLS))
 
-_USER_AGENT = "agent-webapp/1.0 (+confluence read-only)"
+_USER_AGENT = "agent-webapp/1.0 (+confluence)"
 SEARCH_PATH = "/rest/api/content/search"
 
 # Confluence's own rule for space keys (personal spaces start with "~").
@@ -111,6 +114,9 @@ class ConfluenceConfig:
     personal_token: str = field(default="", repr=False)
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
+    # CONFLUENCE_WRITE_ENABLED: proposing new pages and page comments for
+    # approval (confluence_actions.py), only in ``spaces``. Off by default.
+    write_enabled: bool = False
 
     @property
     def is_cloud(self) -> bool:
@@ -188,6 +194,7 @@ def load_config(environ: Optional[Mapping[str, str]] = None) -> ConfluenceConfig
 
     return ConfluenceConfig(
         enabled=_flag(env, "CONFLUENCE_ENABLED", False),
+        write_enabled=_flag(env, "CONFLUENCE_WRITE_ENABLED", False),
         base_url=base_url,
         deployment=deployment,
         spaces=parse_spaces(env.get("CONFLUENCE_SPACES")),
@@ -210,6 +217,12 @@ def load_config(environ: Optional[Mapping[str, str]] = None) -> ConfluenceConfig
 def is_configured() -> bool:
     """Enabled and complete -- not a reachability check (see main routing)."""
     return load_config().configured
+
+
+def is_write_enabled() -> bool:
+    """Configured for reading, and CONFLUENCE_WRITE_ENABLED is on."""
+    cfg = load_config()
+    return cfg.configured and cfg.write_enabled
 
 
 # --------------------------------------------------------------------------
@@ -306,15 +319,20 @@ class ConfluenceClient:
     # --- transport ---------------------------------------------------------
 
     def _url(self, path: str) -> str:
-        if not path.startswith("/rest/"):
+        # /rest/ is the v1 API (Cloud and Server/DC); /api/v2/ exists on Cloud
+        # only and is what page and comment creation use there.
+        prefix = "/api/v2/" if path.startswith("/api/v2/") else "/rest/"
+        if not path.startswith(prefix):
             raise ConfluenceError("bad_request", "geçersiz Confluence yolu")
         url = self.config.base_url + path
-        if not url.startswith(self.config.base_url + "/rest/"):
+        if not url.startswith(self.config.base_url + prefix):
             raise ConfluenceError("bad_request", "Confluence isteği yapılandırılan adresin dışına çıkıyor")
         return url
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, json_body: bool = False) -> dict[str, str]:
         headers = {"Accept": "application/json", "User-Agent": _USER_AGENT}
+        if json_body:
+            headers["Content-Type"] = "application/json"
         if self.config.auth_mode == "pat":
             headers["Authorization"] = f"Bearer {self.config.personal_token}"
         return headers
@@ -325,6 +343,16 @@ class ConfluenceClient:
         return None
 
     def _get(self, path: str, params: dict[str, Any]) -> Any:
+        return self._request("GET", path, params=params)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict[str, Any]] = None,
+        body: Optional[dict[str, Any]] = None,
+    ) -> Any:
         if not self.config.configured:
             raise ConfluenceError(
                 "not_configured",
@@ -342,10 +370,11 @@ class ConfluenceClient:
         started = time.monotonic()
         try:
             with self._session.request(
-                "GET",
+                method,
                 url,
                 params=params,
-                headers=self._headers(),
+                data=json.dumps(body) if body is not None else None,
+                headers=self._headers(json_body=body is not None),
                 auth=self._auth(),
                 timeout=(self.config.connect_timeout_seconds, self.config.timeout_seconds),
                 allow_redirects=False,
@@ -409,7 +438,8 @@ class ConfluenceClient:
             return json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
             stabilization_logger.warning(
-                "confluence: GET %s returned non-JSON (%.0f ms)",
+                "confluence: %s %s returned non-JSON (%.0f ms)",
+                method,
                 path,
                 (time.monotonic() - started) * 1000,
             )
@@ -511,6 +541,95 @@ class ConfluenceClient:
 
     def current_user(self) -> dict[str, Any]:
         return _as_dict(self._get("/rest/api/user/current", {}))
+
+    def space(self, key: str) -> dict[str, Any]:
+        """``{"key", "name", "id"}`` of one ALLOWED space."""
+        if key not in self.config.spaces:
+            raise ConfluenceError("forbidden", f"'{key}' izin verilen space'ler arasında değil.")
+        if self.config.is_cloud:
+            data = _as_dict(self._get("/api/v2/spaces", {"keys": key, "limit": 1}))
+            found = [s for s in (data.get("results") or []) if isinstance(s, dict)]
+            if not found:
+                raise ConfluenceError("not_found", f"'{key}' space'i bulunamadı.")
+            item = found[0]
+        else:
+            item = _as_dict(self._get(f"/rest/api/space/{quote(key, safe='~')}", {}))
+        return {
+            "key": str(item.get("key") or key),
+            "name": str(item.get("name") or key),
+            "id": str(item.get("id") or ""),
+        }
+
+    # --- writes (confluence_actions.apply only, after approval) -------------
+
+    def _written(self, data: Any, fallback: str = "") -> dict[str, Any]:
+        item = _as_dict(data)
+        links = item.get("_links") if isinstance(item.get("_links"), dict) else {}
+        return {
+            "id": str(item.get("id") or ""),
+            "url": self.config.page_url(str(links.get("webui") or "")) or fallback,
+        }
+
+    def create_page(
+        self,
+        *,
+        space_key: str,
+        space_id: str,
+        title: str,
+        storage: str,
+        parent_id: str = "",
+    ) -> dict[str, Any]:
+        """One new page in an allowed space; returns ``{"id", "url"}``.
+
+        Cloud uses API v2 (``/api/v2/pages``); Server/DC has only v1
+        (``/rest/api/content``). The body is Confluence storage format.
+        """
+        if space_key not in self.config.spaces:
+            raise ConfluenceError("forbidden", f"'{space_key}' izin verilen space'ler arasında değil.")
+        if parent_id:
+            parent_id = validate_page_id(parent_id)
+        if self.config.is_cloud:
+            if not re.fullmatch(r"[0-9]{1,20}", str(space_id or "")):
+                raise ConfluenceError("bad_request", "geçersiz Confluence space kimliği")
+            body: dict[str, Any] = {
+                "spaceId": str(space_id),
+                "status": "current",
+                "title": str(title),
+                "body": {"representation": "storage", "value": str(storage)},
+            }
+            if parent_id:
+                body["parentId"] = parent_id
+            return self._written(self._request("POST", "/api/v2/pages", body=body))
+        body = {
+            "type": "page",
+            "title": str(title),
+            "space": {"key": space_key},
+            "body": {"storage": {"value": str(storage), "representation": "storage"}},
+        }
+        if parent_id:
+            body["ancestors"] = [{"id": parent_id}]
+        return self._written(self._request("POST", "/rest/api/content", body=body))
+
+    def add_comment(self, page_id: str, storage: str, *, page_url: str = "") -> dict[str, Any]:
+        """A footer comment on one page; returns ``{"id", "url"}``."""
+        page_id = validate_page_id(page_id)
+        if self.config.is_cloud:
+            data = self._request(
+                "POST",
+                "/api/v2/footer-comments",
+                body={"pageId": page_id, "body": {"representation": "storage", "value": str(storage)}},
+            )
+        else:
+            data = self._request(
+                "POST",
+                "/rest/api/content",
+                body={
+                    "type": "comment",
+                    "container": {"id": page_id, "type": "page"},
+                    "body": {"storage": {"value": str(storage), "representation": "storage"}},
+                },
+            )
+        return self._written(data, fallback=page_url)
 
 
 def _as_dict(data: Any) -> dict[str, Any]:
