@@ -2133,14 +2133,20 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
         _ARTIFACT_CACHE.pop(job_id, None)
         produced = _job_artifacts(job)
         produced = _ensure_requested_pdf(job, produced)
+        # Decided here, but published only after the steps below (the e-mail,
+        # a Jira / Confluence proposal). The UI stops listening at the first
+        # terminal status it sees, and events still queued from the typing
+        # replay are drained while those steps await -- so a status set here
+        # reached the browser as "done" with no approval card and no notice
+        # line, and the final snapshot that carried them was never read.
         if control.cancelled:
-            job["status"] = "cancelled"
+            outcome = "cancelled"
         elif result_task.state.value == "DONE":
-            job["status"] = "done"
+            outcome = "done"
         elif produced:
             # Downgraded to partial, never to done: the run genuinely did not
             # finish cleanly, and saying otherwise would hide a real problem.
-            job["status"] = "partial"
+            outcome = "partial"
             job["error"] = job.get("error") or (
                 "The run did not finish cleanly, but the files below were "
                 "created successfully and are ready to download."
@@ -2152,9 +2158,9 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 len(produced),
             )
         else:
-            job["status"] = "failed"
+            outcome = "failed"
         if (
-            job["status"] in {"done", "partial"}
+            outcome in {"done", "partial"}
             and not control.cancelled
             and job.get("origin") != "schedule"
         ):
@@ -2190,6 +2196,9 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 )
                 if write_notice:
                     job["result"] = f"{job['result']}\n\n{write_notice}".strip()
+        # No await from here to the final snapshot: whatever the browser sees
+        # as terminal already has the notices and the proposed changes.
+        job["status"] = outcome
     except Exception as exc:  # noqa: BLE001 - surfaced as a bounded job error
         if not control.cancelled:
             job["status"] = "error"
