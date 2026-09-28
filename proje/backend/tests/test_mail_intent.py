@@ -298,3 +298,54 @@ def test_a_mail_request_does_not_trigger_a_web_search_by_keyword() -> None:
     source = inspect.getsource(workforce._run_workforce_async)
     assert "and not email_to" in source
     assert "email_to=" in inspect.getsource(main._run_job)
+
+
+def test_follow_up_mail_attaches_the_previous_turns_file(monkeypatch, composer) -> None:
+    # Live 2026-09-28: "tamam şimdi bu sunumu ... gönder" after a turn that
+    # made a deck; the follow-up job has no workspace of its own, and the
+    # mail said the deck was attached with nothing attached.
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        outlook, "send_mail", lambda **kwargs: (sent.append(kwargs), outlook.SendResult(True))[1]
+    )
+    monkeypatch.setenv("OUTLOOK_ENABLED", "true")
+    earlier = Path(tempfile.mkdtemp(prefix="earlier_turn_"))
+    (earlier / "artifacts").mkdir()
+    (earlier / "artifacts" / "altin.pptx").write_bytes(b"PK-deck")
+    (earlier / "artifacts" / "grafik.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr(main.db, "workspace_roots_for_conversation", lambda cid: [str(earlier)])
+    job = {
+        "job_id": "chat-followup-1",
+        "conversation_id": "conv-1",
+        "topic": "tamam şimdi bu sunumu ali@sirket.com adresine gönder",
+        "result": "Merhaba, sunum ektedir.",
+        "usage": {"sends_email": True, "email_to": ["ali@sirket.com"]},
+    }
+    main._JOBS[job["job_id"]] = job
+    notice = asyncio.run(main._email_answer_from_prompt(job))
+    # The deck, not the chart that is already inside it.
+    assert sent[0]["attachments"] == [("altin.pptx", b"PK-deck")]
+    assert "Ek: altin.pptx" in notice
+
+
+def test_a_mail_without_files_does_not_claim_an_attachment(monkeypatch, composer) -> None:
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        outlook, "send_mail", lambda **kwargs: (sent.append(kwargs), outlook.SendResult(True))[1]
+    )
+    monkeypatch.setenv("OUTLOOK_ENABLED", "true")
+    monkeypatch.setattr(main.db, "workspace_roots_for_conversation", lambda cid: [])
+    job = {
+        "job_id": "chat-nofile-1",
+        "conversation_id": "conv-2",
+        "topic": "toplantı özetini ali@sirket.com adresine gönder",
+        "result": "Toplantıda bütçe konuşuldu.",
+        "usage": {"sends_email": True, "email_to": ["ali@sirket.com"]},
+    }
+    main._JOBS[job["job_id"]] = job
+    # The default fake draft says "Rapor ektedir." -- rejected twice, so the
+    # template (which claims nothing) is used.
+    notice = asyncio.run(main._email_answer_from_prompt(job))
+    assert sent[0]["attachments"] == []
+    assert "ektedir" not in sent[0]["html_body"]
+    assert "Ek dosya yok" in notice

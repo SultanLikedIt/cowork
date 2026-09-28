@@ -87,7 +87,7 @@ from workforce.answer_format import (
     replay_final_answer_as_stream,
     summarize_conversation_history,
 )
-from workforce.events import ActivityStage
+from workforce.events import ActivityEvent, ActivityStage
 from workforce_callback import QueueWorkforceCallback
 from workspace import (
     MAX_BATCH_UPLOAD_BYTES,
@@ -1351,11 +1351,17 @@ async def _email_answer_from_prompt(
     )
     if not result.ok:
         return f"📧 E-posta hazırlanamadı ({recipients}): {result.message}"
+    # Said in the chat, so a mail that went out without the file is visible
+    # before the recipient notices it.
+    attached = (
+        f" Ek: {', '.join(name for name, _ in attachments)}."
+        if attachments else " Ek dosya yok."
+    )
     if action == "send":
-        return f"📧 E-posta gönderildi: {recipients}"
+        return f"📧 E-posta gönderildi: {recipients}.{attached}"
     return (
         f"📧 E-posta taslağı Outlook'ta açıldı: {recipients} — göndermek için "
-        "Outlook'taki Gönder düğmesine basın."
+        f"Outlook'taki Gönder düğmesine basın.{attached}"
     )
 
 
@@ -2133,20 +2139,22 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
         _ARTIFACT_CACHE.pop(job_id, None)
         produced = _job_artifacts(job)
         produced = _ensure_requested_pdf(job, produced)
-        # Decided here, but published only after the steps below (the e-mail,
-        # a Jira / Confluence proposal). The UI stops listening at the first
-        # terminal status it sees, and events still queued from the typing
-        # replay are drained while those steps await -- so a status set here
-        # reached the browser as "done" with no approval card and no notice
-        # line, and the final snapshot that carried them was never read.
+        # Decided here, published below: the job only reads as finished once
+        # the e-mail step and a Jira / Confluence proposal (if any) are done
+        # too. Publishing first showed a "done" job for ~50 s while its mail
+        # was still being written, and anything polling /jobs saw an answer
+        # without the mail notice. Worse for a proposal: the UI stops
+        # listening at the first terminal status it sees, so the approval
+        # card, which arrives in a later snapshot, never showed until reload.
+        final_status: str
         if control.cancelled:
-            outcome = "cancelled"
+            final_status = "cancelled"
         elif result_task.state.value == "DONE":
-            outcome = "done"
+            final_status = "done"
         elif produced:
             # Downgraded to partial, never to done: the run genuinely did not
             # finish cleanly, and saying otherwise would hide a real problem.
-            outcome = "partial"
+            final_status = "partial"
             job["error"] = job.get("error") or (
                 "The run did not finish cleanly, but the files below were "
                 "created successfully and are ready to download."
@@ -2158,12 +2166,18 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 len(produced),
             )
         else:
-            outcome = "failed"
+            final_status = "failed"
         if (
-            outcome in {"done", "partial"}
+            final_status in {"done", "partial"}
             and not control.cancelled
             and job.get("origin") != "schedule"
         ):
+            if _prompt_delivery(job) is not None:
+                await queue.put(
+                    ActivityEvent(
+                        task_id=job_id, stage="building", detail="E-posta hazırlanıyor"
+                    ).model_dump(mode="json")
+                )
             try:
                 notice = await _email_answer_from_prompt(job, control.usage_tracker)
             except Exception:  # noqa: BLE001 - a mail problem must not fail the job
@@ -2190,15 +2204,23 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
             # A Jira / Confluence change the request asked for is prepared
             # here and only PROPOSED: it is written when the user approves the
             # card (integration_actions.apply). propose_for_job never raises.
+            usage = job.get("usage") or {}
+            if usage.get("jira_write_action") or usage.get("confluence_write_action"):
+                await queue.put(
+                    ActivityEvent(
+                        task_id=job_id, stage="building", detail="Onay kartı hazırlanıyor"
+                    ).model_dump(mode="json")
+                )
             for module in (jira_actions, confluence_actions):
                 write_notice = await module.propose_for_job(
                     job, tracker=control.usage_tracker
                 )
                 if write_notice:
                     job["result"] = f"{job['result']}\n\n{write_notice}".strip()
+        # A cancel that landed during the mail or proposal step still wins.
         # No await from here to the final snapshot: whatever the browser sees
         # as terminal already has the notices and the proposed changes.
-        job["status"] = outcome
+        job["status"] = "cancelled" if control.cancelled else final_status
     except Exception as exc:  # noqa: BLE001 - surfaced as a bounded job error
         if not control.cancelled:
             job["status"] = "error"
@@ -3785,6 +3807,41 @@ _RUN_FAILURE_TEXT = {
 }
 
 
+_MAIL_IMAGE_KINDS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "svg"})
+
+
+def _earlier_turn_files(job: dict[str, Any]) -> tuple[Optional[str], list[dict[str, Any]]]:
+    """The files the most recent earlier turn of this conversation produced.
+
+    "tamam şimdi bu sunumu ali@...'ya gönder" is its own job with its own
+    (usually absent) workspace; the deck lives in the previous job's. Live on
+    2026-09-28 the mail went out saying the deck was attached, with nothing
+    attached. Images are dropped when that turn also made a document: the
+    chart and photos are already inside the deck.
+    """
+    conversation_id = str(job.get("conversation_id") or "")
+    if not conversation_id:
+        return None, []
+    own = str(job.get("job_id") or "")
+    for root in db.workspace_roots_for_conversation(conversation_id):
+        if Path(root).name == own:
+            continue
+        try:
+            found = artifacts_module.scan_artifacts(root)
+        except OSError:
+            continue
+        found = [e for e in found if not e.get("bundle") and e.get("filename")]
+        if not found:
+            continue
+        documents = [e for e in found if str(e.get("kind") or "").lower() not in _MAIL_IMAGE_KINDS]
+        chosen = documents or found
+        return root, [
+            {"filename": e.get("filename"), "path": e.get("path"), "size_bytes": e.get("size_bytes")}
+            for e in chosen
+        ]
+    return None, []
+
+
 async def _email_attachments(
     job: dict[str, Any], notes: list[str], *, include_uploads: bool = False
 ) -> list[tuple[str, bytes]]:
@@ -3799,14 +3856,12 @@ async def _email_attachments(
     attachments: list[tuple[str, bytes]] = []
     attached_bytes = 0
     root = _resolve_workspace_root(job)
-    if not root:
-        return attachments
     entries = [
         {"filename": entry.get("filename"), "path": entry.get("path"),
          "size_bytes": entry.get("size_bytes"), "bundle": entry.get("bundle")}
-        for entry in _job_artifacts(job)
+        for entry in (_job_artifacts(job) if root else [])
     ]
-    if include_uploads and not entries:
+    if include_uploads and root and not entries:
         for upload in job.get("attachments") or []:
             name = safe_filename(str(upload.get("filename") or ""))
             if not name or str(upload.get("kind") or "file") != "file":
@@ -3816,6 +3871,10 @@ async def _email_attachments(
                 "path": f"sources/{_source_directory(str(upload.get('file_id') or ''))}/{name}",
                 "size_bytes": upload.get("total_size_bytes") or 0,
             })
+    if include_uploads and not entries:
+        root, entries = await asyncio.to_thread(_earlier_turn_files, job)
+    if not root:
+        return attachments
     for entry in entries:
         name = str(entry.get("filename") or "")
         if entry.get("bundle") or not name:

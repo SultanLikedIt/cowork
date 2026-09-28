@@ -99,3 +99,10 @@ def test_the_material_is_fenced_and_stripped_of_code() -> None:
     assert "os.system" not in prompt
     assert "Bulgular." in prompt and "Son." in prompt
     assert "rapor.pdf" in prompt
+
+
+def test_an_attachment_claim_needs_an_attachment() -> None:
+    draft = EmailDraft(subject="Altın sunumu", body="Merhaba,\n\nSunu bu e-postaya eklenmiştir.\n\nİyi çalışmalar.")
+    assert any("attached" in p for p in mail_compose.problems(draft, []))
+    assert mail_compose.problems(draft, ["altin.pptx"]) == []
+    assert mail_compose.problems(draft) == []  # unknown: not judged

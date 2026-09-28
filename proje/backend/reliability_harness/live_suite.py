@@ -253,7 +253,7 @@ CASES: list[Case] = [
          purpose="İmkânsız isteğe dürüst ve hızlı cevap"),
     Case("deep.ai_act", "Güvenlik ve dayanıklılık", "Derin araştırma (uzun iş)",
          "Avrupa Birliği Yapay Zekâ Yasası (AI Act) şirketleri 2026'da nasıl etkiliyor? Kapsamlı incele.",
-         deep=True, repeat=1, timeout=1200,
+         deep=True, repeat=1, timeout=2700,
          expect={"roles_include": ["Research Agent"], "min_links": 3},
          purpose="Çok kaynaklı, uzun araştırma"),
 ]
@@ -435,6 +435,7 @@ class RunResult:
     error: str = ""
     job_id: str = ""
     saved_files: list[str] = field(default_factory=list)
+    note: str = ""  # e.g. "rerun after fix 416fdfd"; shown next to the run
 
 
 def run_case(api: Api, case: Case, run: int, samples: Path) -> RunResult:
@@ -585,6 +586,7 @@ def write_html(path: Path, results: list[RunResult], stress: Optional[dict[str, 
                     f'<div class="run">{badge(r.verdict)} <b>#{r.run}</b> · {r.seconds:.0f} sn · '
                     f'{esc(", ".join(r.roles) or "-")}'
                     + (f' · dosya: {esc(", ".join(r.artifacts))}' if r.artifacts else "")
+                    + (f' <span class="note">{esc(r.note)}</span>' if r.note else "")
                     + f'<div class="detail">{detail}</div></div>'
                 )
             excerpt = next((r.excerpt for r in row["runs"] if r.excerpt), "")
@@ -633,6 +635,24 @@ def write_html(path: Path, results: list[RunResult], stress: Optional[dict[str, 
         )
         fail_html = f"<h2>Kalan / hatalı çalıştırmalar</h2><ul class='fails'>{items}</ul>"
 
+    findings = meta.get("findings") or []
+    findings_html = ""
+    if findings:
+        cards = "".join(
+            f"<div class='finding'><div class='f-head'><b>{esc(f['title'])}</b>"
+            f"<span class='badge' style='background:{'#1a7f37' if f.get('state') == 'fixed' else '#9a6700'}'>"
+            f"{esc(f.get('state_label', ''))}</span></div>"
+            + "".join(
+                f"<div class='f-row'><span class='f-key'>{esc(key)}</span><span>{esc(f[k])}</span></div>"
+                for k, key in (("before", "İlk koşu"), ("cause", "Neden"), ("fix", "Yapılan"), ("after", "Sonra"))
+                if f.get(k)
+            )
+            + "</div>"
+            for f in findings
+        )
+        findings_html = f"<h2>Test sırasında bulunan sorunlar</h2>{cards}"
+    rerun_line = f" · {esc(meta['rerun'])}" if meta.get("rerun") else ""
+
     page = f"""<!doctype html><html lang="tr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Test Raporu — agent-webapp</title>
 <style>
@@ -658,10 +678,15 @@ td {{ padding:10px 12px; border-top:1px solid var(--rule); vertical-align:top; }
 .badge {{ color:#fff; font-size:11px; font-weight:700; padding:2px 7px; border-radius:10px; }}
 .excerpt {{ font-size:12.5px; color:#3e4c59; background:var(--soft); padding:8px 10px; border-radius:6px; }}
 details summary {{ cursor:pointer; color:var(--blue); font-size:12.5px; margin-top:6px; }}
+.note {{ background:#fff4ce; color:#6b4e00; font-size:11px; padding:1px 6px; border-radius:8px; }}
+.finding {{ background:#fff; border:1px solid var(--rule); border-left:5px solid var(--blue); border-radius:10px; padding:12px 16px; margin-bottom:12px; }}
+.f-head {{ display:flex; justify-content:space-between; gap:12px; margin-bottom:6px; }}
+.f-row {{ display:grid; grid-template-columns:90px 1fr; gap:10px; font-size:13.5px; padding:3px 0; }}
+.f-key {{ color:var(--muted); font-weight:600; }}
 .fails li {{ margin-bottom:6px; }} footer {{ color:var(--muted); font-size:12px; margin-top:30px; }}
 </style></head><body>
 <header><h1>agent-webapp — Kabul ve Stres Testi Raporu</h1>
-<p>{esc(meta['date'])} · model: {esc(meta['model'])} · sürüm: {esc(meta['commit'])} · her senaryo {meta['repeat']} kez çalıştırıldı</p></header>
+<p>{esc(meta['date'])} · model: {esc(meta['model'])} · sürüm: {esc(meta['commit'])} · her senaryo {meta['repeat']} kez çalıştırıldı{rerun_line}</p></header>
 <main>
 <div class="kpis">
 <div class="kpi"><div class="v">%{rate:.0f}</div><div class="l">başarı oranı ({passed}/{total_runs} çalıştırma)</div></div>
@@ -670,6 +695,7 @@ details summary {{ cursor:pointer; color:var(--blue); font-size:12.5px; margin-t
 <div class="kpi"><div class="v">{statistics.median([r.seconds for r in results]) if results else 0:.0f} sn</div><div class="l">medyan cevap süresi</div></div>
 </div>
 <div class="cats">{''.join(cat_cards)}</div>
+{findings_html}
 {''.join(sections)}
 {stress_html}
 {fail_html}
@@ -708,7 +734,7 @@ def write_excel(path: Path, results: list[RunResult], stress: Optional[dict[str,
         ("Tekrar", meta["repeat"]), ("Senaryo", len(rows)), ("Çalıştırma", total),
         ("Geçen", passed), ("Başarı oranı", f"%{100 * passed / total:.0f}" if total else "-"),
         ("Tutarlı ajan seçimi", f"{sum(r['consistent'] for r in rows)}/{len(rows)}"),
-    ]:
+    ] + ([("Yeniden koşu", meta["rerun"])] if meta.get("rerun") else []):
         ws.append([label, value])
     ws.column_dimensions["A"].width, ws.column_dimensions["B"].width = 26, 40
     for cell in ws["A"]:
@@ -721,6 +747,8 @@ def write_excel(path: Path, results: list[RunResult], stress: Optional[dict[str,
     for r in results:
         case = cases[r.case_id]
         checks = "\n".join(f"{'✓' if ok else '✗'} {n}: {d}" for n, ok, d in r.checks) or r.error
+        if r.note:
+            checks = f"[{r.note}]\n{checks}"
         ws.append([case.category, case.title, case.prompt + (f" → {case.followup}" if case.followup else ""),
                    r.run, labels.get(r.verdict, r.verdict), round(r.seconds, 1), ", ".join(r.roles),
                    ", ".join(r.artifacts), r.calls, r.tokens, checks,
@@ -738,6 +766,15 @@ def write_excel(path: Path, results: list[RunResult], stress: Optional[dict[str,
         for cell in ws[ws.max_row]:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
+    if meta.get("findings"):
+        ws = wb.create_sheet("Bulgular", 1)
+        header(ws, ["Sorun", "Durum", "İlk koşu", "Neden", "Yapılan", "Sonra"], [34, 16, 45, 60, 60, 45])
+        for f in meta["findings"]:
+            ws.append([f["title"], f.get("state_label", ""), f.get("before", ""), f.get("cause", ""),
+                       f.get("fix", ""), f.get("after", "")])
+            for cell in ws[ws.max_row]:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
     if stress:
         ws = wb.create_sheet("Stres Testi")
         header(ws, ["Mod", "İstek", "Durum", "Toplam süre (sn)", "Çalışan ajanlar"], [14, 60, 12, 16, 30])
@@ -751,6 +788,42 @@ def write_excel(path: Path, results: list[RunResult], stress: Optional[dict[str,
 # --------------------------------------------------------------------------
 
 
+def merge_reports(out: Path, sources: list[Path], findings_path: str, rerun_note: str) -> None:
+    """Rebuild the report from saved runs, without calling the app.
+
+    The first file is the full run; each later file holds reruns, and a case
+    it contains replaces that case's earlier runs wholesale (the earlier
+    failure is kept in the findings text, not in the pass rate). Stress
+    results come from the last file that has them.
+    """
+    base = json.loads(sources[0].read_text(encoding="utf-8"))
+    meta, stress = base["meta"], base.get("stress")
+    runs = [RunResult(**r) for r in base["results"]]
+    for src in sources[1:]:
+        data = json.loads(src.read_text(encoding="utf-8"))
+        newer = [RunResult(**r) for r in data["results"]]
+        replaced = {r.case_id for r in newer}
+        note = f"yeniden koşu · {data['meta'].get('commit', '-')}"
+        for r in newer:
+            r.note = r.note or note
+        runs = [r for r in runs if r.case_id not in replaced] + newer
+        stress = data.get("stress") or stress
+    order = {c.id: i for i, c in enumerate(CASES)}
+    runs.sort(key=lambda r: (order[r.case_id], r.run))
+    if findings_path:
+        meta["findings"] = json.loads(Path(findings_path).read_text(encoding="utf-8"))
+    if rerun_note:
+        meta["rerun"] = rerun_note
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "sonuclar.json").write_text(json.dumps(
+        {"meta": meta, "results": [r.__dict__ for r in runs], "stress": stress},
+        ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    write_html(out / "Test-Raporu.html", runs, stress, meta)
+    write_excel(out / "Test-Sonuclari.xlsx", runs, stress, meta)
+    passed = sum(r.verdict == "PASS" for r in runs)
+    print(f"Birleştirildi: {passed}/{len(runs)} geçti. Rapor: {out / 'Test-Raporu.html'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="http://127.0.0.1:8001")
@@ -762,9 +835,16 @@ def main() -> None:
     parser.add_argument("--skip-stress", action="store_true")
     parser.add_argument("--model", default="")
     parser.add_argument("--commit", default="")
+    parser.add_argument("--merge", nargs="*", default=[],
+                        help="report-only: sonuclar.json files, later ones replace earlier runs of the same case")
+    parser.add_argument("--findings", default="", help="report-only: JSON list of findings to show")
+    parser.add_argument("--rerun-note", default="", help="report-only: header line about reruns")
     args = parser.parse_args()
 
     out = Path(args.out)
+    if args.merge:
+        merge_reports(out, [Path(p) for p in args.merge], args.findings, args.rerun_note)
+        return
     samples = out / "ornek-ciktilar"
     samples.mkdir(parents=True, exist_ok=True)
     api = Api(args.base)
