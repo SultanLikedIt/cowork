@@ -84,7 +84,7 @@ from workforce.answer_format import (
     replay_final_answer_as_stream,
     summarize_conversation_history,
 )
-from workforce.events import ActivityStage
+from workforce.events import ActivityEvent, ActivityStage
 from workforce_callback import QueueWorkforceCallback
 from workspace import (
     MAX_BATCH_UPLOAD_BYTES,
@@ -2094,14 +2094,19 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
         _ARTIFACT_CACHE.pop(job_id, None)
         produced = _job_artifacts(job)
         produced = _ensure_requested_pdf(job, produced)
+        # Decided here, published below: the job only reads as finished once
+        # the e-mail step (if any) is done too. Publishing first showed a
+        # "done" job for ~50 s while its mail was still being written, and
+        # anything polling /jobs saw an answer without the mail notice.
+        final_status: str
         if control.cancelled:
-            job["status"] = "cancelled"
+            final_status = "cancelled"
         elif result_task.state.value == "DONE":
-            job["status"] = "done"
+            final_status = "done"
         elif produced:
             # Downgraded to partial, never to done: the run genuinely did not
             # finish cleanly, and saying otherwise would hide a real problem.
-            job["status"] = "partial"
+            final_status = "partial"
             job["error"] = job.get("error") or (
                 "The run did not finish cleanly, but the files below were "
                 "created successfully and are ready to download."
@@ -2113,12 +2118,18 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                 len(produced),
             )
         else:
-            job["status"] = "failed"
+            final_status = "failed"
         if (
-            job["status"] in {"done", "partial"}
+            final_status in {"done", "partial"}
             and not control.cancelled
             and job.get("origin") != "schedule"
         ):
+            if _prompt_delivery(job) is not None:
+                await queue.put(
+                    ActivityEvent(
+                        task_id=job_id, stage="building", detail="E-posta hazırlanıyor"
+                    ).model_dump(mode="json")
+                )
             try:
                 notice = await _email_answer_from_prompt(job, control.usage_tracker)
             except Exception:  # noqa: BLE001 - a mail problem must not fail the job
@@ -2142,6 +2153,8 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
                     "`.com` eksik olabilir). Güvenlik gereği adres "
                     "tahmin edilmez — adresi tam yazıp tekrar isteyin."
                 ).strip()
+        # A cancel that landed during the mail step still wins.
+        job["status"] = "cancelled" if control.cancelled else final_status
     except Exception as exc:  # noqa: BLE001 - surfaced as a bounded job error
         if not control.cancelled:
             job["status"] = "error"

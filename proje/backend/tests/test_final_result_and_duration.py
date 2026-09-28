@@ -291,3 +291,22 @@ def main_test() -> None:
 
 if __name__ == "__main__":
     main_test()
+
+
+def test_job_reads_done_only_after_the_mail_step() -> None:
+    # Live: /jobs said "done" ~50 s before the mail notice was appended, so a
+    # poller saw an answer with no mail line and the UI looked finished.
+    seen: dict = {}
+
+    async def fake_mail(job, tracker=None):
+        seen["status_during_mail"] = job["status"]
+        return "E-posta taslağı oluşturuldu."
+
+    original = main._email_answer_from_prompt
+    main._email_answer_from_prompt = fake_mail
+    try:
+        job, _ = _run_workforce_job("mail-order-1")
+    finally:
+        main._email_answer_from_prompt = original
+    assert seen["status_during_mail"] != "done"
+    assert job["status"] == "done"
