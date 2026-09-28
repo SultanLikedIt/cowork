@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import artifact_intent
+import mail_compose
 import main
 import outlook
 
@@ -128,8 +129,35 @@ def test_prompt_delivery_says_so_in_the_email(monkeypatch) -> None:
 # -- chat runs ---------------------------------------------------------------
 
 
+class _Composer:
+    """Stands in for the mail-compose model call (openai_chat.complete_chat)."""
+
+    def __init__(self) -> None:
+        self.replies: list[Any] = []
+        self.calls: list[list[dict]] = []
+
+    async def __call__(self, messages, **kwargs):
+        self.calls.append(messages)
+        reply = self.replies.pop(0) if self.replies else mail_compose.EmailDraft(
+            subject="Zeytinyağı ihracatı",
+            body="Merhaba,\n\nİhracat arttı. Rapor ektedir.\n\nİyi çalışmalar.",
+        )
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
 @pytest.fixture()
-def chat_job(monkeypatch):
+def composer(monkeypatch):
+    from execution.langgraph_runtime import openai_chat
+
+    fake = _Composer()
+    monkeypatch.setattr(openai_chat, "complete_chat", fake)
+    return fake
+
+
+@pytest.fixture()
+def chat_job(monkeypatch, composer):
     sent: list[dict[str, Any]] = []
     monkeypatch.setattr(
         outlook, "send_mail", lambda **kwargs: (sent.append(kwargs), outlook.SendResult(True))[1]
@@ -193,29 +221,37 @@ def test_chat_reports_a_failed_send(chat_job, monkeypatch) -> None:
 # -- the mail itself: subject, body, attachments -------------------------------
 
 
-def test_the_subject_comes_from_the_answer_not_the_request(chat_job) -> None:
+def test_the_mail_is_written_by_its_own_step(chat_job, composer) -> None:
     job, sent = chat_job
     job["topic"] = (
         "bu raporu outlook üzerinden ali@sirket.com adresine gönderir misin? "
         "mailde deep research modunun sorunlarını anlat"
     )
-    job["result"] = "Konu: Deep research modu hakkında\n\nMerhaba Ali,\n\nRapor ektedir."
+    # What the live Assistant wrote: steps and a fake send call.
+    job["result"] = (
+        "Dosyadan raporun tam metnini okuyorum.\n\n```python\nsend_email(to='ali@sirket.com')\n```"
+    )
     asyncio.run(main._email_answer_from_prompt(job))
-    assert sent[0]["subject"] == "Deep research modu hakkında"
-    # The user's instruction to this app never reaches the recipient.
+    assert sent[0]["subject"] == "Zeytinyağı ihracatı"
+    assert "send_email" not in sent[0]["html_body"]
+    assert "okuyorum" not in sent[0]["html_body"]
     assert "gönderir misin" not in sent[0]["subject"]
-    assert "gönderir misin" not in sent[0]["html_body"]
-    # And the subject line is not repeated in the body.
-    assert "Konu:" not in sent[0]["html_body"]
-    assert "Rapor ektedir." in sent[0]["html_body"]
+    # The compose step saw the user's instruction and the attached file.
+    user_prompt = composer.calls[0][-1]["content"]
+    assert "mailde deep research modunun sorunlarını anlat" in user_prompt
+    assert "rapor.pdf" in user_prompt
+    # ... but not the code block, which is not material for a mail.
+    assert "send_email" not in user_prompt
 
 
-def test_without_a_subject_line_the_request_is_still_not_the_subject(chat_job) -> None:
+def test_a_failed_compose_falls_back_to_a_safe_template(chat_job, composer) -> None:
     job, sent = chat_job
     job["topic"] = "bunu ali@sirket.com adresine gönderir misin"
+    composer.replies = [RuntimeError("model down"), RuntimeError("model down")]
     asyncio.run(main._email_answer_from_prompt(job))
-    assert "gönderir misin" not in sent[0]["subject"]
     assert sent[0]["subject"] == "rapor"  # the attached file's name
+    assert "gönderir misin" not in sent[0]["subject"]
+    assert "rapor.pdf" in sent[0]["html_body"]
 
 
 @pytest.mark.parametrize(

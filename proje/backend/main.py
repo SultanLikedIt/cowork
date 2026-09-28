@@ -61,6 +61,7 @@ import jira_api
 import jira_client
 import knowledge_api
 import knowledge_index
+import mail_compose
 import social_api
 from social import health as social_health
 from execution.langgraph_runtime.single import (
@@ -1267,7 +1268,9 @@ def _job_artifacts(job: dict[str, Any]) -> list[dict[str, Any]]:
     return found
 
 
-async def _email_answer_from_prompt(job: dict[str, Any]) -> Optional[str]:
+async def _email_answer_from_prompt(
+    job: dict[str, Any], tracker: Optional[UsageTracker] = None
+) -> Optional[str]:
     """The user asked, in the request itself, for this answer to be mailed.
 
     Chat runs open the finished message in Outlook instead of sending it
@@ -1275,6 +1278,10 @@ async def _email_answer_from_prompt(job: dict[str, Any]) -> Optional[str]:
     a draft they press Send on cannot become a way to mail something out on
     the strength of text the run happened to read. Scheduled runs never come
     here -- see _deliver_scheduled_run.
+
+    The mail is written by its own step (mail_compose), not taken from the
+    run's answer: whichever worker answered, the recipient gets a mail
+    written for them, checked before use.
 
     Returns one line to append to the answer, or None when no mail was asked
     for.
@@ -1290,15 +1297,19 @@ async def _email_answer_from_prompt(job: dict[str, Any]) -> Optional[str]:
         )
     notes: list[str] = []
     attachments = await _email_attachments(job, notes, include_uploads=True)
-    # The subject comes from the answer (the Assistant is told to open with
-    # "Konu: ..."), never from the request: the request is an instruction to
-    # this app ("bu raporu ali@...'ya gönderir misin, mailde şunu yaz"), and
-    # using it as the subject put that instruction in the recipient's inbox.
-    subject, body = _split_email_subject(str(job.get("result") or ""))
-    if not subject:
-        subject = (
-            Path(attachments[0][0]).stem if attachments else "agent-webapp'ten mesaj"
-        )
+    # The Assistant may already have opened its reply with "Konu: ..."; that
+    # line is material, not part of what the recipient reads.
+    _, answer = _split_email_subject(str(job.get("result") or ""))
+    composed = await mail_compose.compose_email(
+        instruction=_job_resolved_request(job),
+        answer=answer,
+        attachments=[name for name, _ in attachments],
+        tracker=tracker,
+    )
+    subject, body = composed.subject, composed.body
+    logging.getLogger("agent_webapp.jobs").info(
+        "job=%s mail composed source=%s", job.get("job_id"), composed.source
+    )
     action = outlook.agent_action()
     notes.append("Bu e-posta agent-webapp'te hazırlandı.")
     result = await asyncio.to_thread(
@@ -2109,7 +2120,7 @@ async def _run_job(job_id: str, content: str, mode: Literal["single", "multi"]) 
             and job.get("origin") != "schedule"
         ):
             try:
-                notice = await _email_answer_from_prompt(job)
+                notice = await _email_answer_from_prompt(job, control.usage_tracker)
             except Exception:  # noqa: BLE001 - a mail problem must not fail the job
                 logging.getLogger("agent_webapp.jobs").exception(
                     "job=%s could not prepare the email it was asked for", job_id
