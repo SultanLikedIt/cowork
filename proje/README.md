@@ -3,7 +3,9 @@
 Tarayıcıdan konuştuğun bir **ajan uygulaması**. Soru sorarsın; sistem ya düz
 sohbet eder, ya web'den araştırır, ya yüklediğin belgeyi okur, ya da
 **Word / PDF / PowerPoint / Excel / HTML** dosyası üretip (istersen) bilgisayarında
-açar.
+açar. Şirket Jira'sını ve Confluence'ını okur; açılırsa **senin onayınla**
+Jira'da kayıt açar, yorum ekler, durum değiştirir ve Confluence'ta sayfa /
+yorum oluşturur.
 
 > 🚀 **Hemen çalıştırmak istiyorsan → [BASLANGIC.md](BASLANGIC.md).**
 > Sıfırdan kurulum, günlük kullanım, açılabilir özellikler, sorun giderme.
@@ -52,6 +54,8 @@ Geçiş notları: [docs/archive/langgraph-migration.md](docs/archive/langgraph-m
 | Belge üretme | Tipli bloklar → Chromium HTML/CSS (PDF), python-docx (DOCX), python-pptx (PPTX), openpyxl (XLSX), HTML deck; reportlab yedek |
 | Zamanlama | Cron / tek seferlik / zincir görevler, değişiklik izleme |
 | E-posta | Zamanlanmış sonuçlar klasik Outlook masaüstünden (opsiyonel, Windows) |
+| Kurum içi kaynaklar | Outlook, Jira, Confluence, GitHub, Reddit / Hacker News, workspace belge kütüphanesi (okuma) |
+| Onaylı yazma | Jira: kayıt aç / yorum / durum değiştir · Confluence: yeni sayfa / yorum — ajan önerir, arayüzdeki kartta **Onayla** ile yazılır (opsiyonel) |
 | Canlı durum | Server-Sent Events |
 | Kalıcılık | SQLite + dosya sistemi |
 
@@ -65,11 +69,12 @@ Sunucu tahmin etmez; composer'daki anahtar belirler.
 
 | | **Single Agent** | **Workforce (Multi)** |
 | --- | --- | --- |
-| Ne yapar | Tek sohbet çağrısı | Research + Document + Coding + Assistant işçileri |
+| Ne yapar | Tek sohbet çağrısı | Research + Document + Coding + Assistant işçileri; açıksa Mail, Jira, Confluence, GitHub, Knowledge, Social |
 | Web | ❌ | ✅ SEARCH → SELECT → FETCH → ANSWER |
 | Dosya üretir | ❌ | ✅ docx / pdf / pptx / xlsx / html |
 | Yüklenen belge | ❌ | ✅ okur, şablon olarak doldurur |
-| Ne zaman | "Python decorator nedir?", hızlı sohbet | "araştır", "pdf ver", "sunum hazırla", "bunu doldur" |
+| Jira / Confluence | ❌ | ✅ okur; açıksa değişikliği onay kartıyla önerir |
+| Ne zaman | "Python decorator nedir?", hızlı sohbet | "araştır", "pdf ver", "sunum hazırla", "bunu doldur", "KAN'da task aç" |
 
 Workforce'ta ayrıca **Deep research** (daha çok açı, daha uzun) ve **Skills**
 (nasıl düşünsün: kök neden, risk analizi…) açılabilir.
@@ -136,7 +141,11 @@ AGENT_SEARCH_ENABLED=true
 LOCAL_COMPUTER_ENABLED=false    # "bilgisayarımda aç" köprüsü
 DOCLING_ENABLE_OCR=true         # PDF + görsel okuma (PaddleOCR-VL, yoksa Tesseract)
 COMPOSE_PROFILES=paddleocr      # PaddleOCR-VL servisleri (NVIDIA GPU ister)
-JIRA_ENABLED=false              # şirket Jira'sını okuma (salt okunur), docs/jira.md
+JIRA_ENABLED=false              # şirket Jira'sını okuma, docs/jira.md
+JIRA_WRITE_ENABLED=false        # Jira'da kayıt aç / yorum / durum değiştir, her biri onay kartıyla
+CONFLUENCE_ENABLED=false        # Confluence okuma (Jira hesabıyla), docs/confluence.md
+CONFLUENCE_SPACES=              # ajanın okuyup yazabileceği space'ler, ör. ENG,HR
+CONFLUENCE_WRITE_ENABLED=false  # yeni sayfa / sayfaya yorum, her biri onay kartıyla
 GITHUB_TOKEN=                   # GitHub okuma varsayılan açık; token sınırı 60→5000/saat yapar, docs/github.md
 ```
 
@@ -221,6 +230,8 @@ Tarayıcı `/api` öneki ekler; backend kökü dinler.
 | GET | `/workers` | İşçi havuzu |
 | GET/POST/PATCH/DELETE | `/workspaces` | Workspace |
 | GET | `/skills` | Skill kataloğu |
+| GET | `/integrations/{jira,confluence}/status` | Bağlantı durumu |
+| POST | `/integrations/{jira,confluence}/actions/{id}/apply` \| `/cancel` | Onay kartı: önerilen değişikliği yaz / vazgeç |
 
 Canlı şema: http://127.0.0.1:8001/docs
 
@@ -278,7 +289,8 @@ Güncel açık listesi ve nerede düzeltileceği:
 | [docs/scheduling.md](docs/scheduling.md) | Zamanlanmış görevler, zincirler, e-posta |
 | [docs/outlook.md](docs/outlook.md) | Outlook ile e-posta: kurulum, güvenlik, sorun giderme |
 | [docs/social-reach.md](docs/social-reach.md) | Reddit okuma: kurulum, haftalık çerez yenileme, güvenlik |
-| [docs/jira.md](docs/jira.md) | Jira okuma: Cloud / Server kurulumu, örnek sorular, VPN, güvenlik |
+| [docs/jira.md](docs/jira.md) | Jira okuma ve onaylı yazma (kayıt aç, yorum, durum): kurulum, örnekler, VPN, güvenlik |
+| [docs/confluence.md](docs/confluence.md) | Confluence okuma ve onaylı yazma (yeni sayfa, yorum): space izin listesi, güvenlik |
 | [docs/github.md](docs/github.md) | GitHub okuma: depo arama, bağlantı okuma, token, sınırlar, güvenlik |
 | [docs/knowledge.md](docs/knowledge.md) | Workspace belge arama (Knowledge Agent): nasıl çalışır, ölçümler, sınırlar |
 | [docs/coding-agent.md](docs/coding-agent.md) | Coding Agent: kodu çalıştırır, Excel/CSV analiz eder, grafik çizip rapora gömer |
