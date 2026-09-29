@@ -55,7 +55,28 @@ _ABILITY = {
         "create real downloadable files (xlsx, csv, json, md, html, docx, "
         "pptx) that the user receives"
     ),
+    # Gather-only sources: another step of this run already read them and
+    # handed the result over as notes. Without these, a Reddit-only job was
+    # told "Tools available: NONE ... say so plainly", and its answer opened
+    # with "I have no tool to search Reddit; a previous worker's notes
+    # say..." above the correct result.
+    _capabilities.MAIL_READ: "use the e-mails already read from the user's mailbox",
+    _capabilities.SOCIAL_READ: "use the Reddit posts and comments already read",
+    _capabilities.JIRA_READ: "use the Jira issues already read",
+    _capabilities.CONFLUENCE_READ: "use the Confluence pages already read",
+    _capabilities.GITHUB_READ: "use the GitHub content already read",
+    _capabilities.DOCUMENTS_READ: "use the passages already found in the workspace documents",
 }
+_ALREADY_READ = frozenset(
+    {
+        _capabilities.MAIL_READ,
+        _capabilities.SOCIAL_READ,
+        _capabilities.JIRA_READ,
+        _capabilities.CONFLUENCE_READ,
+        _capabilities.GITHUB_READ,
+        _capabilities.DOCUMENTS_READ,
+    }
+)
 
 # Order the abilities are listed in, so the block is byte-stable for a given
 # capability set (it is compared in tests and cached in prompts).
@@ -65,6 +86,12 @@ _ABILITY_ORDER = (
     _capabilities.FILES,
     _capabilities.CODE_EXEC,
     _capabilities.ARTIFACTS,
+    _capabilities.MAIL_READ,
+    _capabilities.SOCIAL_READ,
+    _capabilities.JIRA_READ,
+    _capabilities.CONFLUENCE_READ,
+    _capabilities.GITHUB_READ,
+    _capabilities.DOCUMENTS_READ,
 )
 
 
@@ -115,7 +142,7 @@ def _ability_lines(resolved: frozenset) -> list[str]:
             "read uploads, run code, or create files. Say so plainly instead "
             "of implying otherwise."
         ]
-    return [
+    lines = [
         "You CAN, in this run: " + "; ".join(available) + ".",
         # The anti-disclaimer rule. Stated as a prohibition on a specific
         # sentence pattern, because that pattern is exactly what appeared.
@@ -126,6 +153,13 @@ def _ability_lines(resolved: frozenset) -> list[str]:
         "tried; never generalise it into a claim about what you are able to "
         "do.",
     ]
+    if resolved & _ALREADY_READ:
+        lines.append(
+            "What was already read is in the notes you were given: answer "
+            "from it directly. Do not say you lack a tool to read it, and do "
+            "not describe it as another worker's notes."
+        )
+    return lines
 
 
 # --- Language -------------------------------------------------------------

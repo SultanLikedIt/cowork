@@ -260,6 +260,37 @@ def test_no_capabilities_says_so_plainly() -> None:
     )
 
 
+def test_an_already_read_source_is_not_a_run_without_tools() -> None:
+    """Live: a Reddit-only job (capabilities ['social_read']) was told
+    "Tools available in this run: NONE ... say so plainly", and the answer
+    opened with "I have no tool to search Reddit; a previous worker's notes
+    say ..." above the correct result."""
+    block = runtime_context.runtime_block({capabilities.SOCIAL_READ}, now=LIVE)
+    check("social read is not reported as no tools", "NONE" not in block, block)
+    check("the Reddit posts are stated as available", "Reddit posts" in block, block)
+    check(
+        "the writer answers from the notes without a disclaimer",
+        "answer from it directly" in block
+        and "another worker's notes" in block,
+        block,
+    )
+    for capability in (
+        capabilities.MAIL_READ,
+        capabilities.JIRA_READ,
+        capabilities.CONFLUENCE_READ,
+        capabilities.GITHUB_READ,
+        capabilities.DOCUMENTS_READ,
+    ):
+        block = runtime_context.runtime_block({capability}, now=LIVE)
+        check(f"{capability} is not reported as no tools", "NONE" not in block, block)
+    block = runtime_context.runtime_block({WEB_FETCH}, now=LIVE)
+    check(
+        "a job that read nothing in advance gets no notes line",
+        "answer from it directly" not in block,
+        block,
+    )
+
+
 def test_capability_implication_is_respected() -> None:
     """WEB_SEARCH implies WEB_FETCH, so a search-only grant must advertise
     both -- the block is built from expand(), like every other consumer."""
