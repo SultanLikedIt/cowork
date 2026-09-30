@@ -29,7 +29,7 @@ Bu dosya **her şeyi baştan sona** anlatır: kurulum, günlük kullanım, açı
 ## 1. Kurulum (ilk kez)
 
 ```powershell
-cd <proje-klasoru>\proje
+cd <repo-klasoru>
 copy .env.example .env
 notepad .env
 ```
@@ -89,7 +89,7 @@ yana çalışabilsin diye.
 
 | Ne | Komut / işlem | Gerekli mi |
 | --- | --- | --- |
-| Yığın | `docker compose up -d` (klasör: `proje`) | Her zaman |
+| Yığın | `docker compose up -d` (klasör: repo kökü) | Her zaman |
 | Köprü | `python scripts\local_computer_bridge.py --token <token>` | Yalnız "bilgisayarımda aç" ya da Outlook e-posta kullanıyorsan |
 | Outlook | Klasik Outlook açık ve hesabı tanımlı | Yalnız e-posta gönderilecekse |
 
@@ -267,7 +267,7 @@ uygulamayı **yalnız host'ta çalışan bir süreç** açabilir. Köprü budur.
 container'ın içine konamaz.
 
 ```powershell
-cd <proje-klasoru>\proje
+cd <repo-klasoru>
 pip install pywin32                         # yalnız Outlook kullanacaksan
 python scripts\local_computer_bridge.py --token <LOCAL_COMPUTER_TOKEN degeri>
 curl http://127.0.0.1:8765/health
@@ -286,7 +286,7 @@ PowerShell'i **normal** (yönetici *değil*) aç; Outlook da normal çalıştı�
 yükseltilmiş bir süreç COM'a bağlanamaz:
 
 ```powershell
-$proje = "<proje-klasoru>\proje"
+$proje = "<repo-klasoru>"
 $py    = (Get-Command pythonw.exe).Source
 $token = ((Get-Content "$proje\.env" | Select-String '^LOCAL_COMPUTER_TOKEN=') -split '=',2)[1]
 

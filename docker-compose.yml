@@ -1,3 +1,8 @@
+# The project name used to come from the folder, and the stack lived in
+# proje/. Pinned so the volumes (proje_backend-data: chat history, uploads)
+# stay attached now that this file sits at the repo root.
+name: proje
+
 services:
   backend:
     build:

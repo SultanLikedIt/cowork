@@ -1,8 +1,8 @@
-# agent-webapp — Teslim paketi
+# agent-webapp: buradan başla
 
-Bu klasör `agent-webapp` projesinin **tam ve çalışır** kopyasıdır. Projeyi hiç
+Bu klasör `agent-webapp` projesinin **tam ve çalışır** hâlidir. Projeyi hiç
 bilmiyor olabilirsin; bu dosyayı yukarıdan aşağı takip edersen sistem ayağa
-kalkar. GitHub'a, hesaba veya özel bir erişime **ihtiyacın yok**.
+kalkar. GitHub hesabına veya özel bir erişime **ihtiyacın yok**.
 
 ---
 
@@ -10,12 +10,18 @@ kalkar. GitHub'a, hesaba veya özel bir erişime **ihtiyacın yok**.
 
 | Klasör / dosya | Ne |
 | --- | --- |
-| `proje/` | Projenin tamamı — kod, belgeler, Docker ayarları |
-| `proje/BASLANGIC.md` | **Başlangıç rehberi.** Kurulum, günlük kullanım, açılabilir özellikler, sorun giderme |
-| `proje/HANDOVER.md` | **Asıl rehber.** 13 bölüm; mimari, kullanım, test, bilinen açıklar |
-| `proje/README.md` | Kısa tanıtım |
-| `proje/.env.example` | Ayar şablonu — bundan kendi `.env` dosyanı yapacaksın |
-| `eigent-karsilastirma/` | Eigent "Cowork" ürünüyle yapılmış karşılaştırma notları. Projenin parçası değil, referans |
+| `BASLANGIC.md` | **Başlangıç rehberi.** Kurulum, günlük kullanım, açılabilir özellikler, sorun giderme |
+| `HANDOVER.md` | **Asıl rehber.** 13 bölüm: mimari, kullanım, test, bilinen açıklar |
+| `README.md` | Kısa tanıtım |
+| `.env.example` | Ayar şablonu. Kendi `.env` dosyanı bundan yapacaksın |
+| `docker-compose.yml` | Bütün servisleri birlikte başlatan Docker ayarı |
+| `backend/` | FastAPI sunucu: ajanlar, web araştırması, belge üretimi, testler |
+| `frontend/` | React arayüz |
+| `docs/` | Konu konu ayrıntılı belgeler (Jira, Confluence, Outlook, belge üretimi, zamanlanmış görevler…) |
+| `vendor/agent-search/` | AgentSearch arama servisi, repoya dahil |
+| `searxng/` | Arama motoru ayarı |
+| `brand/` | Üretilen dosyalardaki kurumsal renk ve logo |
+| `scripts/` | Bilgisayarında (Docker dışında) çalışan köprü: "bilgisayarımda aç" ve Outlook |
 
 ---
 
@@ -23,43 +29,44 @@ kalkar. GitHub'a, hesaba veya özel bir erişime **ihtiyacın yok**.
 
 Tarayıcıdan konuştuğun bir ajan uygulaması. Soru sorarsın; sistem ya sohbet
 eder, ya web'den araştırır, ya yüklediğin belgeyi okur, ya da Word / PDF /
-PowerPoint / Excel / HTML dosyası üretir.
+PowerPoint / Excel / HTML dosyası üretir. Açılırsa şirketin Jira'sını,
+Confluence'ını ve Outlook posta kutusunu da okur.
 
-İki parça: **React arayüz** ve **FastAPI sunucu**. Yanlarında iki yardımcı
-servis çalışır (SearXNG arama motoru, AgentSearch). Dördü de Docker'da.
+İki ana parça var: **React arayüz** ve **FastAPI sunucu**. Yanlarında iki
+yardımcı servis çalışır (SearXNG arama motoru, AgentSearch). Dördü de Docker'da.
 
 ---
 
 ## Kurulum
 
-### Adım 0 — Bilgisayarda ne olmalı
+### Adım 0: Bilgisayarda ne olmalı
 
 | Gereken | Not |
 | --- | --- |
-| **Docker Desktop** | Windows'ta WSL2 açık olmalı. https://docker.com |
+| **Docker Desktop** | Windows'ta WSL2 açık olmalı. <https://docker.com> |
 | **İnternet** | Build sırasında paketler inecek (aşağıda açıklandı) |
-| **Model erişimi** | OpenAI uyumlu bir endpoint: adres + model adı + API anahtarı |
+| **Model erişimi** | OpenAI uyumlu bir endpoint: adres, model adı, API anahtarı |
 | Disk | ~8 GB boş yer |
 | RAM | 8 GB altı zorlanır |
 
-**Git'e ihtiyacın yok.** Dosyalar zaten elinde.
+**Git'e ihtiyacın yok.** Klasörü aldıysan dosyalar zaten elinde.
 
 > **İnternet neden gerekli?** Kod burada, ama Docker build sırasında Python
 > paketleri (PyPI), npm paketleri, Playwright Chromium ve PyTorch iniyor.
 > Yani "GitHub'a erişimim yok" sorun değil; "hiç internetim yok" sorun.
 
-### Adım 1 — Klasöre gir
+### Adım 1: Klasöre gir
 
-PowerShell aç ve bu klasörün içindeki `proje` dizinine geç:
+PowerShell aç ve bu klasöre geç:
 
 ```powershell
-cd <bu-klasorun-yolu>\proje
+cd <bu-klasorun-yolu>
 dir
 ```
 
 `backend`, `frontend`, `docker-compose.yml`, `HANDOVER.md` görmelisin.
 
-Bir de şunu kontrol et — boş olmamalı:
+Bir de şunu kontrol et, boş olmamalı:
 
 ```powershell
 dir vendor\agent-search
@@ -67,7 +74,7 @@ dir vendor\agent-search
 
 `app`, `adapters`, `Dockerfile` görünüyorsa her şey yerinde.
 
-### Adım 2 — Ayar dosyasını oluştur
+### Adım 2: Ayar dosyasını oluştur
 
 ```powershell
 copy .env.example .env
@@ -92,13 +99,13 @@ MODEL_API_KEY=sk-or-...
 
 Kaydet, kapat.
 
-### Adım 3 — Başlat
+### Adım 3: Başlat
 
 ```powershell
 docker compose up --build
 ```
 
-**İlk çalıştırma 15–30 dakika sürer.** Donmuş değil — PyTorch, Chromium ve
+**İlk çalıştırma 15-30 dakika sürer.** Donmuş değil; PyTorch, Chromium ve
 Docling iniyor. Ekranda akan satırlar normaldir.
 
 Sonraki başlatmalarda saniyeler sürer:
@@ -107,15 +114,15 @@ Sonraki başlatmalarda saniyeler sürer:
 docker compose up -d
 ```
 
-### Adım 4 — Çalıştığını doğrula
+### Adım 4: Çalıştığını doğrula
 
 Tarayıcıda aç:
 
 | Adres | Ne görmelisin |
 | --- | --- |
-| http://127.0.0.1:8081 | Uygulamanın arayüzü, workspace kartları |
-| http://127.0.0.1:8001/docs | API dokümantasyonu (Swagger) |
-| http://127.0.0.1:3939/health | `{"status":"healthy"...}` |
+| <http://127.0.0.1:8081> | Uygulamanın arayüzü, workspace kartları |
+| <http://127.0.0.1:8001/docs> | API dokümantasyonu (Swagger) |
+| <http://127.0.0.1:3939/health> | `{"status":"healthy"...}` |
 
 Sonra arayüzde:
 
@@ -125,13 +132,14 @@ Sonra arayüzde:
 4. **Workforce** moduna geç ve `İstanbul hakkında kısa bir PDF hazırla` dene
 5. İndirilebilir bir PDF çıkıyorsa sistem tam çalışıyor
 
-### Adım 5 — Durdurmak
+### Adım 5: Durdurmak
 
 ```powershell
 docker compose down
 ```
 
-Verilerin (sohbetler, ürettiğin dosyalar) durur.
+Verilerin (sohbetler, ürettiğin dosyalar) durur. `proje_backend-data` adlı
+Docker volume'unda saklanırlar; klasörün adını değiştirsen de kaybolmazlar.
 
 > ⚠️ `docker compose down -v` yazma. Sondaki `-v` bütün sohbet geçmişini ve
 > üretilmiş dosyaları **kalıcı olarak siler**.
@@ -140,49 +148,39 @@ Verilerin (sohbetler, ürettiğin dosyalar) durur.
 
 ## Sonra ne okumalı
 
-Önce `proje/BASLANGIC.md` — kurulumun tamamı, her gün neyin başlatılacağı,
-zamanlanmış görev / Outlook e-postası / OCR gibi özelliklerin nasıl açıldığı.
+Önce `BASLANGIC.md`: kurulumun tamamı, her gün neyin başlatılacağı,
+zamanlanmış görev / Outlook e-postası / OCR / Jira gibi özelliklerin nasıl
+açıldığı.
 
-Sonra `proje/HANDOVER.md` — asıl rehber. Sırasıyla:
+Sonra `HANDOVER.md`, asıl rehber. Sırasıyla:
 
 | Bölüm | Ne anlatır |
 | --- | --- |
 | § 1 | Proje nedir, LangGraph çalıştırıcı, reponun geçmişi |
-| § 2–3 | Kurulum ve ayarların tamamı |
+| § 2-3 | Kurulum ve ayarların tamamı |
 | § 4 | Arayüzün nasıl kullanılacağı, hangi modda ne yapılır |
-| § 5 | Mimari — bir istek uçtan uca nasıl işleniyor |
-| § 6 | Kod haritası — hangi dosya ne işe yarar |
+| § 5 | Mimari: bir istek uçtan uca nasıl işleniyor |
+| § 6 | Kod haritası: hangi dosya ne işe yarar |
 | § 10 | Testler nasıl koşulur |
-| § 11 | **Bilinen açıklar** — neyin bitmediği, dürüstçe |
+| § 11 | **Bilinen açıklar**: neyin bitmediği, dürüstçe |
 | § 12 | Sorun giderme |
+
+Tek bir konuya derin bakacaksan `docs/README.md` hangi belgenin neyi
+anlattığını listeler.
 
 ---
 
-## Bu klasörde bilerek olmayan iki şey
+## Bu klasörde bilerek olmayan şeyler
 
 1. **`.env` yok.** İçinde API anahtarı olduğu için hiçbir kopyaya konmaz.
    Adım 2'de kendin oluşturuyorsun.
-2. **`.git` geçmişi yok.** 316 MB tutuyor ve kurulum için gerekmiyor. Kod
-   eksiksiz çalışır, ama `git log` ile "bu satır neden böyle" diye
-   bakamazsın. Geliştirmeye devam edeceksen projeyi teslim eden kişiden
-   GitHub erişimi iste:
+2. **Commit geçmişi olmayabilir.** Klasörü kopya olarak aldıysan içinde
+   `.git` bulunmayabilir. Kod eksiksiz çalışır, ama `git log` ile "bu satır
+   neden böyle" diye bakamazsın. Geliştirmeye devam edeceksen projeyi teslim
+   eden kişiden GitHub erişimi iste:
 
-   ```
-   https://github.com/omeryavuzarslan/agent-webapp-langgraph
+   ```text
+   https://github.com/SultanLikedIt/cowork
    ```
 
    Varsayılan dal `main`, güncel olan odur.
-
----
-
-## Bu paket test edildi
-
-Yukarıdaki adımlar bu klasörün üzerinde gerçekten çalıştırıldı:
-
-- `docker compose build` — üç image de hatasız derlendi
-- `docker compose up -d` — dört servis de ayağa kalktı
-- `:8001/docs` ve `:8081` → HTTP 200
-- `:3939/health` → `healthy`, arama bağlantısı dahil
-- Gerçek bir iş (`POST /run-pipeline`) → 3.2 saniyede cevap döndü
-
-Git hiç kullanılmadı. Yani bu klasör kendi başına yeterli.

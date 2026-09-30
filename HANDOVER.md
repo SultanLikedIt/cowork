@@ -151,12 +151,12 @@ Container **içinde** backend hâlâ 8000 dinler; host'a **8001** olarak açıl�
 
 #### A) Elinde teslim klasörü varsa — git gerekmez
 
-Sana bir klasör verildiyse (içinde `BURADAN-BASLA.md`, `proje/` ve
-`eigent-karsilastirma/` varsa) **kaynağı almak için yapman gereken hiçbir şey
-yok.** Projenin tamamı `proje/` altında, `vendor/agent-search` dahil.
+Sana bir klasör verildiyse (içinde `BURADAN-BASLA.md`, `backend/`,
+`frontend/` ve `docker-compose.yml` varsa) **kaynağı almak için yapman gereken
+hiçbir şey yok.** Klasör reponun kendisi, `vendor/agent-search` dahil.
 
 ```powershell
-cd <klasorun-yolu>\proje
+cd <klasorun-yolu>
 dir            # backend, frontend, docker-compose.yml, HANDOVER.md gorunmeli
 ```
 
@@ -169,13 +169,14 @@ Bu yolda **git kurmana bile gerek yok**:
 
 Doğrudan [2.3 `.env` koy](#23-env-koy) adımına geç.
 
-> Bu yol gerçekten denendi: teslim klasöründen `docker compose build` +
-> `up -d` yapıldı, dört servis de ayağa kalktı, `POST /run-pipeline` ile
-> gerçek bir iş 3.2 saniyede cevap döndü. Git hiç kullanılmadı.
+> Bu yol gerçekten denendi (proje o zaman `proje/` alt klasöründeydi):
+> teslim klasöründen `docker compose build` + `up -d` yapıldı, dört servis de
+> ayağa kalktı, `POST /run-pipeline` ile gerçek bir iş 3.2 saniyede cevap
+> döndü. Git hiç kullanılmadı.
 
-**Bu yolun tek sınırı:** klasörde commit geçmişi (`.git`) yok. Kod çalışır,
-ama "bu satır neden böyle" sorusunun cevabını `git log`'dan bulamazsın.
-Geliştirmeye devam edeceksen aşağıdaki B yolunu tercih et.
+**Bu yolun tek sınırı:** klasörde `.git` yoksa commit geçmişi de yok. Kod
+çalışır, ama "bu satır neden böyle" sorusunun cevabını `git log`'dan
+bulamazsın. Geliştirmeye devam edeceksen aşağıdaki B yolunu tercih et.
 
 ---
 

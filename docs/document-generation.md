@@ -149,7 +149,7 @@ each slide is one landscape page. Without blocks the previous
 
 ## Company brand
 
-`brand.py` reads `BRAND_DIR/brand.json` (compose mounts `proje/brand` at
+`brand.py` reads `BRAND_DIR/brand.json` (compose mounts `brand/` at
 `/app/brand`; setup in [`../brand/README.md`](../brand/README.md)) and every
 writer wears it:
 

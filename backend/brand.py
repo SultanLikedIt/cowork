@@ -1,7 +1,7 @@
 """Corporate brand: the colours, font and logo every generated file wears.
 
 A brand lives in a folder named by BRAND_DIR (docker-compose mounts
-``proje/brand`` at /app/brand):
+``brand/`` at /app/brand):
 
     brand.json   {"name": "...", "primary": "#001489", "secondary": "#DA291C",
                   "font": "", "logo": "logo.png"}
